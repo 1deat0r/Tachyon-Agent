@@ -1,46 +1,40 @@
-# Handoff — 2026-09-26 session: scaffold research → Skeleton v2 → Tachyon delivery
+# Handoff — 2026-09-27 session: pipe flake → ack-reap flake → Intent substrate slices → paqet skill
 
-Fresh-session entry point. Nothing below is in-progress mid-edit; everything landed is committed/green, everything open is listed under **Open work**.
+Fresh-session entry point. Nothing below is in-progress mid-edit; everything landed is committed/green, everything open is listed under **Open work**. Main is clean at `8593833`, equal to origin.
 
-## What this session established (condensed)
+## What this session delivered (condensed)
 
-1. **Muse-spark scaffold audit**: re-fetched all 15 of its sources — 13/15 clean, one 404 (real Codex doc: `https://developers.openai.com/codex/agent-configuration/agents-md`), one miscite, vendor-family independence problem, two unsourced tree elements.
-2. **Method decision (user-confirmed direction)**: `project-skeleton` (canonical, `VERSION` 0.1.0, methodology 2026-09-24) **stays the method**; the 2026-09-26 sources pass is its scheduled re-research. Method delta for the offered-but-not-yet-started **v0.2.0 merge**: (a) live-URL + claim-in-text check, (b) 3 sources must span ≥2 vendor families, (c) every tree element sourced (local convention counts locally), (d) scarcity ≠ irrelevance (evals + permissions re-admitted with 3 vendors each).
-3. **Tachyon audit** (`/run/media/its1deat0r/Projects/AI Agents/Tachyon Agent`): full skeleton v1 compliance-plus; gaps were permission layer, acceptance-not-in-CI, skills-lock ignored, and GitHub required-review absent.
-4. **Delivered Skeleton v2** (7 paths, one squash PR, all gates green):
-   - PR https://github.com/1deat0r/tachyon/pull/30 merged → `e1c1384` on main (tree clean, == origin).
-   - `.claude/settings.json` (env-read deny), `opencode.json` (git-push ask, env deny), `.github/workflows/acceptance.yml` (nightly `17 3 * * *` + dispatch), `skills-lock.json` tracked, `.gitignore` `.claude/*` + `!.claude/settings.json`.
-   - Governance: `docs/adr/0003-skeleton-v2-permission-and-acceptance-gates.md` + `AGENTS.md` stamped `Skeleton: v2 — 2026-09-26`.
-5. **Verification**: 3 unlazy ledgers, **16/16 gates met** (`/tmp/opencode/tachyon-v020/GATES*.md`; approvals under `~/.unlazy/approved`). Pre-push local gate suite (fmt/check/test/clippy `-D warnings`) green; PR 3-OS CI green; acceptance first live run green (all 5 steps).
-6. **Flake caught post-merge**: Windows `cancel_acknowledges_after_real_reap_while_the_mailbox_serves` (responsive_actor.rs:351) failed on main, same tree passed Windows ×2 on the PR and on rerun → pre-existing timing race, not the change. Stop-the-line issue filed: https://github.com/1deat0r/tachyon/issues/31.
+1. **Issue #35 Windows pipe fix (PR #36 → `9a689af`)**: `transport::connect` (cfg windows) retries `ERROR_PIPE_BUSY` bounded (~1 s); `start_with` publishes the endpoint only after recovery + accept-loop spawn. Regression probe `pipe_staging.rs` + `kill_restart` both proven green on `windows-latest`.
+2. **Issue #37 ack-reap flake (PR #38 → `a3171f8`)**: unrelated `tachyon-core` flake surfaced in #36's PR-run (same commit green in push run) → stop-the-line issue filed, `wait_pid_dead` bounded wait (200×25 ms), re-run green, merged.
+3. **ChatGPT self-improving pack reviewed**: `tachyon-self-improving-pack.zip` evaluated against MVP freeze + `AGENTS.md` deferrals. Verdict: design valuable, code stubs only, Phases B–F stay deferred. Outcome: **ADR 0004** (PR #39 → `65b870c`) scoping Phase A (Intent substrate) as a verification-gate extension.
+4. **Slice 1 — IntentSpec (PR #45 → `bc4cdbc`, closes #40)**: new `tachyon-intent` crate (not inside `tachyon-ir` — belief-with-confidence kept out of the validated-graph contract). `Provenance`, mandatory-provenance `AttributedText`, `validate()`, quarantine accessors. 11 tests, TDD red→green.
+5. **Slice 2 — criteria compiler (PR #46 → `8e05b98`, closes #41)**: `tachyon-verify` `compile` module (`compile_criterion/criteria/spec`), narrow mini-syntax, `HardConstraint` bindings with BLAKE3 ids, fail-closed `Unresolved`. 14 tests. Review-driven strictness fix-ups (dot/empty-segment rejection, trim normalization).
+6. **Slice 3 — conformance report (PR #47 → `8593833`, closes #42)**: `check_conformance(spec, contract, report, baseline, current)` — pure, advisory-only; constraints Satisfied only on text-match with an evaluated `HardConstraint` plus passing report. 6 integration tests over real runs (`#![cfg(unix)]` precedent). Compatibility deferred to #48 (needs a nonexistent `IntentSpec` field).
+7. **Process throughout**: every PR through independent two-axis review subagents (standards + spec, verbatim reporting) — 0 hard violations total; full local gates + 3-OS CI green on every merge; stop-the-line issue discipline (#37).
+8. **New global skill `paqet`** (`~/.prime/agent/skills/paqet/`): P.A.Q.E.T session audit — Performance, Accuracy, Quality, Efficiency, Token efficiency; per-lens /100, weights, calibration anchors, finding-ownership, panel mode (5 experts) + quick mode. First panel scored this session 88; skill repaired from its own review (bands, split-or-lump, spread-to-range).
 
 ## Open work (priority order)
 
-1. **Issue #31 fix PR** — stabilize the reap-vs-durable-cancel race at `crates/tachyon-core/tests/responsive_actor.rs:351` (tolerate the interleaving or sync on the durable-cancel receipt). Follow Tachyon `AGENTS.md` delivery loop: branch → gates before push → PR template → squash only when 3-OS green → stop-the-line if red.
-2. **project-skeleton v0.2.0 merge** (offered, not yet approved) — edit canonical source at `/run/media/its1deat0r/Projects/Skills/canonical/project-skeleton/` (never the opencode view), bump `VERSION` 0.1.0 → 0.2.0 + CHANGELOG, add: `.claude/skills/` frozen path, permission-layer element, lazy `evals/` element, the four method rules above, refreshed source citations. Then re-export views (`export.py`) and run `scripts/validate-all.sh` per home `AGENTS.md`. **Input**: Hindsight document titled `Skeleton v2 sources pass (2026-09-26) — verified scaffold findings` (retrieve via `hindsight_search_knowledge_pages`).
-3. **Review-gate revisit trigger** — when a second identity/bot exists, enable `required_approving_review_count` on main (solo self-approval deadlock recorded in ADR 0003).
-4. Optional: first *scheduled* acceptance run fires 03:17 UTC nightly — glance at Actions after the first one.
+1. **Issue #43** — correction classification + durable knowledge lifecycle (+ CONTEXT.md terms). Last Phase-A slice with new code.
+2. **Issue #48** — compatibility coverage in conformance (needs `IntentSpec` compatibility field first).
+3. **Issue #26** — effect-barrier journal follow-up (`ready-for-agent`, predates this session).
+4. **Issue #44** — deferred roadmap tracker, Phases B–F (blocked on Phase A + exit gate/ADR).
+5. Optional: paqet per-PR quick runs; next panel at milestone boundary.
 
 ## Key decisions — do not re-litigate
 
-- Branch protection stays **checks-only** (user's explicit choice; rationale in ADR 0003).
-- Frozen paths untouched; v2 was additive only (project-skeleton §4 honored: ADR + stamp).
-- 3-source standard for this work = 3 sources **and ≥2 vendor families** (or labeled GitHub-authoritative for platform mechanics).
+- New `tachyon-intent` crate over extending `tachyon-ir` (belief vs validated graph).
+- Compiler lives in `tachyon-verify` (owns `Clause`); `verify → intent` via `path` dep, no cycle.
+- Conformance is advisory-only; `Unresolved` never fails `conforms`, only `Violated` does.
+- Free text provably never compiles to `CommandPasses`/`HardConstraint` (battery test); `CommandPasses` omission is deliberate fail-closed design.
+- Mini-syntax owned by `compile.rs` rustdoc until a follow-up moves it into spec/ADR.
+- `Cargo.lock` must be checked into every dep-edit commit — missed twice, amended pre-PR both times.
+- Paqet scoring: per-lens /100, weighted total, one finding in exactly one home lens, debt-halving mandatory, spread >15 or lens <70 → reported range.
 
 ## Artifacts (reference, not duplicated)
 
-- Repo: ADR 0003, `AGENTS.md` (delivery rules + stamp), `acceptance.yml`, permission configs — all at `github.com/1deat0r/tachyon`, commit `e1c1384`.
-- Ledgers/evidence: `/tmp/opencode/tachyon-v020/` (GATES.md, GATES-skeleton-v2.md, GATES-delivery.md + pr-body.md + flake-issue.md). **`/tmp` may be wiped on reboot** — ledgers are evidence only; the work itself is landed in git/GitHub.
-- Research findings: Hindsight doc `Skeleton v2 sources pass (2026-09-26) — verified scaffold findings`.
-- This file: repo-root `HANDOFF.md` at project root, tracked in git — matching the convention in pi-rust, Hermes-Agent-Rust, TIDE (and Research's lowercase `handoff.md`). A transient copy also sits at `/tmp/opencode/handoff.md`.
-
-## Suggested skills (Skill tool)
-
-- `unlazy` — write gates before any non-trivial continuation (this session's 3-ledger pattern).
-- `project-skeleton` — needed for item 2 (and its §4 versioning rules).
-- `diagnosing-bugs` — for item 1 (issue #31 race).
-
-## Environment notes
-
-- Host: opencode/T3 Code; run gates from `/home/its1deat0r/.config/opencode/skills/unlazy/scripts/` with `--cwd "<tachyon project path>"`; ledgers outside the repo need an explicit path argument.
-- No secrets in this document; git author PII intentionally omitted.
+- Repo: `github.com/1deat0r/tachyon`, main `8593833`. ADRs 0001–0004 in `docs/adr/`.
+- PRs: #36, #38, #39, #45, #46, #47 (all squash-merged, all 3-OS green). Issues: closed #35, #37, #40, #41, #42; open #26, #43, #44, #48.
+- Initiative memory: "Intent substrate (Phase A)" tracks slices (Hindsight page `kp-ebad1b2c1c00428aa2d06a31c6bede7e`).
+- Skill: `~/.prime/agent/skills/paqet/SKILL.md` (global, loads in new sessions).
+- This file: repo-root `HANDOFF.md`, tracked in git.
