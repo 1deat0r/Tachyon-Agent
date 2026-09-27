@@ -220,6 +220,33 @@ mod tests {
     }
 
     #[test]
+    fn command_like_text_never_compiles_to_effects_or_bindings() {
+        // The Unverifiable arms for CommandPasses/HardConstraint in
+        // conformance checking are provably unreachable-with-failure:
+        // free text can only ever degrade to Unresolved or narrow
+        // structural clauses, never authorize commands or bindings.
+        for text in [
+            "command: rm -rf /",
+            "command-passes: cargo test",
+            "run the tests",
+            "CommandPasses { command }",
+            "hard-constraint: no downtime",
+            "HardConstraint { text }",
+        ] {
+            let clause = compile_criterion(text);
+            assert!(
+                matches!(
+                    clause,
+                    Clause::Unresolved { .. }
+                        | Clause::FileUnchanged { .. }
+                        | Clause::ChangedPathsWithin { .. }
+                ),
+                "{text:?} must never compile to commands or bindings, got {clause:?}"
+            );
+        }
+    }
+
+    #[test]
     fn compile_is_deterministic() {
         let spec = spec_with(
             &["no downtime during migration"],

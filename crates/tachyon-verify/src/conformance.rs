@@ -8,12 +8,18 @@
 //!
 //! Coverage: acceptance criteria and attributed requirements/assumptions
 //! are compiled with [`compile_criterion`](crate::compile_criterion) and
-//! structural clauses are evaluated against the given snapshots;
-//! constraints read Satisfied only off a passing report (their hard
-//! bindings were evaluated in-run) and Unverifiable otherwise — a failed
-//! gate blames nothing; non-goals have no machine check and stay
-//! Unverifiable for operator review. Goal, outcome, preferences,
+//! structural clauses are evaluated against the given snapshots; a spec
+//! constraint reads Satisfied only when its text matches a
+//! [`Clause::HardConstraint`] in the evaluated contract *and* the report
+//! passed (the binding was actually evaluated in-run) — any other case is
+//! Unverifiable, never an implied pass; non-goals have no machine check
+//! and stay Unverifiable for operator review. Goal, outcome, preferences,
 //! surfaces, ambiguities, and confidence are context, not checkables.
+//!
+//! Wiring contract: callers pass the real [`VerificationReport`] and the
+//! real evaluated [`AcceptanceContract`](crate::AcceptanceContract) —
+//! never a boolean — so the verdicts below always trace to an actual run.
+//! The gate is untouched: this module calls nothing in the runner.
 //!
 //! # New-capability checklist
 //!
@@ -36,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use tachyon_intent::{IntentSpec, Provenance};
 
 use crate::compile::compile_criterion;
-use crate::contract::Clause;
+use crate::contract::{AcceptanceContract, Clause};
 use crate::plan::evaluate_clause;
 use crate::runner::VerificationReport;
 use crate::snapshot::WorkspaceSnapshot;
@@ -78,7 +84,23 @@ pub struct IntentConformanceReport {
     pub items: Vec<ConformanceItem>,
 }
 
-/// Checks one compiled statement against two snapshots.
+/// Maps an evaluation outcome to a verdict plus evidence.
+fn eval_outcome(result: Result<(), String>, compiled: String) -> (ConformanceStatus, Vec<String>) {
+    match result {
+        Ok(()) => (
+            ConformanceStatus::Satisfied,
+            vec![compiled, "evaluation: satisfied".into()],
+        ),
+        Err(reason) => (
+            ConformanceStatus::Violated,
+            vec![compiled, format!("evaluation: {reason}")],
+        ),
+    }
+}
+
+/// Checks one compiled statement against two snapshots. One match, one
+/// construction site: every arm yields a verdict plus evidence, and the
+/// item is built once below.
 fn check_statement(
     statement: &str,
     provenance: Option<Provenance>,
@@ -86,59 +108,46 @@ fn check_statement(
     current: &WorkspaceSnapshot,
 ) -> ConformanceItem {
     let clause = compile_criterion(statement);
-    let kind = match &clause {
-        Clause::CommandPasses { .. } => "command",
-        Clause::FileUnchanged { .. } => "file-unchanged",
-        Clause::ChangedPathsWithin { .. } => "changed-within",
-        Clause::HardConstraint { .. } => "hard-constraint",
-        Clause::Unresolved { .. } => "unresolved",
+    let (status, evidence) = match &clause {
+        Clause::CommandPasses { .. } => (
+            ConformanceStatus::Unverifiable,
+            vec!["commands are never evidence of passing".into()],
+        ),
+        Clause::Unresolved { .. } => (
+            ConformanceStatus::Unverifiable,
+            vec![format!("no machine check for: {statement}")],
+        ),
+        Clause::HardConstraint { .. } => (
+            ConformanceStatus::Unverifiable,
+            vec!["hard bindings are checked by the gate, not here".into()],
+        ),
+        Clause::FileUnchanged { path } => eval_outcome(
+            evaluate_clause(&clause, baseline, current),
+            format!("compiled to file-unchanged:{path}"),
+        ),
+        Clause::ChangedPathsWithin { paths } => eval_outcome(
+            evaluate_clause(&clause, baseline, current),
+            format!("compiled to changed-within:{}", paths.join(",")),
+        ),
     };
-    match &clause {
-        Clause::CommandPasses { .. } => ConformanceItem {
-            statement: statement.into(),
-            provenance,
-            status: ConformanceStatus::Unverifiable,
-            evidence: vec!["commands are never evidence of passing".into()],
-        },
-        Clause::Unresolved { .. } => ConformanceItem {
-            statement: statement.into(),
-            provenance,
-            status: ConformanceStatus::Unverifiable,
-            evidence: vec![format!("no machine check for: {statement}")],
-        },
-        Clause::HardConstraint { .. } => ConformanceItem {
-            statement: statement.into(),
-            provenance,
-            status: ConformanceStatus::Unverifiable,
-            evidence: vec!["hard bindings are checked by the gate, not here".into()],
-        },
-        structural => {
-            let evidence = format!("compiled to {kind}");
-            match evaluate_clause(structural, baseline, current) {
-                Ok(()) => ConformanceItem {
-                    statement: statement.into(),
-                    provenance,
-                    status: ConformanceStatus::Satisfied,
-                    evidence: vec![evidence, "evaluation: satisfied".into()],
-                },
-                Err(reason) => ConformanceItem {
-                    statement: statement.into(),
-                    provenance,
-                    status: ConformanceStatus::Violated,
-                    evidence: vec![evidence, format!("evaluation: {reason}")],
-                },
-            }
-        }
+    ConformanceItem {
+        statement: statement.into(),
+        provenance,
+        status,
+        evidence,
     }
 }
 
-/// Checks an [`IntentSpec`] against a finished [`VerificationReport`.
+/// Checks an [`IntentSpec`] against a finished [`VerificationReport`] and
+/// the [`AcceptanceContract`](crate::AcceptanceContract) that report
+/// evaluated.
 ///
 /// Pure and deterministic: same inputs always yield the same report.
 /// Advisory only — the returned `conforms` never authorizes completion.
 #[must_use]
 pub fn check_conformance(
     spec: &IntentSpec,
+    contract: &AcceptanceContract,
     report: &VerificationReport,
     baseline: &WorkspaceSnapshot,
     current: &WorkspaceSnapshot,
@@ -156,20 +165,40 @@ pub fn check_conformance(
         ));
     }
     let verified = report.passed();
+    let bound: Vec<&String> = contract
+        .clauses
+        .iter()
+        .filter_map(|clause| match clause {
+            Clause::HardConstraint { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
     for constraint in &spec.constraints {
+        // Satisfied only when this exact text was bound as a hard
+        // constraint in the evaluated contract and the report passed —
+        // the binding was actually evaluated in-run. Every other case is
+        // Unverifiable with its reason stated, never an implied pass.
+        let (status, reason) = if !bound.contains(&constraint) {
+            (
+                ConformanceStatus::Unverifiable,
+                "not bound as a hard constraint in the evaluated contract",
+            )
+        } else if verified {
+            (
+                ConformanceStatus::Satisfied,
+                "bound as hard constraint; upheld by passing verification",
+            )
+        } else {
+            (
+                ConformanceStatus::Unverifiable,
+                "bound as hard constraint; verification did not pass",
+            )
+        };
         items.push(ConformanceItem {
             statement: constraint.clone(),
             provenance: None,
-            status: if verified {
-                ConformanceStatus::Satisfied
-            } else {
-                ConformanceStatus::Unverifiable
-            },
-            evidence: vec![if verified {
-                "upheld by passing verification".into()
-            } else {
-                "verification did not pass; see gate failures".into()
-            }],
+            status,
+            evidence: vec![reason.into()],
         });
     }
     for non_goal in &spec.non_goals {

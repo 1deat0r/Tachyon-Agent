@@ -10,8 +10,8 @@ use tachyon_policy::{DefaultPosture, Policy};
 use tachyon_tools::{ToolsContext, artifact::ArtifactSpool};
 use tachyon_types::TaskId;
 use tachyon_verify::{
-    AcceptanceContract, Clause, CommandCheck, IntentConformanceReport, VerificationPlan,
-    VerificationRisk, WorkspaceSnapshot, check_conformance, run,
+    AcceptanceContract, Clause, CommandCheck, HardRequirement, IntentConformanceReport,
+    VerificationPlan, VerificationRisk, WorkspaceSnapshot, check_conformance, run,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -46,16 +46,35 @@ fn context(ws: &Workspace, artifacts: &Workspace, mut policy: Policy) -> Arc<Too
     ))
 }
 
-fn plan(baseline: &WorkspaceSnapshot, clauses: Vec<Clause>) -> VerificationPlan {
+fn plan(
+    baseline: &WorkspaceSnapshot,
+    hard: &[HardRequirement],
+    clauses: Vec<Clause>,
+) -> VerificationPlan {
     VerificationPlan::build(
         TaskId::generate(),
         7,
         &AcceptanceContract { clauses },
         baseline,
-        &[],
+        hard,
         VerificationRisk::Affected,
     )
     .unwrap()
+}
+
+fn hard_binding(text: &str, check: Clause) -> (HardRequirement, Clause) {
+    let id = uuid::Uuid::now_v7();
+    (
+        HardRequirement {
+            id,
+            text: text.into(),
+        },
+        Clause::HardConstraint {
+            id,
+            text: text.into(),
+            check: Box::new(check),
+        },
+    )
 }
 
 fn spec(
@@ -100,6 +119,16 @@ fn statuses(report: &IntentConformanceReport) -> Vec<(&str, &str)> {
         .collect()
 }
 
+fn evidence_of(report: &IntentConformanceReport, statement: &str) -> String {
+    report
+        .items
+        .iter()
+        .find(|item| item.statement == statement)
+        .unwrap_or_else(|| panic!("no item for {statement:?}"))
+        .evidence
+        .join(" | ")
+}
+
 #[tokio::test]
 async fn inferred_miss_flags_nonconformance_while_verification_passes() {
     // Headline advisory case: the gate checks a.txt and passes, but the
@@ -113,17 +142,30 @@ async fn inferred_miss_flags_nonconformance_while_verification_passes() {
     ws.write("extra.txt", "v2");
     let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
 
+    // The evaluated contract binds the downtime constraint to a check
+    // that holds, so conformance may certify it off the passing run.
+    let (hard, binding) = hard_binding(
+        "no downtime during migration",
+        Clause::FileUnchanged {
+            path: "a.txt".into(),
+        },
+    );
+    let contract = AcceptanceContract {
+        clauses: vec![
+            Clause::CommandPasses {
+                command: python("pass"),
+            },
+            Clause::FileUnchanged {
+                path: "a.txt".into(),
+            },
+            binding,
+        ],
+    };
     let report = run(
         plan(
             &baseline,
-            vec![
-                Clause::CommandPasses {
-                    command: python("pass"),
-                },
-                Clause::FileUnchanged {
-                    path: "a.txt".into(),
-                },
-            ],
+            std::slice::from_ref(&hard),
+            contract.clauses.clone(),
         ),
         context(&ws, &artifacts, granted()),
         CancellationToken::new(),
@@ -138,7 +180,7 @@ async fn inferred_miss_flags_nonconformance_while_verification_passes() {
         &["file-unchanged: extra.txt"],
         &["redesigning the logo"],
     );
-    let conformance = check_conformance(&spec, &report, &baseline, &current);
+    let conformance = check_conformance(&spec, &contract, &report, &baseline, &current);
     assert!(
         !conformance.conforms,
         "inferred miss must flag non-conformance"
@@ -149,11 +191,63 @@ async fn inferred_miss_flags_nonconformance_while_verification_passes() {
     assert_eq!(map["no downtime during migration"], "satisfied");
     assert_eq!(map["redesigning the logo"], "unverifiable");
     assert!(
+        evidence_of(&conformance, "no downtime during migration").contains("upheld"),
+        "bound + passing run certifies the constraint"
+    );
+    assert!(
         conformance
             .items
             .iter()
             .all(|item| !item.evidence.is_empty()),
         "every item carries evidence refs"
+    );
+}
+
+#[tokio::test]
+async fn unbound_constraint_stays_unverifiable_on_a_passing_run() {
+    // Soundness half of the constraint rule: a passing gate certifies
+    // nothing it never evaluated.
+    let ws = Workspace::new();
+    let artifacts = Workspace::new();
+    ws.write("a.txt", "stable");
+    let baseline = WorkspaceSnapshot::capture(ws.path()).unwrap();
+    let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
+
+    let contract = AcceptanceContract {
+        clauses: vec![
+            Clause::CommandPasses {
+                command: python("pass"),
+            },
+            Clause::FileUnchanged {
+                path: "a.txt".into(),
+            },
+        ],
+    };
+    let report = run(
+        plan(&baseline, &[], contract.clauses.clone()),
+        context(&ws, &artifacts, granted()),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(report.passed());
+
+    let conformance = check_conformance(
+        &spec(&["no downtime during migration"], &[], &[], &[]),
+        &contract,
+        &report,
+        &baseline,
+        &current,
+    );
+    assert!(
+        conformance.conforms,
+        "unverifiable items never fail conformance"
+    );
+    let map: std::collections::HashMap<_, _> = statuses(&conformance).into_iter().collect();
+    assert_eq!(map["no downtime during migration"], "unverifiable");
+    assert!(
+        evidence_of(&conformance, "no downtime during migration").contains("not bound"),
+        "the reason must say the gate never evaluated it"
     );
 }
 
@@ -165,18 +259,18 @@ async fn fully_satisfied_spec_conforms() {
     let baseline = WorkspaceSnapshot::capture(ws.path()).unwrap();
     let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
 
+    let contract = AcceptanceContract {
+        clauses: vec![
+            Clause::CommandPasses {
+                command: python("pass"),
+            },
+            Clause::FileUnchanged {
+                path: "a.txt".into(),
+            },
+        ],
+    };
     let report = run(
-        plan(
-            &baseline,
-            vec![
-                Clause::CommandPasses {
-                    command: python("pass"),
-                },
-                Clause::FileUnchanged {
-                    path: "a.txt".into(),
-                },
-            ],
-        ),
+        plan(&baseline, &[], contract.clauses.clone()),
         context(&ws, &artifacts, granted()),
         CancellationToken::new(),
     )
@@ -191,6 +285,7 @@ async fn fully_satisfied_spec_conforms() {
             &[],
             &["redesigning the logo"],
         ),
+        &contract,
         &report,
         &baseline,
         &current,
@@ -210,12 +305,26 @@ async fn failed_verification_leaves_constraints_unverifiable() {
     ws.write("a.txt", "v2");
     let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
 
+    // Bound in-contract but failed in-run: still no certification.
+    let (hard, binding) = hard_binding(
+        "no downtime during migration",
+        Clause::Unresolved {
+            description: "downtime review".into(),
+        },
+    );
+    let contract = AcceptanceContract {
+        clauses: vec![
+            Clause::FileUnchanged {
+                path: "a.txt".into(),
+            },
+            binding,
+        ],
+    };
     let report = run(
         plan(
             &baseline,
-            vec![Clause::FileUnchanged {
-                path: "a.txt".into(),
-            }],
+            std::slice::from_ref(&hard),
+            contract.clauses.clone(),
         ),
         context(&ws, &artifacts, granted()),
         CancellationToken::new(),
@@ -231,6 +340,7 @@ async fn failed_verification_leaves_constraints_unverifiable() {
             &[],
             &[],
         ),
+        &contract,
         &report,
         &baseline,
         &current,
@@ -242,6 +352,10 @@ async fn failed_verification_leaves_constraints_unverifiable() {
         map["no downtime during migration"], "unverifiable",
         "a failed gate blames nothing"
     );
+    assert!(
+        evidence_of(&conformance, "no downtime during migration").contains("did not pass"),
+        "the reason must distinguish failed from unbound"
+    );
 }
 
 #[tokio::test]
@@ -252,13 +366,13 @@ async fn free_text_criteria_are_unverifiable_not_violations() {
     let baseline = WorkspaceSnapshot::capture(ws.path()).unwrap();
     let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
 
+    let contract = AcceptanceContract {
+        clauses: vec![Clause::CommandPasses {
+            command: python("pass"),
+        }],
+    };
     let report = run(
-        plan(
-            &baseline,
-            vec![Clause::CommandPasses {
-                command: python("pass"),
-            }],
-        ),
+        plan(&baseline, &[], contract.clauses.clone()),
         context(&ws, &artifacts, granted()),
         CancellationToken::new(),
     )
@@ -268,6 +382,7 @@ async fn free_text_criteria_are_unverifiable_not_violations() {
 
     let conformance = check_conformance(
         &spec(&[], &["make it feel snappy"], &[], &[]),
+        &contract,
         &report,
         &baseline,
         &current,
@@ -288,13 +403,13 @@ async fn conformance_is_deterministic() {
     let baseline = WorkspaceSnapshot::capture(ws.path()).unwrap();
     let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
 
+    let contract = AcceptanceContract {
+        clauses: vec![Clause::CommandPasses {
+            command: python("pass"),
+        }],
+    };
     let report = run(
-        plan(
-            &baseline,
-            vec![Clause::CommandPasses {
-                command: python("pass"),
-            }],
-        ),
+        plan(&baseline, &[], contract.clauses.clone()),
         context(&ws, &artifacts, granted()),
         CancellationToken::new(),
     )
@@ -303,7 +418,7 @@ async fn conformance_is_deterministic() {
 
     let spec = spec(&["c"], &["file-unchanged: a.txt"], &["redesign x"], &["y"]);
     assert_eq!(
-        check_conformance(&spec, &report, &baseline, &current),
-        check_conformance(&spec, &report, &baseline, &current)
+        check_conformance(&spec, &contract, &report, &baseline, &current),
+        check_conformance(&spec, &contract, &report, &baseline, &current)
     );
 }
