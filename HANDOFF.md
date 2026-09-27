@@ -20,9 +20,9 @@ Fresh-session entry point. Nothing below is in-progress mid-edit; everything lan
 ## Open work (priority order)
 
 1. **Issue #48** — compatibility coverage in conformance (needs `IntentSpec` compatibility field first). Next up; all Phase-A code slices done.
-3. **Issue #26** — effect-barrier journal follow-up (`ready-for-agent`, predates this session).
-4. **Issue #44** — deferred roadmap tracker, Phases B–F (blocked on Phase A + exit gate/ADR).
-5. Optional: paqet per-PR quick runs; next panel at milestone boundary.
+2. **Issue #26** — effect-barrier journal follow-up (`ready-for-agent`, predates this session).
+3. **Issue #44** — deferred roadmap tracker, Phases B–F (blocked on Phase A + exit gate/ADR).
+4. Optional: paqet per-PR quick runs; next panel at milestone boundary.
 
 ## Key decisions — do not re-litigate
 
@@ -36,8 +36,9 @@ Fresh-session entry point. Nothing below is in-progress mid-edit; everything lan
 
 ## Artifacts (reference, not duplicated)
 
-- Repo: `github.com/1deat0r/tachyon`, main `8593833`. ADRs 0001–0004 in `docs/adr/`.
-- PRs: #36, #38, #39, #45, #46, #47 (all squash-merged, all 3-OS green). Issues: closed #35, #37, #40, #41, #42; open #26, #43, #44, #48.
+- Repo: `github.com/1deat0r/tachyon`, main `24aca56` (post-merge push CI green 2026-09-27). ADRs 0001–0004 in `docs/adr/`.
+- PRs: #36, #38, #39, #45, #46, #47, #50 (all squash-merged, all 3-OS green; feature branches deleted). Issues: closed #35, #37, #40, #41, #42, #43; open #26, #44, #48.
+- Handoff PR #49 (this branch) stays open per convention; Codex pickup: `git checkout main`, tree clean, next work is issue #48.
 - Initiative memory: "Intent substrate (Phase A)" tracks slices (Hindsight page `kp-ebad1b2c1c00428aa2d06a31c6bede7e`).
 - Skill: `~/.prime/agent/skills/paqet/SKILL.md` (global, loads in new sessions).
 - This file: repo-root `HANDOFF.md`, tracked in git.
