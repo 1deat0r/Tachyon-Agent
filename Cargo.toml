@@ -4,6 +4,7 @@ members = [
     "crates/tachyon-types",
     "crates/tachyon-protocol",
     "crates/tachyon-ir",
+    "crates/tachyon-intent",
     "crates/tachyon-store",
     "crates/tachyon-policy",
     "crates/tachyon-tools",
