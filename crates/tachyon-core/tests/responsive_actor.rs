@@ -17,6 +17,23 @@ use tokio_util::sync::CancellationToken;
 
 /// Windows reap proof: the PID cannot be recycled while the leader is
 /// unreaped, and opening it fails once the process is gone.
+/// Windows reap wait: the cancel acknowledgement is answered after owned
+/// effect workers drain, but the real child reap can lag it on a loaded
+/// runner. Poll for death bounded (#37) instead of asserting an
+/// instantaneous read — a child still live after the window proves the
+/// acknowledgement outran the reap; scheduler lag alone cannot fail it.
+/// Same delay-robust treatment as #33.
+#[cfg(windows)]
+async fn wait_pid_dead(pid: u32) -> bool {
+    for _ in 0..200 {
+        if pid_dead(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    pid_dead(pid)
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn pid_dead(pid: u32) -> bool {
@@ -372,7 +389,7 @@ async fn cancel_acknowledges_after_real_reap_while_the_mailbox_serves() {
     );
     #[cfg(windows)]
     assert!(
-        pid_dead(child_pid),
+        wait_pid_dead(child_pid).await,
         "the cancel was acknowledged while the child still lived"
     );
     let refused = pending.await.unwrap();
