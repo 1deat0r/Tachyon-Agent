@@ -149,6 +149,15 @@ enum StreamKind {
 }
 
 /// Connects to `address` (socket path or pipe name).
+///
+/// On Windows, `Listener::bind` stages exactly one pipe instance and the
+/// replacement is created inside `Listener::accept`. Between a client
+/// consuming that instance and the accept loop staging its replacement,
+/// every other connect fails with `ERROR_PIPE_BUSY` (231) — including the
+/// whole gateway recovery window before the accept loop is spawned (#35).
+/// The connect waits that window out with a bounded retry (~1 s, 25 ms
+/// steps) and only surfaces the last busy error if the window never
+/// closes; any other error returns immediately.
 pub async fn connect(address: &Path) -> io::Result<Stream> {
     #[cfg(unix)]
     {
@@ -159,10 +168,26 @@ pub async fn connect(address: &Path) -> io::Result<Stream> {
     }
     #[cfg(windows)]
     {
-        let client = ClientOptions::new().open(address)?;
-        Ok(Stream {
-            inner: StreamKind::Client(client),
-        })
+        // Win32 ERROR_PIPE_BUSY: all pipe instances are busy.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        const MAX_ATTEMPTS: usize = 40;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+        let mut last_busy: Option<io::Error> = None;
+        for _ in 0..MAX_ATTEMPTS {
+            match ClientOptions::new().open(address) {
+                Ok(client) => {
+                    return Ok(Stream {
+                        inner: StreamKind::Client(client),
+                    });
+                }
+                Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    last_busy = Some(err);
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_busy.expect("at least one busy connect attempt"))
     }
 }
 
