@@ -212,7 +212,6 @@ pub async fn start_with(
     })?;
     let listener = Listener::bind(&paths.socket)?;
     let address = listener.local_address();
-    write_endpoint(&paths, &address)?;
     let store = Arc::new(StoreWriter::open(data_dir).await?);
     let state = Arc::new(GatewayState {
         store,
@@ -226,6 +225,15 @@ pub async fn start_with(
     recover_incomplete(&state).await?;
     let shutdown = CancellationToken::new();
     let accept_loop = tokio::spawn(accept_loop(listener, state.clone(), shutdown.clone()));
+    // Publish the endpoint only once the gateway can serve (#35): before
+    // this point the Windows pipe has a single instance and no accept loop,
+    // so any client discovering the pipe gets ERROR_PIPE_BUSY. On failure
+    // shut the just-spawned accept loop down instead of leaking it.
+    if let Err(err) = write_endpoint(&paths, &address) {
+        shutdown.cancel();
+        let _ = accept_loop.await;
+        return Err(GatewayError::Endpoint(err));
+    }
     Ok(RunningGateway {
         socket_path: paths.socket.clone(),
         address,
