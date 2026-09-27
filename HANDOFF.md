@@ -1,6 +1,6 @@
 # Handoff — 2026-09-27 session: pipe flake → ack-reap flake → Intent substrate slices → paqet skill
 
-Fresh-session entry point. Nothing below is in-progress mid-edit; everything landed is committed/green, everything open is listed under **Open work**. Main is clean at `8593833`, equal to origin.
+Fresh-session entry point. Nothing below is in-progress mid-edit; everything landed is committed/green, everything open is listed under **Open work**. Main is clean at `24aca56`, equal to origin.
 
 ## What this session delivered (condensed)
 
@@ -13,10 +13,13 @@ Fresh-session entry point. Nothing below is in-progress mid-edit; everything lan
 7. **Process throughout**: every PR through independent two-axis review subagents (standards + spec, verbatim reporting) — 0 hard violations total; full local gates + 3-OS CI green on every merge; stop-the-line issue discipline (#37).
 8. **New global skill `paqet`** (`~/.prime/agent/skills/paqet/`): P.A.Q.E.T session audit — Performance, Accuracy, Quality, Efficiency, Token efficiency; per-lens /100, weights, calibration anchors, finding-ownership, panel mode (5 experts) + quick mode. First panel scored this session 88; skill repaired from its own review (bands, split-or-lump, spread-to-range).
 
+## What the follow-up session delivered (2026-09-27, continued)
+
+9. **Slice 4 — correction lifecycle (PR #50 → `24aca56`, closes #43)**: last Phase-A slice with new code. `tachyon-intent` gains `correction.rs` (6 classes, middle-four `may_persist` gate, typed validation, `propose_durable`), `knowledge.rs` (confirm/contradict/retire/revalidate lifecycle, `apply_bad_evidence` penalty that creates nothing, `storage_key`), `clarify.rs` (ask/skip `decide` with fail-closed non-finite handling, `JudgmentMapping` mirror with no new dep edge). 22 tests TDD red→green (34/34 in crate); `uuid` workspace edge with `Cargo.lock` checked in first time. CONTEXT.md gains Intent-and-learning glossary (IntentSpec, intent conformance, correction classes, durable item, ask/skip). Two-axis review: standards clean, spec NEEDS_REPRO adjudicated REJECTED-with-reason (string refs cite rather than snapshot; slice-1 `Vec<String>` precedent; rationale in-tree). Full local gates + 3-OS CI green, squash-merged, branch deleted.
+
 ## Open work (priority order)
 
-1. **Issue #43** — correction classification + durable knowledge lifecycle (+ CONTEXT.md terms). Last Phase-A slice with new code.
-2. **Issue #48** — compatibility coverage in conformance (needs `IntentSpec` compatibility field first).
+1. **Issue #48** — compatibility coverage in conformance (needs `IntentSpec` compatibility field first). Next up; all Phase-A code slices done.
 3. **Issue #26** — effect-barrier journal follow-up (`ready-for-agent`, predates this session).
 4. **Issue #44** — deferred roadmap tracker, Phases B–F (blocked on Phase A + exit gate/ADR).
 5. Optional: paqet per-PR quick runs; next panel at milestone boundary.
