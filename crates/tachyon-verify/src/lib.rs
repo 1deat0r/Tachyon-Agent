@@ -7,6 +7,7 @@
 mod test_support;
 
 mod compile;
+mod conformance;
 mod contract;
 mod plan;
 mod project;
@@ -18,4 +19,7 @@ pub use runner::{CheckEvidence, VerificationReport, run, run_with_lifetime};
 pub use snapshot::WorkspaceSnapshot;
 
 pub use compile::{compile_criteria, compile_criterion, compile_spec};
+pub use conformance::{
+    ConformanceItem, ConformanceStatus, IntentConformanceReport, check_conformance,
+};
 pub use contract::{AcceptanceContract, Clause, CommandCheck, VerifyError};
