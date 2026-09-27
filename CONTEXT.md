@@ -44,6 +44,16 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | **Acceptance contract / verification gate** | Machine-checkable definition of done. Completion never comes from model self-report. |
 | **Approval** | Human (or policy) grant for a parked operation; one-shot, durable, never silently replayed when unknown. |
 
+## Intent and learning (ADR 0004, Phase A)
+
+| Term | Meaning |
+|------|---------|
+| **IntentSpec** | Belief record of what the human wants (goal, outcome, requirements, constraints, preferences, non-goals, criteria, ambiguities, assumptions, evidence, confidence). Inferred items carry provenance and never outrank hard constraints. |
+| **Intent conformance** | Advisory post-verification check (`IntentConformanceReport`) of whether the human objective was met. Only `Violated` fails conformance; never a completion gate. |
+| **Correction class** | One of six: task-specific, project convention, persistent preference, model misunderstanding, missing project context, bad evidence. Only the middle four may become durable knowledge. |
+| **Durable knowledge item** | A gated correction with evidence refs, confidence, contradicting observations, and revalidation/expiry policy. Task-specific notes never persist; bad evidence lowers confidence instead of creating prohibitions. |
+| **Clarification ask/skip** | Policy weighing information value against interruption cost. High-confidence low-risk reads below cost skip; everything else asks a closed question through the judgment pattern. |
+
 ## Routing and cost
 
 | Term | Meaning |
@@ -54,7 +64,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 
 ## Repo / crates (shorthand)
 
-Use crate names when the boundary matters: `tachyon-core` (supervisor/state), `tachyon-gateway` (IPC), `tachyon-ir`, `tachyon-store`, `tachyon-policy`, `tachyon-tools`, `tachyon-scheduler`, `tachyon-verify`, `tachyon-models`, `tachyon-judgment`, `tachyon-router`, `tachyon-tui`, `tachyon-app`.
+Use crate names when the boundary matters: `tachyon-core` (supervisor/state), `tachyon-gateway` (IPC), `tachyon-ir`, `tachyon-intent`, `tachyon-store`, `tachyon-policy`, `tachyon-tools`, `tachyon-scheduler`, `tachyon-verify`, `tachyon-models`, `tachyon-judgment`, `tachyon-router`, `tachyon-tui`, `tachyon-app`.
 
 **Dependency rule:** lower-level crates never import `tachyon-core`, gateway, or UI. Provider types do not leak into core/IR.
 
