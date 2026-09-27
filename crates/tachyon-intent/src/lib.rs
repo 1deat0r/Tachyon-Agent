@@ -95,6 +95,15 @@ pub enum IntentError {
         /// Position inside that list.
         index: usize,
     },
+    /// A plain-text entry in `field` at index `index` is empty: even a
+    /// hard constraint is meaningless blank, so it fails validation.
+    #[error("intent {field}[{index}] has an empty entry")]
+    EmptyListEntry {
+        /// Which list held the empty entry.
+        field: &'static str,
+        /// Position inside that list.
+        index: usize,
+    },
 }
 
 /// What Tachyon believes the human wants (ADR 0004).
@@ -135,7 +144,8 @@ pub struct IntentSpec {
 
 impl IntentSpec {
     /// Validates structural well-formedness: non-empty goal/outcome,
-    /// unit-range confidence, non-empty attributed text.
+    /// unit-range confidence, non-empty attributed text, and no blank
+    /// entries in the plain-text lists.
     pub fn validate(&self) -> Result<(), IntentError> {
         if self.goal.trim().is_empty() {
             return Err(IntentError::EmptyGoal);
@@ -157,16 +167,36 @@ impl IntentSpec {
                 }
             }
         }
+        for (field, items) in [
+            ("constraints", &self.constraints),
+            ("non_goals", &self.non_goals),
+            ("affected_surfaces", &self.affected_surfaces),
+            ("acceptance_criteria", &self.acceptance_criteria),
+            ("ambiguities", &self.ambiguities),
+            ("evidence", &self.evidence),
+        ] {
+            for (index, item) in items.iter().enumerate() {
+                if item.trim().is_empty() {
+                    return Err(IntentError::EmptyListEntry { field, index });
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Requirements with one provenance, the shared partition behind the
+    /// user/inferred accessors.
+    fn filter_by(&self, provenance: Provenance) -> Vec<&AttributedText> {
+        self.requirements
+            .iter()
+            .filter(|item| item.provenance == provenance)
+            .collect()
     }
 
     /// Requirements stated by the human.
     #[must_use]
     pub fn user_requirements(&self) -> Vec<&AttributedText> {
-        self.requirements
-            .iter()
-            .filter(|item| item.provenance == Provenance::UserStated)
-            .collect()
+        self.filter_by(Provenance::UserStated)
     }
 
     /// Requirements hypothesized by a model; quarantined from the
@@ -245,6 +275,29 @@ mod tests {
         assert!(matches!(
             spec.validate(),
             Err(IntentError::EmptyAttributedText { .. })
+        ));
+    }
+
+    #[test]
+    fn blank_entries_in_plain_lists_are_rejected() {
+        let mut spec = full_spec();
+        spec.constraints.push("   ".into());
+        assert!(matches!(
+            spec.validate(),
+            Err(IntentError::EmptyListEntry {
+                field: "constraints",
+                index: 1,
+            })
+        ));
+
+        let mut spec = full_spec();
+        spec.acceptance_criteria.push(String::new());
+        assert!(matches!(
+            spec.validate(),
+            Err(IntentError::EmptyListEntry {
+                field: "acceptance_criteria",
+                index: 1,
+            })
         ));
     }
 
