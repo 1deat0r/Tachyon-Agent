@@ -17,6 +17,9 @@
 //!   when every path validates, at least one is present, no segment is
 //!   empty, and none is `.` (a lone allow-everything from trivial text
 //!   would be over-permissive); else [`Clause::Unresolved`].
+//!
+//! No effects or I/O anywhere here: pure total functions, hence no
+//! resource, cancellation, retry, or crash-recovery claims.
 
 use tachyon_intent::IntentSpec;
 use uuid::Uuid;
@@ -39,16 +42,16 @@ pub fn compile_criterion(criterion: &str) -> Clause {
         if !path.is_empty() && validate_source_path(path, false).is_ok() {
             return Clause::FileUnchanged { path: path.into() };
         }
-    } else if let Some(paths) = criterion.strip_prefix("changed-within:") {
-        let parts: Vec<&str> = paths.split(',').map(str::trim).collect();
-        if !parts.is_empty() && parts.iter().all(|part| !part.is_empty() && *part != ".") {
-            let paths: Vec<String> = parts.iter().map(ToString::to_string).collect();
-            if paths
-                .iter()
-                .all(|path| validate_source_path(path, true).is_ok())
-            {
-                return Clause::ChangedPathsWithin { paths };
-            }
+    } else if let Some(raw) = criterion.strip_prefix("changed-within:") {
+        let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+        if !parts.is_empty()
+            && parts.iter().all(|part| {
+                !part.is_empty() && *part != "." && validate_source_path(part, true).is_ok()
+            })
+        {
+            return Clause::ChangedPathsWithin {
+                paths: parts.iter().map(ToString::to_string).collect(),
+            };
         }
     }
     Clause::Unresolved {
