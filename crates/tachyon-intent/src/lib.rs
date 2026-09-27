@@ -21,6 +21,16 @@
 //!   journaled as authoritative state in this slice.
 //! - Expected latency class: microseconds (in-memory validation).
 
+pub mod clarify;
+pub mod correction;
+pub mod knowledge;
+
+pub use clarify::{Clarification, ClarificationDecision, ClarifyError, JudgmentMapping, RiskLevel};
+pub use correction::{Correction, CorrectionClass, CorrectionError};
+pub use knowledge::{
+    CONFIRM_STEP, CONTRADICT_STEP, DurableKnowledgeItem, RevalidationPolicy, apply_bad_evidence,
+};
+
 use serde::{Deserialize, Serialize};
 
 /// Where an attributed intent item came from. User-stated facts outrank
