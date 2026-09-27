@@ -14,8 +14,9 @@
 //! - `file-unchanged: <path>` → [`Clause::FileUnchanged`] when the path
 //!   passes source-path validation, else [`Clause::Unresolved`].
 //! - `changed-within: <path>[, <path>...]` → [`Clause::ChangedPathsWithin`]
-//!   when every path validates and at least one is present, else
-//!   [`Clause::Unresolved`].
+//!   when every path validates, at least one is present, no segment is
+//!   empty, and none is `.` (a lone allow-everything from trivial text
+//!   would be over-permissive); else [`Clause::Unresolved`].
 
 use tachyon_intent::IntentSpec;
 use uuid::Uuid;
@@ -39,18 +40,15 @@ pub fn compile_criterion(criterion: &str) -> Clause {
             return Clause::FileUnchanged { path: path.into() };
         }
     } else if let Some(paths) = criterion.strip_prefix("changed-within:") {
-        let paths: Vec<String> = paths
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(ToString::to_string)
-            .collect();
-        if !paths.is_empty()
-            && paths
+        let parts: Vec<&str> = paths.split(',').map(str::trim).collect();
+        if !parts.is_empty() && parts.iter().all(|part| !part.is_empty() && *part != ".") {
+            let paths: Vec<String> = parts.iter().map(ToString::to_string).collect();
+            if paths
                 .iter()
                 .all(|path| validate_source_path(path, true).is_ok())
-        {
-            return Clause::ChangedPathsWithin { paths };
+            {
+                return Clause::ChangedPathsWithin { paths };
+            }
         }
     }
     Clause::Unresolved {
@@ -89,15 +87,19 @@ pub fn compile_spec(spec: &IntentSpec) -> AcceptanceContract {
     let mut seen: Vec<String> = Vec::new();
     let mut clauses: Vec<Clause> = Vec::new();
     for text in &spec.constraints {
-        if text.trim().is_empty() || seen.iter().any(|known| known == text) {
+        // Trim-normalize so " x " and "x" collapse to one binding with one
+        // id; blank constraints are skipped (intent validation rejects
+        // them upstream).
+        let normalized = text.trim();
+        if normalized.is_empty() || seen.iter().any(|known| known == normalized) {
             continue;
         }
-        seen.push(text.clone());
+        seen.push(normalized.to_string());
         clauses.push(Clause::HardConstraint {
-            id: constraint_id(text),
-            text: text.clone(),
+            id: constraint_id(normalized),
+            text: normalized.to_string(),
             check: Box::new(Clause::Unresolved {
-                description: text.clone(),
+                description: normalized.to_string(),
             }),
         });
     }
@@ -175,6 +177,43 @@ mod tests {
             },
             "a path that fails source validation must not become FileUnchanged"
         );
+    }
+
+    #[test]
+    fn lone_dot_changed_within_is_unresolved() {
+        for text in ["changed-within: .", "changed-within: ., blog"] {
+            assert!(
+                matches!(compile_criterion(text), Clause::Unresolved { .. }),
+                "{text:?} must not compile to allow-everything"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_segments_reject_the_criterion() {
+        let text = "changed-within: blog,,assets";
+        assert_eq!(
+            compile_criterion(text),
+            Clause::Unresolved {
+                description: text.into(),
+            },
+            "empty segments fail strict, like file-unchanged"
+        );
+    }
+
+    #[test]
+    fn constraint_whitespace_normalizes_to_one_binding() {
+        let contract = compile_spec(&spec_with(&[" no downtime ", "no downtime"], &[]));
+        assert_eq!(contract.clauses.len(), 1);
+        assert!(
+            matches!(
+                &contract.clauses[0],
+                Clause::HardConstraint { text, .. } if text == "no downtime"
+            ),
+            "got: {:?}",
+            contract.clauses[0]
+        );
+        contract.validate().expect("compiled contract validates");
     }
 
     #[test]
