@@ -2663,6 +2663,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tachyon-intent",
  "tachyon-ir",
  "tachyon-policy",
  "tachyon-scheduler",
