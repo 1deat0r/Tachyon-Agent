@@ -1077,7 +1077,10 @@ mod tests {
             group: Some(i32::try_from(pid).expect("Unix PIDs fit pid_t")),
         };
 
-        let mut unrelated = std::process::Command::new("/bin/true");
+        // Reuse the known-present executable so an exec-path failure cannot
+        // masquerade as the expected process-group refusal on macOS.
+        let mut unrelated = std::process::Command::new("/bin/sleep");
+        unrelated.arg("0");
         unrelated.process_group(i32::try_from(pid).expect("Unix PIDs fit pid_t"));
         let error = unrelated
             .spawn()
