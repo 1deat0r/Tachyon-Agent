@@ -13,10 +13,11 @@ use std::{
 };
 use tachyon_ir::{ExecutionNode, ExecutorKind, NodeStatus};
 use tachyon_scheduler::{
-    Budgets, Executor, ExecutorRegistry, NodeOutcome, ResolvedInputs, SchedulerHandle,
+    Budgets, Executor, ExecutorRegistry, NodeOutcome, ResolvedInputs, SchedulerError,
+    SchedulerHandle, TaskRunSnapshot,
 };
 use tachyon_tools::{
-    ToolsContext,
+    ToolError, ToolsContext,
     process::{ProcessSpec, run_cancellable},
     workspace::WorkspaceLease,
 };
@@ -151,8 +152,8 @@ impl Executor for VerificationExecutor {
             return NodeOutcome::cancelled(started.elapsed());
         }
         let token = self.scope.child_token();
-        // The scheduler drops its execute future on cancellation or timeout.
-        // This guard signals our owned worker instead of dropping its process.
+        // The owned worker outlives a dropped caller future, so forward both
+        // caller cancellation and this executor's scope into its token.
         let _cancel_on_drop = token.clone().drop_guard();
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
@@ -163,12 +164,23 @@ impl Executor for VerificationExecutor {
             let worker = self.worker.clone();
             let node = node.clone();
             workers.tasks.spawn(async move {
-                let outcome = worker.execute_owned(&node, inputs, token).await;
+                let mut execution = Box::pin(worker.execute_owned(&node, inputs, token.clone()));
+                let outcome = tokio::select! {
+                    biased;
+                    outcome = &mut execution => outcome,
+                    () = cancel.cancelled() => {
+                        token.cancel();
+                        execution.await
+                    }
+                };
                 let _ = tx.send(outcome);
             });
         }
         rx.await.unwrap_or_else(|_| {
-            NodeOutcome::failed("verification worker lost".into(), started.elapsed())
+            NodeOutcome::unknown(
+                "verification worker lost before settling its effect".into(),
+                started.elapsed(),
+            )
         })
     }
 }
@@ -199,16 +211,21 @@ impl CheckRunner {
                 }
             }
             Err(error) => {
-                // M11 typed parking: stash the ask typed so
-                // `run_with_lifetime` aborts with the request; the node
-                // outcome itself can only be a failure. Every other
-                // error stays the failed check it was.
-                if let VerifyError::ApprovalRequired(request) = &error {
-                    *self.asked.lock().expect("verification ask slot poisoned") =
-                        Some(request.clone());
+                if let VerifyError::UnknownOutcome { reason, .. } = &error {
+                    evidence.diagnostic = bounded(reason);
+                    NodeOutcome::unknown(evidence.diagnostic.clone(), started.elapsed())
+                } else {
+                    // M11 typed parking: stash the ask typed so
+                    // `run_with_lifetime` aborts with the request; the node
+                    // outcome itself can only be a failure. Every other
+                    // error stays the failed check it was.
+                    if let VerifyError::ApprovalRequired(request) = &error {
+                        *self.asked.lock().expect("verification ask slot poisoned") =
+                            Some(request.clone());
+                    }
+                    evidence.diagnostic = bounded(&error.to_string());
+                    NodeOutcome::failed(evidence.diagnostic.clone(), started.elapsed())
                 }
-                evidence.diagnostic = bounded(&error.to_string());
-                NodeOutcome::failed(evidence.diagnostic.clone(), started.elapsed())
             }
         };
         self.evidence
@@ -278,7 +295,20 @@ impl CheckRunner {
         tachyon_tools::fault::reach("verify.command").await;
         let receipt = run_cancellable(&self.context, &spec, cancel)
             .await
-            .map_err(|error| VerifyError::Blocked(error.to_string()))?;
+            .map_err(|error| match error {
+                // The process might have started and performed effects before
+                // cancellation, timeout, or a lifecycle IO failure. Reaping
+                // settles the worker lifetime, but not the operation outcome.
+                unknown @ (ToolError::ProcessCancelled
+                | ToolError::ProcessTimeout(_)
+                | ToolError::Io(_)) => VerifyError::UnknownOutcome {
+                    node_id: Some(node.id),
+                    reason: unknown.to_string(),
+                },
+                known @ (ToolError::ProcessCancelledBeforeStart
+                | ToolError::ProcessStartFailed(_)) => VerifyError::Blocked(known.to_string()),
+                other => VerifyError::Blocked(other.to_string()),
+            })?;
         record.command_hash = Some(
             blake3::hash(
                 &serde_json::to_vec(command)
@@ -369,15 +399,24 @@ async fn run_workspace_lease(
     Ok(lease)
 }
 
-/// release during cancellation/abort cleanup or a blocking snapshot/spool write.
-pub async fn run_with_lifetime(
+struct VerificationSession {
+    plan: Arc<VerificationPlan>,
+    worker: Arc<CheckRunner>,
+    owner: SchedulerOwner,
+    lease: WorkspaceLease,
+}
+
+async fn prepare_session(
     plan: VerificationPlan,
     context: Arc<ToolsContext>,
     cancel: CancellationToken,
     lifetime: Arc<dyn Send + Sync>,
-) -> Result<VerificationReport, VerifyError> {
+) -> Result<VerificationSession, VerifyError> {
     plan.contract.validate()?;
     plan.validate_graph()?;
+    if plan.graph.nodes.is_empty() {
+        return Err(VerifyError::Blocked("missing verification nodes".into()));
+    }
     let actual_root = canonical_root(context.workspace_root.clone()).await?;
     if actual_root != plan.baseline.root() {
         return Err(VerifyError::Blocked(
@@ -419,6 +458,37 @@ pub async fn run_with_lifetime(
         workers,
         scope,
     };
+    Ok(VerificationSession {
+        plan,
+        worker,
+        owner,
+        lease,
+    })
+}
+
+/// Runs verification while retaining a caller-owned lifetime guard in workers.
+/// Core uses this to preserve task ownership during cancellation/abort cleanup
+/// or a blocking snapshot and artifact-spool write.
+pub async fn run_with_lifetime(
+    plan: VerificationPlan,
+    context: Arc<ToolsContext>,
+    cancel: CancellationToken,
+    lifetime: Arc<dyn Send + Sync>,
+) -> Result<VerificationReport, VerifyError> {
+    let session = prepare_session(plan, context, cancel.clone(), lifetime).await?;
+    execute_session(session, cancel).await
+}
+
+async fn execute_session(
+    session: VerificationSession,
+    cancel: CancellationToken,
+) -> Result<VerificationReport, VerifyError> {
+    let VerificationSession {
+        plan,
+        worker,
+        owner,
+        lease,
+    } = session;
     let scheduler = owner.handle.as_ref().expect("owned scheduler");
     scheduler
         .submit(plan.task_id, plan.graph.clone())
@@ -431,14 +501,34 @@ pub async fn run_with_lifetime(
         .map(|node| node.timeout.hard_ms.unwrap_or(30_000))
         .sum::<u64>()
         .saturating_add(5_000);
-    let statuses = tokio::select! {
-        biased;
-        () = cancel.cancelled() => {
-            scheduler.cancel_task(plan.task_id).await.map_err(blocked)?;
-            scheduler.status(plan.task_id).await.map_err(blocked)?
+    let statuses = match wait_for_scheduler(
+        scheduler,
+        plan.task_id,
+        &cancel,
+        Duration::from_millis(budget),
+    )
+    .await
+    {
+        Ok(statuses) => statuses,
+        Err(VerifyError::UnknownOutcome { node_id, reason }) => {
+            return Err(close_unknown(owner, node_id, reason).await);
         }
-        status = scheduler.wait_finished(plan.task_id, Duration::from_millis(budget)) => status.map_err(blocked)?,
+        Err(error) => return Err(error),
     };
+    if let Some(node_id) = running_node(&statuses) {
+        return Err(close_unknown(
+            owner,
+            Some(node_id),
+            "scheduler deadline elapsed while the check worker was running".into(),
+        )
+        .await);
+    }
+    if !statuses.finished {
+        owner.close().await?;
+        return Err(VerifyError::Blocked(
+            "verification deadline elapsed before all checks became runnable".into(),
+        ));
+    }
     owner.close().await?;
     if let Some(request) = take_asked(&worker) {
         return Err(VerifyError::ApprovalRequired(request));
@@ -513,6 +603,56 @@ fn bounded(value: &str) -> String {
 }
 fn blocked(error: impl std::fmt::Display) -> VerifyError {
     VerifyError::Blocked(error.to_string())
+}
+
+fn scheduler_error(task_id: TaskId, error: &SchedulerError) -> VerifyError {
+    let node_id = match error {
+        SchedulerError::UnknownOutcome { node_id, .. } => Some(*node_id),
+        _ => None,
+    };
+    VerifyError::UnknownOutcome {
+        node_id,
+        reason: format!("task {task_id} scheduler could not settle the effect outcome: {error}"),
+    }
+}
+
+async fn wait_for_scheduler(
+    scheduler: &SchedulerHandle,
+    task_id: TaskId,
+    cancel: &CancellationToken,
+    budget: Duration,
+) -> Result<TaskRunSnapshot, VerifyError> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => {
+            scheduler.cancel_task(task_id).await
+                .map_err(|error| scheduler_error(task_id, &error))?;
+            scheduler.status(task_id).await
+                .map_err(|error| scheduler_error(task_id, &error))
+        }
+        status = scheduler.wait_finished(task_id, budget) => {
+            status.map_err(|error| scheduler_error(task_id, &error))
+        },
+    }
+}
+
+fn running_node(snapshot: &TaskRunSnapshot) -> Option<NodeId> {
+    snapshot
+        .statuses
+        .iter()
+        .find_map(|(id, status)| (*status == NodeStatus::Running).then_some(*id))
+}
+
+async fn close_unknown(
+    owner: SchedulerOwner,
+    node_id: Option<NodeId>,
+    reason: String,
+) -> VerifyError {
+    let reason = match owner.close().await {
+        Ok(()) => reason,
+        Err(drain_error) => format!("{reason}; worker drain failed: {drain_error}"),
+    };
+    VerifyError::UnknownOutcome { node_id, reason }
 }
 
 /// Enforces `verify.command` policy for one acceptance command. M11
@@ -614,5 +754,28 @@ impl Drop for SchedulerOwner {
         // A dropped JoinHandle leaves its owned drain job running. Its real
         // workers, not this wrapper, hold exclusion until cleanup has finished.
         drop(self.begin_close());
+    }
+}
+
+#[cfg(test)]
+mod scheduler_failure_tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_loss_after_dispatch_is_an_unknown_effect_outcome() {
+        let task_id = TaskId::generate();
+        assert!(matches!(
+            scheduler_error(task_id, &SchedulerError::SchedulerGone),
+            VerifyError::UnknownOutcome { node_id: None, .. }
+        ));
+
+        let node_id = NodeId::generate();
+        assert!(matches!(
+            scheduler_error(
+                task_id,
+                &SchedulerError::UnknownOutcome { task_id, node_id }
+            ),
+            VerifyError::UnknownOutcome { node_id: Some(unknown), .. } if unknown == node_id
+        ));
     }
 }

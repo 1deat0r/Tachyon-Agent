@@ -7,11 +7,13 @@ publish = false
 
 [dependencies]
 blake3 = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 walkdir = { workspace = true }
@@ -23,6 +25,7 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

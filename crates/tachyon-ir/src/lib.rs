@@ -70,6 +70,9 @@ pub enum IrError {
     /// Retry policy must allow at least one attempt.
     #[error("node {0} declares zero retry attempts")]
     InvalidRetry(NodeId),
+    /// Automatic retries require semantics the scheduler can prove safe.
+    #[error("node {0} requests retries without pure or idempotent semantics")]
+    UnsafeRetry(NodeId),
     /// Resource key does not parse (`kind:path`, no `..`).
     #[error("invalid resource key {key:?}: {reason}")]
     InvalidResource {
@@ -354,10 +357,12 @@ pub enum SpeculationPolicy {
     Preferred,
 }
 
-/// Wall-clock bound for one attempt. `None` means no timeout.
+/// Cooperative wall-clock deadline for one attempt. At the deadline the
+/// scheduler signals cancellation but keeps grants until the executor settles.
+/// `None` means no deadline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeoutPolicy {
-    /// Hard timeout in milliseconds.
+    /// Deadline in milliseconds.
     pub hard_ms: Option<u64>,
 }
 
@@ -382,14 +387,17 @@ impl Default for RetryPolicy {
 /// How the scheduler stops a running node (spec §12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CancellationPolicy {
-    /// Abort immediately.
+    /// Request stop at the earliest safe point. The scheduler keeps grants
+    /// until the executor reports that its work has settled.
     Immediate,
-    /// Request stop, then abort after the grace period.
+    /// The executor may use this grace period for orderly stop and drain.
+    /// The scheduler never releases grants merely because it elapsed.
     Graceful {
-        /// Milliseconds before forced abort.
+        /// Grace period in milliseconds.
         grace_ms: u64,
     },
-    /// Past the commit point the node must finish (Milestone 8 refines).
+    /// Once the commit point is crossed, finish or reconcile the effect
+    /// before returning, even if cancellation was requested.
     NonCancellableAfterCommit,
 }
 
@@ -595,6 +603,14 @@ impl ExecutionGraph {
             }
             if node.retry.attempts == 0 {
                 return Err(IrError::InvalidRetry(node.id));
+            }
+            if node.retry.attempts > 1
+                && !matches!(
+                    node.idempotency,
+                    Idempotency::Pure | Idempotency::Idempotent
+                )
+            {
+                return Err(IrError::UnsafeRetry(node.id));
             }
             if !matches!(node.speculation, SpeculationPolicy::Forbidden)
                 && !node.effect_class.speculation_safe()
@@ -905,6 +921,34 @@ mod tests {
             assemble(vec![bad], vec![]).validate(task),
             Err(IrError::InvalidResource { .. })
         ));
+    }
+
+    #[test]
+    fn retries_require_pure_or_idempotent_effects() {
+        let task = TaskId::generate();
+        for idempotency in [
+            Idempotency::Keyed,
+            Idempotency::Queryable,
+            Idempotency::Compensatable,
+            Idempotency::NonIdempotent,
+            Idempotency::Unknown,
+        ] {
+            let mut node = node(task);
+            node.idempotency = idempotency;
+            node.retry.attempts = 2;
+            assert_eq!(
+                assemble(vec![node.clone()], vec![]).validate(task),
+                Err(IrError::UnsafeRetry(node.id)),
+                "must not auto-retry {idempotency:?} without a capability reconciler"
+            );
+        }
+
+        for idempotency in [Idempotency::Pure, Idempotency::Idempotent] {
+            let mut node = node(task);
+            node.idempotency = idempotency;
+            node.retry.attempts = 2;
+            assert_eq!(assemble(vec![node], vec![]).validate(task), Ok(()));
+        }
     }
 
     #[test]

@@ -355,6 +355,30 @@ pub enum CancellationPolicy {
 }
 ```
 
+Cancellation is cooperative at the executor boundary. The Task Supervisor
+cancels the relevant token but does not abort or detach a running executor
+future. An executor returns only after work it started has stopped or its
+effect outcome has been reconciled. The scheduler retains that node's access
+and resource grants until the future returns, and a task-cancel reply waits
+for every running node to drain. A timeout deadline follows the same rule: it
+signals cancellation and waits for settlement; a known successful outcome is
+recorded as success even if it arrives after the deadline. If an executor
+reports `Cancelled` only when it proves that no consequential effect occurred.
+If the executor cannot determine whether an effect occurred, or panics or is
+aborted without a settled result, the node becomes `UnknownAfterCrash`; its
+grant stays held, automatic retry is forbidden, and wait/cancel returns an
+unknown outcome. The Supervisor journals verification interruption before
+releasing its owned worker, so recovery requires reconciliation instead of
+blindly replaying a check. Generic scheduler users must provide an equivalent
+durable handoff; the scheduler's in-memory grant alone does not survive process
+termination. When any node becomes unknown, the scheduler cancels that task's
+scope, marks not-yet-running nodes cancelled, and asks running siblings to
+drain under their existing grants; no later node is dispatched after the
+unknown outcome is observed.
+If an executor never returns, cancellation and shutdown can wait indefinitely;
+forced termination is unsafe until that executor has an owned kill-and-reap
+protocol for its effects and child processes.
+
 Blocking work must not occupy async executor threads. Use dedicated process execution or `spawn_blocking` for genuinely blocking in-process operations.
 
 External HTTP cancellation is best-effort; a dropped request does not prove the remote operation did not occur. Effect semantics still govern recovery.
@@ -841,10 +865,30 @@ pub struct CommandSpec {
 
 Arbitrary `shell.exec` is a separate broad capability. It receives conservative access/effect declarations because shell strings obscure actual operations.
 
-Process cancellation must terminate process trees:
+Process execution returns only after the owned tree has no live members and
+the immediate child is reaped:
 
-- Unix: process group, graceful signal, then force kill;
-- Windows: Job Object or equivalent tree ownership.
+- Unix: a new session and process group, graceful signal, force kill, then wait
+  for live group members to exit before reaping the leader;
+- Windows: Job Object termination, leader reap, then wait until the job reports
+  no active processes.
+
+Linux process execution requires a readable procfs process table and the
+runner's own `/proc/<pid>/stat` entry. Before spawning, the runner checks both.
+Cleanup scans visible PID entries to distinguish live members from zombies;
+entries that disappear or are permission denied are skipped. Each child starts
+a new session, so unrelated processes cannot join its process group; descendants
+that deliberately change identity or session can escape this boundary and are
+outside the process-group containment guarantee. The liveness check may scan
+`/proc` while a zombie leader still holds the process-group ID, so process-tree
+cleanup latency depends on the number of visible processes; measure that cost
+in the process-runner benchmark.
+
+Panics after spawn must run the same awaited cleanup before unwinding to the
+worker owner. Dropping or aborting the process future can only request
+best-effort termination; callers that need workspace exclusion must keep an
+owner alive through the drain. Process groups and Job Objects do not protect
+against descendants that deliberately escape their ownership boundary.
 
 Capture stdout and stderr concurrently to avoid pipe deadlock. Use bounded in-memory chunks plus artifact spooling for large output.
 
@@ -1083,6 +1127,11 @@ Core error classes include:
 Every failure exposes retryability metadata and structured diagnostics.
 
 IR owns retry policy. No hidden infinite retries.
+
+IR idempotency metadata is not retry authority by itself. At scheduler ingress,
+the registered trusted executor must approve retry safety for the exact node;
+the default is to reject automatic retries. Capability-specific recovery is
+required before allowing keyed, queryable, or compensatable retries.
 
 ---
 

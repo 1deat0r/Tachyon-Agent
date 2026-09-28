@@ -507,8 +507,16 @@ impl Loop {
         let result = match joined {
             Ok(result) => result,
             Err(error) => {
-                self.fail_live_operation(format!("verification worker failed: {error}"))
-                    .await;
+                let message = format!("verification worker failed: {error}");
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.phase == Phase::Verifying)
+                {
+                    self.interrupt_live_verification(message).await;
+                } else {
+                    self.fail_live_operation(message).await;
+                }
                 self.settle_if_drained();
                 return;
             }
@@ -542,6 +550,22 @@ impl Loop {
         }
         let report = self.active.as_mut().and_then(|active| active.report.take());
         self.journal_finished(key, report, Some(message)).await;
+    }
+
+    /// A verifier worker can panic after an acceptance command has started.
+    /// Keep its durable in-progress marker unresolved so recovery cannot replay
+    /// the command under the ordinary failed-check path.
+    async fn interrupt_live_verification(&mut self, message: String) {
+        if self.active.is_none() {
+            return;
+        }
+        match self
+            .transition_journalled(StateEvent::VerificationInterrupted)
+            .await
+        {
+            Ok(_) => self.complete_operation(Err(CoreError::VerificationBlocked(message))),
+            Err(error) => self.complete_operation(Err(error)),
+        }
     }
 
     async fn finish_baseline(
@@ -652,6 +676,13 @@ impl Loop {
                     ))),
                     Err(error) => self.complete_operation(Err(error)),
                 }
+                return;
+            }
+            Err(error @ VerifyError::UnknownOutcome { .. }) => {
+                if self.active.as_ref().is_none_or(|active| active.key != key) {
+                    return;
+                }
+                self.interrupt_live_verification(error.to_string()).await;
                 return;
             }
             Err(error) => {
@@ -933,6 +964,7 @@ mod actor_tests {
     //! rehash → durable-completion window can be observed deterministically.
     use super::hold;
     use crate::{TaskStatus, create_task, recover_task};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -940,7 +972,7 @@ mod actor_tests {
     use tachyon_store::StoreWriter;
     use tachyon_tools::{ToolsContext, artifact::ArtifactSpool, workspace::WorkspaceLease};
     use tachyon_types::{SessionId, WorkspaceId};
-    use tachyon_verify::{AcceptanceContract, Clause, VerificationRisk};
+    use tachyon_verify::{AcceptanceContract, Clause, CommandCheck, VerificationRisk};
     use tokio_util::sync::CancellationToken;
 
     struct Fixture {
@@ -952,14 +984,26 @@ mod actor_tests {
 
     impl Fixture {
         async fn new() -> Self {
+            Self::with_contract(AcceptanceContract {
+                clauses: vec![Clause::FileUnchanged {
+                    path: "source.txt".into(),
+                }],
+            })
+            .await
+        }
+
+        async fn with_contract(contract: AcceptanceContract) -> Self {
             let root =
                 std::env::temp_dir().join(format!("tachyon-rehash-{}", uuid::Uuid::now_v7()));
             let workspace = root.join("ws");
             std::fs::create_dir_all(&workspace).unwrap();
             std::fs::write(workspace.join("source.txt"), b"original").unwrap();
+            let mut policy = Policy::trusted_workspace();
+            policy.allow("verify.command", "workspace/**");
+            policy.allow("process.spawn", "python3");
             let context = Arc::new(ToolsContext::new(
                 workspace,
-                Policy::trusted_workspace(),
+                policy,
                 ArtifactSpool::new(root.join("artifacts")),
             ));
             std::fs::create_dir_all(root.join("state")).unwrap();
@@ -974,17 +1018,9 @@ mod actor_tests {
             )
             .await
             .unwrap();
-            task.configure_verification(
-                context.clone(),
-                AcceptanceContract {
-                    clauses: vec![Clause::FileUnchanged {
-                        path: "source.txt".into(),
-                    }],
-                },
-                VerificationRisk::Affected,
-            )
-            .await
-            .unwrap();
+            task.configure_verification(context.clone(), contract, VerificationRisk::Affected)
+                .await
+                .unwrap();
             Self {
                 root,
                 context,
@@ -1078,6 +1114,59 @@ mod actor_tests {
         .unwrap();
         assert_eq!(lease.root(), f.canonical_root());
         drop(lease);
+        f.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unknown_verification_effect_is_journaled_and_cannot_be_replayed() {
+        let _serial = hold::SERIAL.lock().await;
+        let f = Fixture::with_contract(AcceptanceContract {
+            clauses: vec![Clause::CommandPasses {
+                command: CommandCheck {
+                    program: "python3".into(),
+                    args: vec![
+                        "-c".into(),
+                        "from pathlib import Path\nimport time\nwith open('marker', 'a') as f: f.write('x')\ntime.sleep(30)".into(),
+                    ],
+                    cwd: ".".into(),
+                    env: BTreeMap::default(),
+                    timeout_ms: 100,
+                },
+            }],
+        })
+        .await;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            f.task.verify_and_complete(f.context.clone()),
+        )
+        .await
+        .expect("timed verification did not settle");
+        assert!(
+            result.is_err(),
+            "unknown check effect cannot complete a task"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.context.workspace_root.join("marker")).unwrap(),
+            "x"
+        );
+
+        let state = f.task.get_state().await.unwrap();
+        assert_eq!(state.status, TaskStatus::Recovering);
+        let verification = state.verification.unwrap();
+        assert!(verification.interrupted);
+        assert!(!verification.in_progress);
+        assert!(verification.report.is_none());
+
+        assert!(
+            f.task.verify_and_complete(f.context.clone()).await.is_err(),
+            "an interrupted check with an unknown effect must not be replayed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.context.workspace_root.join("marker")).unwrap(),
+            "x"
+        );
         f.close().await;
     }
 

@@ -24,4 +24,19 @@ for marker in 'perf[T1] PASS' 'perf[T2] PASS' 'perf[T3] PASS' 'perf[T4] PASS' 'p
   fi
 done
 
+if [ "$(uname -s)" = Linux ]; then
+  poll_status=0
+  poll_out=$(cargo test --release --locked -p tachyon-tools --lib \
+    process::tests::comp_wait_for_exit_fast_window_latency \
+    -- --exact --ignored --nocapture 2>&1) || poll_status=$?
+  printf '%s\n' "$poll_out"
+  if [ "$poll_status" -ne 0 ]; then
+    exit "$poll_status"
+  fi
+  if ! printf '%s\n' "$poll_out" | grep -qF 'perf[process_wait] PASS'; then
+    echo "missing required marker: perf[process_wait] PASS"
+    exit 1
+  fi
+fi
+
 echo "perf gate ok"

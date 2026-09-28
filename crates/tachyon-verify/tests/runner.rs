@@ -108,29 +108,36 @@ async fn unresolved_requirements_block_commands_without_spawning() {
 async fn missing_executables_and_timeouts_are_not_passes() {
     let ws = Workspace::new();
     let artifacts = Workspace::new();
-    for command in [
-        CommandCheck {
-            program: "tachyon-deliberately-missing-program".into(),
-            ..python("")
-        },
-        CommandCheck {
-            timeout_ms: 20,
-            ..python("import time; time.sleep(10)")
-        },
-    ] {
-        let mut policy = granted();
-        policy.allow("process.spawn", &command.program);
-        let plan = plan(&ws, vec![Clause::CommandPasses { command }]);
-        let report = run(
-            plan,
-            context(&ws, &artifacts, policy),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        assert!(!report.passed());
-        assert!(!report.failures().is_empty());
-    }
+    let missing = CommandCheck {
+        program: "tachyon-deliberately-missing-program".into(),
+        ..python("")
+    };
+    let mut policy = granted();
+    policy.allow("process.spawn", &missing.program);
+    let report = run(
+        plan(&ws, vec![Clause::CommandPasses { command: missing }]),
+        context(&ws, &artifacts, policy),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!report.passed());
+    assert!(!report.failures().is_empty());
+
+    let timeout = CommandCheck {
+        timeout_ms: 20,
+        ..python("import time; time.sleep(10)")
+    };
+    let result = run(
+        plan(&ws, vec![Clause::CommandPasses { command: timeout }]),
+        context(&ws, &artifacts, granted()),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(VerifyError::UnknownOutcome { .. })),
+        "a timed-out process can have effects before termination"
+    );
 }
 
 #[tokio::test]
@@ -193,7 +200,7 @@ async fn diagnostic_output_is_bounded_and_cannot_forge_a_result() {
 
 mod common;
 use common::Workspace;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tachyon_policy::{DefaultPosture, Policy};
 use tachyon_tools::{ToolsContext, artifact::ArtifactSpool};
 use tachyon_types::TaskId;
@@ -298,12 +305,14 @@ async fn cancellation_drains_the_owned_process_before_returning() {
     .await
     .unwrap();
     cancel.cancel();
-    let report = tokio::time::timeout(Duration::from_secs(2), worker)
+    let result = tokio::time::timeout(Duration::from_secs(2), worker)
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
-    assert!(!report.passed());
+    assert!(
+        matches!(result, Err(VerifyError::UnknownOutcome { .. })),
+        "cancellation after process start has an unknown effect outcome"
+    );
     assert!(
         ws.path().join("target/terminated").exists(),
         "cancellable runner was dropped before its cleanup completed"
@@ -541,6 +550,44 @@ async fn scheduled_real_commands_decide_pass_or_fail_from_exit_status() {
             assert!(!report.failures().is_empty());
         }
     }
+}
+
+#[tokio::test]
+async fn cancelled_running_check_reports_unknown_effect_after_process_drain() {
+    let ws = Workspace::new();
+    let artifacts = Workspace::new();
+    let mut command = python(
+        "from pathlib import Path\nimport time\nPath('marker').write_text('started')\ntime.sleep(30)",
+    );
+    command.timeout_ms = 10_000;
+    let plan = plan(&ws, vec![Clause::CommandPasses { command }]);
+    let context = context(&ws, &artifacts, granted());
+    let cancel = CancellationToken::new();
+    let worker_cancel = cancel.clone();
+    let run = tokio::spawn(async move { run(plan, context, worker_cancel).await });
+
+    let marker = ws.path().join("marker");
+    for _ in 0..400 {
+        if marker.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(marker.exists(), "verification process never started");
+    cancel.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("verification did not drain the cancelled process")
+        .unwrap();
+    assert!(
+        matches!(result, Err(VerifyError::UnknownOutcome { .. })),
+        "a process with a possible effect must not be reported as an ordinary failed check"
+    );
+    assert!(
+        marker.exists(),
+        "the test command's effect was not observed"
+    );
 }
 
 #[cfg(unix)]
