@@ -119,6 +119,7 @@ mod tests {
             goal: "migrate the blog".into(),
             desired_outcome: "same content, new theme".into(),
             requirements: vec![],
+            compatibility_requirements: vec![],
             constraints: constraints.iter().map(ToString::to_string).collect(),
             preferences: vec![],
             non_goals: vec![],

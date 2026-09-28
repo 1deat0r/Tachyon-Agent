@@ -6,9 +6,10 @@
 //! [`ConformanceStatus::Violated`] fails conformance; `Unverifiable` items
 //! are explicit unknowns, never silent passes.
 //!
-//! Coverage: acceptance criteria and attributed requirements/assumptions
-//! are compiled with [`compile_criterion`](crate::compile_criterion) and
-//! structural clauses are evaluated against the given snapshots; a spec
+//! Coverage: acceptance criteria and attributed requirements, assumptions,
+//! and compatibility requirements are compiled with
+//! [`compile_criterion`](crate::compile_criterion) and structural clauses
+//! are evaluated against the given snapshots; a spec
 //! constraint reads Satisfied only when its text matches a
 //! [`Clause::HardConstraint`] in the evaluated contract *and* the report
 //! passed (the binding was actually evaluated in-run) — any other case is
@@ -156,7 +157,12 @@ pub fn check_conformance(
     for criterion in &spec.acceptance_criteria {
         items.push(check_statement(criterion, None, baseline, current));
     }
-    for requirement in spec.requirements.iter().chain(spec.assumptions.iter()) {
+    for requirement in spec
+        .requirements
+        .iter()
+        .chain(spec.assumptions.iter())
+        .chain(spec.compatibility_requirements.iter())
+    {
         items.push(check_statement(
             &requirement.text,
             Some(requirement.provenance),

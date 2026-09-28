@@ -90,6 +90,7 @@ fn spec(
             .iter()
             .map(|text| AttributedText::inferred(text.to_string()))
             .collect(),
+        compatibility_requirements: vec![],
         constraints: constraints.iter().map(ToString::to_string).collect(),
         preferences: vec![],
         non_goals: non_goals.iter().map(ToString::to_string).collect(),
@@ -420,5 +421,92 @@ async fn conformance_is_deterministic() {
     assert_eq!(
         check_conformance(&spec, &contract, &report, &baseline, &current),
         check_conformance(&spec, &contract, &report, &baseline, &current)
+    );
+}
+
+#[tokio::test]
+async fn compatibility_requirements_are_checked_advisory_with_evidence() {
+    let ws = Workspace::new();
+    let artifacts = Workspace::new();
+    ws.write("stable.txt", "v1");
+    ws.write("legacy_api.rs", "v1");
+    let baseline = WorkspaceSnapshot::capture(ws.path()).unwrap();
+    ws.write("legacy_api.rs", "v2");
+    let current = WorkspaceSnapshot::capture(ws.path()).unwrap();
+
+    let contract = AcceptanceContract {
+        clauses: vec![
+            Clause::CommandPasses {
+                command: python("pass"),
+            },
+            Clause::FileUnchanged {
+                path: "stable.txt".into(),
+            },
+        ],
+    };
+    let report = run(
+        plan(&baseline, &[], contract.clauses.clone()),
+        context(&ws, &artifacts, granted()),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(report.passed(), "the technical verification gate passes");
+
+    let mut intent = spec(&[], &[], &[], &[]);
+    intent.compatibility_requirements = vec![
+        AttributedText::user("file-unchanged: stable.txt"),
+        AttributedText::repo("file-unchanged: legacy_api.rs"),
+        AttributedText::inferred("preserve compatibility with legacy clients"),
+    ];
+    let conformance = check_conformance(&intent, &contract, &report, &baseline, &current);
+
+    assert!(
+        !conformance.conforms,
+        "a compatibility regression is reported"
+    );
+    assert!(
+        report.passed(),
+        "advisory conformance cannot change gate status"
+    );
+    let map: std::collections::HashMap<_, _> = statuses(&conformance).into_iter().collect();
+    assert_eq!(map["file-unchanged: stable.txt"], "satisfied");
+    assert_eq!(map["file-unchanged: legacy_api.rs"], "violated");
+    assert_eq!(
+        map["preserve compatibility with legacy clients"],
+        "unverifiable"
+    );
+
+    let compatibility_items: Vec<_> = conformance
+        .items
+        .iter()
+        .filter(|item| {
+            intent
+                .compatibility_requirements
+                .iter()
+                .any(|requirement| requirement.text == item.statement)
+        })
+        .collect();
+    assert_eq!(compatibility_items.len(), 3);
+    assert!(
+        compatibility_items
+            .iter()
+            .all(|item| !item.evidence.is_empty()),
+        "every compatibility verdict has evidence or an explicit reason"
+    );
+    assert_eq!(
+        compatibility_items
+            .iter()
+            .map(|item| item.provenance)
+            .collect::<Vec<_>>(),
+        vec![
+            Some(tachyon_intent::Provenance::UserStated),
+            Some(tachyon_intent::Provenance::RepoDerived),
+            Some(tachyon_intent::Provenance::ModelHypothesis),
+        ]
+    );
+    assert!(
+        evidence_of(&conformance, "preserve compatibility with legacy clients")
+            .contains("no machine check")
     );
 }

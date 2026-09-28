@@ -15,10 +15,11 @@ intent and a conformance check, both subordinate to existing gates.
 ## Decision
 
 1. **New `IntentSpec` type** (goal, desired outcome, requirements,
-   constraints, preferences, non-goals, acceptance criteria, ambiguities,
-   assumptions, evidence, confidence). Every inferred requirement and
-   assumption carries provenance (`user-stated` / `repo-derived` /
-   `model-hypothesis`); nothing inferred ever outranks a hard constraint.
+   compatibility requirements, constraints, preferences, non-goals,
+   acceptance criteria, ambiguities, assumptions, evidence, confidence).
+   All inferred requirements, compatibility requirements, and assumptions
+   carry provenance (`user-stated` / `repo-derived` / `model-hypothesis`);
+   nothing inferred ever outranks a hard constraint.
 2. **Acceptance-criteria compilation** lowers applicable acceptance criteria
    to existing `Clause` variants (`tachyon-verify/src/contract.rs`).
    Anything not compilable becomes `Clause::Unresolved`, which **fails
