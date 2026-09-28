@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-cargo build --release --example bench_matrix -p tachyon-core
+cargo build --release --locked --example bench_matrix -p tachyon-core
 
 for fx in auth-refresh multi-file-migration architecture-plan; do
     ./target/release/examples/bench_matrix "$fx" fixture-check

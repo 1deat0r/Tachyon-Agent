@@ -16,19 +16,19 @@ run() {
 }
 
 echo "== security escape suite =="
-run cargo test -p tachyon-policy
-run cargo test -p tachyon-tools --test tools_gate --test process_ownership --test process_lifecycle
-run cargo test -p tachyon-mutation --test authorized --test authorized_commit
-run cargo test -p tachyon-core --test runtime_repair --test runtime_stages
-run cargo test -p tachyon-gateway --test provider_redaction --test approval_routing
-run cargo test -p tachyon-verify --test acceptance --test runner
+run cargo test --locked -p tachyon-policy
+run cargo test --locked -p tachyon-tools --test tools_gate --test process_ownership --test process_lifecycle
+run cargo test --locked -p tachyon-mutation --test authorized --test authorized_commit
+run cargo test --locked -p tachyon-core --test runtime_repair --test runtime_stages
+run cargo test --locked -p tachyon-gateway --test provider_redaction --test approval_routing
+run cargo test --locked -p tachyon-verify --test acceptance --test runner
 
 echo "== recovery fault-injection suite =="
-run cargo test -p tachyon-core --test fault_kill --test fault_seam_gates --test effect_fixture \
+run cargo test --locked -p tachyon-core --test fault_kill --test fault_seam_gates --test effect_fixture \
     --test approval_wait --test runtime_recovery --test driver_run
-run cargo test -p tachyon-gateway --test recovery --test restart_approval --test reentry
-run cargo test -p tachyon-app --test kill_restart
-run cargo test -p tachyon-mutation --test mutation_gate --test recovery_scoped
+run cargo test --locked -p tachyon-gateway --test recovery --test restart_approval --test reentry
+run cargo test --locked -p tachyon-app --test kill_restart
+run cargo test --locked -p tachyon-mutation --test mutation_gate --test recovery_scoped
 
 echo "== remote gateway exposure (structural) =="
 # No TCP listener may exist in shipped code. The pattern covers std and

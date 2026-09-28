@@ -1,5 +1,8 @@
 # Gates: M14 MVP freeze
 
+For current development, use [`cargo verify`](docs/DEVELOPMENT_WORKFLOW.md).
+This file remains the historical M14 acceptance ledger and evidence record.
+
 OWNS: GATES.md, PROGRESS.md, CHANGELOG.md, README.md, MVP_REPORT.md, fixtures/**, docs/milestones/M14_MATRIX.md, scripts/m14_*, crates/tachyon-core/Cargo.toml, crates/tachyon-core/examples/bench_matrix.rs, crates/tachyon-repo/src/**, crates/tachyon-repo/tests/projection.rs, crates/tachyon-router/tests/perf.rs, crates/tachyon-repo/tests/perf.rs, crates/tachyon-models/tests/perf.rs
 
 Scope: Ship issue #10 — benchmark fixture breadth (Class D multi-file + Class E architecture alongside auth-refresh), a descriptor-driven spec §44 matrix host running every fixture under all five modes with docs/05 primary metrics and p50/p95 reporting, the §42 security escape and recovery fault-injection suites, the M13 index-corpus-re-read watch item resolved with a measured projection, and `MVP_REPORT.md` with verified-success comparison, median/p95 TTFR and completion, critical-path breakdown, model/Jev/tool calls, known limitations, deferred work, and the §45 MVP exit checklist.

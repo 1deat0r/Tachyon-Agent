@@ -1,43 +1,16 @@
-## What does this PR do?
+## Summary
 
-<!-- Problem, why this approach, what would go wrong without it. -->
+<!-- What changed and why? Link a GitHub Issue only when one exists. -->
 
-## Related Issue
+## Verification
 
-<!-- Link the issue this PR addresses. If none exists, create one first. -->
+- [ ] `cargo verify` passes, or the limitation is explained below
+- [ ] Focused checks or manual verification:
 
-Fixes #
+## Risk and rollout
 
-## Type of Change
+<!-- User-visible impact, migration/recovery notes, or "None". -->
 
-- [ ] 🐛 Bug fix (non-breaking)
-- [ ] ✨ New feature (non-breaking)
-- [ ] 🔒 Security fix
-- [ ] 📝 Documentation
-- [ ] ✅ Tests
-- [ ] ♻️ Refactor (no behavior change)
-- [ ] 🧹 Chore / tooling
+## Review notes
 
-## Changes Made
-
-<!-- File paths + one line each. -->
-
--
-
-## How to Test
-
-<!-- Red on main (if bug), then green on this PR. -->
-
-1.
-2.
-
-## Checklist
-
-- [ ] Conventional Commit title (`fix(scope): …`, `feat(scope): …`)
-- [ ] Only changes related to this PR (no unrelated commits)
-- [ ] Local gates pass:
-      `cargo fmt --check && cargo check --workspace && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] Tests added or updated for behavior changes
-- [ ] `Fixes #N` or explicit "no issue" rationale
-- [ ] Docs / `CONTEXT.md` / ADR updated if terms or architecture changed — or N/A
-- [ ] Cross-platform impact considered (ubuntu / windows / macos CI) — or N/A
+<!-- Why a PR adds value for this change; mention platform/security considerations as relevant. -->

@@ -1,6 +1,6 @@
 # 04 — Dependency-Ordered Implementation Plan
 
-Hermes must implement in this order. Do not jump to later novelty before earlier gates pass.
+Milestones remain dependency ordered; do not start a later capability before its earlier gates pass. The normal local workflow is documented in `docs/DEVELOPMENT_WORKFLOW.md`.
 
 ## Milestone 0 — Foundation
 
@@ -17,10 +17,7 @@ Build:
 Gate:
 
 ```bash
-cargo fmt --check
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo verify
 tachyon doctor
 ```
 

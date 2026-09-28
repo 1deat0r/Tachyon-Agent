@@ -7,10 +7,6 @@ if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
 }
 
 rustup toolchain install 1.98.1 --profile default --component rustfmt --component clippy
-rustup override set 1.98.1
+cargo verify
 
-cargo fmt --check
-cargo check --workspace
-cargo test --workspace
-
-Write-Host "Tachyon scaffold validated. Read AGENTS.md and docs/04_IMPLEMENTATION_PLAN.md, then begin Milestone 0."
+Write-Host "Tachyon workspace verified. See docs/DEVELOPMENT_WORKFLOW.md for local development checks."

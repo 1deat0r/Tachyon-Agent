@@ -1,0 +1,2 @@
+[alias]
+verify = "run --locked --manifest-path xtask/Cargo.toml --target-dir target/xtask --"
