@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use tachyon_types::NodeId;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -15,6 +16,13 @@ pub enum VerifyError {
     Io(#[from] std::io::Error),
     #[error("verification blocked: {0}")]
     Blocked(String),
+    /// A check worker ended without proving whether its process effect settled.
+    /// The supervisor must persist interruption and must not replay it blindly.
+    #[error("verification outcome is unknown for node {node_id:?}: {reason}")]
+    UnknownOutcome {
+        node_id: Option<NodeId>,
+        reason: String,
+    },
     /// The policy asked for a human decision before the exact acceptance
     /// operation may proceed (M11 typed parking). Typed through the
     /// runner and the core so the driver parks instead of recording a

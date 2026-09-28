@@ -256,7 +256,7 @@ async fn precancellation_never_spawns() {
     cancel.cancel();
     let result = process::run_cancellable(&context, &spec, cancel.clone()).await;
     assert!(
-        matches!(result, Err(ToolError::ProcessCancelled)),
+        matches!(result, Err(ToolError::ProcessCancelledBeforeStart)),
         "{result:?}"
     );
     assert!(!fixture.0.join("spawned").exists());
@@ -266,7 +266,7 @@ async fn precancellation_never_spawns() {
     spec.cwd = Some(fixture.0.join("missing"));
     let result = process::run_cancellable(&context, &spec, cancel).await;
     assert!(
-        matches!(result, Err(ToolError::ProcessCancelled)),
+        matches!(result, Err(ToolError::ProcessCancelledBeforeStart)),
         "{result:?}"
     );
 }

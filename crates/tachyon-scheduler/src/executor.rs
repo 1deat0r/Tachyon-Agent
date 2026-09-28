@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Map, Value};
-use tachyon_ir::{AccessSet, ExecutionNode, ExecutorKind};
+use tachyon_ir::{AccessSet, EffectClass, ExecutionNode, ExecutorKind, Idempotency};
 use tachyon_types::NodeId;
 use tokio_util::sync::CancellationToken;
 
@@ -38,8 +38,15 @@ pub enum OutcomeStatus {
         /// Failure reason.
         error: String,
     },
-    /// Node was cancelled before producing a result.
+    /// Node was cancelled after the executor confirmed it stopped before any
+    /// consequential effect occurred.
     Cancelled,
+    /// The executor cannot prove whether the consequential effect occurred.
+    /// The scheduler must retain this node's grants for reconciliation.
+    Unknown {
+        /// Short reason the outcome could not be settled.
+        reason: String,
+    },
 }
 
 impl NodeOutcome {
@@ -63,7 +70,7 @@ impl NodeOutcome {
         }
     }
 
-    /// Cancelled attempt.
+    /// Cancelled attempt with a confirmed no-effect outcome.
     #[must_use]
     pub fn cancelled(duration: Duration) -> Self {
         Self {
@@ -72,16 +79,35 @@ impl NodeOutcome {
             duration,
         }
     }
+
+    /// Attempt whose effect outcome could not be determined.
+    #[must_use]
+    pub fn unknown(reason: String, duration: Duration) -> Self {
+        Self {
+            status: OutcomeStatus::Unknown { reason },
+            outputs: Map::new(),
+            duration,
+        }
+    }
 }
 
-/// Executes one granted node. Implementations must honor `cancel`
-/// promptly; the scheduler aborts implementations that do not.
+/// Executes one granted node. Implementations must observe `cancel` and
+/// settle their work safely. The future must not return until all work it
+/// started has stopped or its effect outcome has been reconciled. The
+/// scheduler retains the node's access and resource grants until then.
 #[async_trait]
 pub trait Executor: Send + Sync {
     /// Executor kind served.
     fn kind(&self) -> ExecutorKind;
 
-    /// Runs `node` with resolved `inputs`, returning its outcome.
+    /// Whether the registered executor's trusted capability contract proves
+    /// that repeating this exact node is safe. The default rejects retries;
+    /// IR metadata alone is a proposal, not authority.
+    fn automatic_retry_safe(&self, _node: &ExecutionNode) -> bool {
+        false
+    }
+
+    /// Runs `node` with resolved `inputs`, returning its settled outcome.
     async fn execute(
         &self,
         node: &ExecutionNode,
@@ -218,6 +244,14 @@ impl FakeExecutor {
 impl Executor for FakeExecutor {
     fn kind(&self) -> ExecutorKind {
         self.kind
+    }
+
+    fn automatic_retry_safe(&self, node: &ExecutionNode) -> bool {
+        node.effect_class == EffectClass::Pure
+            && matches!(
+                node.idempotency,
+                Idempotency::Pure | Idempotency::Idempotent
+            )
     }
 
     async fn execute(

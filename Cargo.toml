@@ -43,7 +43,7 @@ bytes = "1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 crossterm = "0.29"
 dashmap = "6"
-futures = "0.3"
+futures-util = "0.3"
 notify = "8"
 parking_lot = "0.12"
 proptest = "1"

@@ -37,7 +37,11 @@ pub enum ToolError {
     Containment(#[from] tachyon_policy::ContainmentError),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("process cancelled")]
+    #[error("process cancelled before it started")]
+    ProcessCancelledBeforeStart,
+    #[error("process could not start: {0}")]
+    ProcessStartFailed(String),
+    #[error("process cancelled after it started")]
     ProcessCancelled,
     #[error("workspace lease cancelled")]
     WorkspaceLeaseCancelled,

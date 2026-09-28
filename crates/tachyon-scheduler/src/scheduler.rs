@@ -16,7 +16,7 @@ use tachyon_ir::{
 use tachyon_types::{NodeId, TaskId};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::{AbortHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::executor::{Executor, NodeOutcome, OutcomeStatus, ResolvedInputs};
@@ -34,6 +34,18 @@ const ESTIMATE_ALPHA: f64 = 0.3;
 /// competes freely but still yields to grants).
 const SPECULATION_PENALTY: f64 = 1_000.0;
 
+const FAST_FINISH_POLLS: u32 = 50;
+const FINISH_POLL_FAST: Duration = Duration::from_millis(1);
+const FINISH_POLL_SLOW: Duration = Duration::from_millis(10);
+
+fn finish_poll_delay(polls: u32) -> Duration {
+    if polls < FAST_FINISH_POLLS {
+        FINISH_POLL_FAST
+    } else {
+        FINISH_POLL_SLOW
+    }
+}
+
 /// Age bonus per second of readiness, against starvation.
 const AGE_BONUS_PER_SEC: f64 = 0.5;
 
@@ -46,6 +58,9 @@ pub enum SchedulerError {
     /// Graph failed validation on submit.
     #[error("invalid graph: {0}")]
     InvalidGraph(#[from] IrError),
+    /// Registered executor did not prove automatic retry safety for this node.
+    #[error("registered executor did not authorize retrying node {0}")]
+    RetryNotAuthorized(NodeId),
     /// No task run with this id.
     #[error("unknown task: {0}")]
     UnknownTask(TaskId),
@@ -55,6 +70,14 @@ pub enum SchedulerError {
     /// No executor registered for this kind.
     #[error("no executor for {0:?}")]
     UnknownExecutor(ExecutorKind),
+    /// An executor ended without settling a node's effect outcome.
+    #[error("task {task_id} node {node_id} ended with an unknown outcome")]
+    UnknownOutcome {
+        /// Task that owns the unresolved node.
+        task_id: TaskId,
+        /// Node whose effect may need reconciliation.
+        node_id: NodeId,
+    },
     /// Mailbox full; back off and retry.
     #[error("scheduler mailbox full")]
     MailboxFull,
@@ -101,6 +124,8 @@ pub struct TaskRunSnapshot {
     pub attempts: HashMap<NodeId, u32>,
     /// True when every node is terminal.
     pub finished: bool,
+    /// First node whose effect outcome needs reconciliation.
+    pub unresolved_node: Option<NodeId>,
 }
 
 /// Commands the scheduler owns.
@@ -114,11 +139,11 @@ pub enum SchedulerCommand {
         /// Reply when accepted.
         reply: oneshot::Sender<Result<(), SchedulerError>>,
     },
-    /// Cancels a run: tokens fire, running nodes stop, the rest go Cancelled.
+    /// Cancels a run and waits until every running executor has drained.
     CancelTask {
         /// Task to cancel.
         task_id: TaskId,
-        /// Reply when the cancel is recorded.
+        /// Reply once all in-flight executors have drained.
         reply: oneshot::Sender<Result<(), SchedulerError>>,
     },
     /// Reads a run snapshot.
@@ -154,7 +179,7 @@ impl SchedulerHandle {
         receive(rx).await
     }
 
-    /// Cancels a run.
+    /// Requests cancellation and waits until all in-flight executors have drained.
     pub async fn cancel_task(&self, task_id: TaskId) -> Result<(), SchedulerError> {
         let (reply, rx) = oneshot::channel();
         self.send(SchedulerCommand::CancelTask { task_id, reply })
@@ -181,23 +206,19 @@ impl SchedulerHandle {
         task_id: TaskId,
         timeout: Duration,
     ) -> Result<TaskRunSnapshot, SchedulerError> {
-        const FAST_FINISH_POLLS: u32 = 50;
-        const FINISH_POLL_FAST_MS: u64 = 1;
-        const FINISH_POLL_SLOW_MS: u64 = 10;
         let deadline = Instant::now() + timeout;
         let mut polls: u32 = 0;
         loop {
             let snapshot = self.status(task_id).await?;
+            if let Some(node_id) = snapshot.unresolved_node {
+                return Err(SchedulerError::UnknownOutcome { task_id, node_id });
+            }
             if snapshot.finished || Instant::now() >= deadline {
                 return Ok(snapshot);
             }
-            let delay_ms = if polls < FAST_FINISH_POLLS {
-                FINISH_POLL_FAST_MS
-            } else {
-                FINISH_POLL_SLOW_MS
-            };
+            let delay = finish_poll_delay(polls);
             polls = polls.saturating_add(1);
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            tokio::time::sleep(delay).await;
         }
     }
 
@@ -257,7 +278,8 @@ struct TaskRun {
     attempts: HashMap<NodeId, u32>,
     outputs: HashMap<NodeId, serde_json::Map<String, serde_json::Value>>,
     scope: CancellationToken,
-    aborts: HashMap<NodeId, AbortHandle>,
+    cancel_waiters: Vec<oneshot::Sender<Result<(), SchedulerError>>>,
+    unresolved_node: Option<NodeId>,
     finished: bool,
 }
 
@@ -272,6 +294,7 @@ struct Loop {
     budgets: Budgets,
     registry: ExecutorRegistry,
     tasks: HashMap<TaskId, TaskRun>,
+    in_flight: HashMap<tokio::task::Id, (TaskId, NodeId)>,
     grants: Vec<Grant>,
     used: Usage,
     estimates: HashMap<String, f64>,
@@ -286,6 +309,7 @@ async fn run_loop(
         budgets,
         registry,
         tasks: HashMap::new(),
+        in_flight: HashMap::new(),
         grants: Vec::new(),
         used: Usage::default(),
         estimates: HashMap::new(),
@@ -293,6 +317,7 @@ async fn run_loop(
     let mut running = JoinSet::new();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut accepting = true;
     loop {
         // `JoinSet::join_next` on an empty set resolves immediately, which
         // would busy-spin the loop and starve command handling: only poll
@@ -300,22 +325,36 @@ async fn run_loop(
         let joining = !running.is_empty();
         tokio::select! {
             biased;
-            command = rx.recv() => {
-                match command {
-                    Some(command) => app.handle(command),
-                    None => break,
+            command = rx.recv(), if accepting => {
+                if let Some(command) = command {
+                    app.handle(command);
+                } else {
+                    accepting = false;
+                    app.cancel_all();
                 }
             }
-            completed = async { running.join_next().await }, if joining => {
-                if let Some(Ok(completion)) = completed {
-                    app.complete(completion);
+            completed = async { running.join_next_with_id().await }, if joining => {
+                if let Some(result) = completed {
+                    match result {
+                        Ok((id, completion)) => {
+                            app.in_flight.remove(&id);
+                            app.complete(completion);
+                        }
+                        Err(error) => {
+                            let worker_id = error.id();
+                            let detail = error.to_string();
+                            app.mark_unknown(worker_id, &detail);
+                        }
+                    }
                 }
             }
             _ = tick.tick() => {}
         }
+        if !accepting && running.is_empty() {
+            break;
+        }
         app.pump(&mut running);
     }
-    running.abort_all();
 }
 
 impl Loop {
@@ -330,8 +369,7 @@ impl Loop {
                 let _ = reply.send(outcome);
             }
             SchedulerCommand::CancelTask { task_id, reply } => {
-                let outcome = self.cancel_task(task_id);
-                let _ = reply.send(outcome);
+                self.cancel_task(task_id, reply);
             }
             SchedulerCommand::Status { task_id, reply } => {
                 let outcome = self.snapshot(task_id);
@@ -345,8 +383,11 @@ impl Loop {
             return Err(SchedulerError::DuplicateTask(task_id));
         }
         for node in graph.nodes.values() {
-            if !self.registry.contains_key(&node.executor) {
+            let Some(executor) = self.registry.get(&node.executor) else {
                 return Err(SchedulerError::UnknownExecutor(node.executor));
+            };
+            if node.retry.attempts > 1 && !executor.automatic_retry_safe(node) {
+                return Err(SchedulerError::RetryNotAuthorized(node.id));
             }
         }
         let nodes = graph
@@ -373,67 +414,118 @@ impl Loop {
                 attempts: HashMap::new(),
                 outputs: HashMap::new(),
                 scope: CancellationToken::new(),
-                aborts: HashMap::new(),
+                cancel_waiters: Vec::new(),
+                unresolved_node: None,
                 finished: false,
             },
         );
         Ok(())
     }
 
-    fn cancel_task(&mut self, task_id: TaskId) -> Result<(), SchedulerError> {
-        // Collect the stop plan first so no run borrow crosses the awaits
-        // and abort calls below.
-        let plans: Vec<(NodeId, tachyon_ir::CancellationPolicy, Option<AbortHandle>)> = {
-            let Some(run) = self.tasks.get_mut(&task_id) else {
-                return Err(SchedulerError::UnknownTask(task_id));
-            };
-            run.scope.cancel();
-            run.nodes
-                .iter()
-                .filter(|(_, node)| node.status == NodeStatus::Running)
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|node_id| {
-                    let policy = run
-                        .graph
-                        .nodes
-                        .get(&node_id)
-                        .map_or(tachyon_ir::CancellationPolicy::Immediate, |node| {
-                            node.cancellation
-                        });
-                    let abort = run.aborts.remove(&node_id);
-                    (node_id, policy, abort)
-                })
-                .collect()
+    fn cancel_task(&mut self, task_id: TaskId, reply: oneshot::Sender<Result<(), SchedulerError>>) {
+        let Some(run) = self.tasks.get_mut(&task_id) else {
+            let _ = reply.send(Err(SchedulerError::UnknownTask(task_id)));
+            return;
         };
-        // Stop running nodes per their cancellation policy, then synthesize
-        // Cancelled completions so grants release immediately. Late real
-        // completions find terminal nodes and are ignored.
-        for (node_id, policy, abort) in plans {
-            if let Some(abort) = abort {
-                match policy {
-                    tachyon_ir::CancellationPolicy::Immediate => abort.abort(),
-                    tachyon_ir::CancellationPolicy::Graceful { grace_ms } => {
-                        tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(grace_ms)).await;
-                            abort.abort();
-                        });
-                    }
-                    tachyon_ir::CancellationPolicy::NonCancellableAfterCommit => {}
-                }
-            }
-            self.finish_node(task_id, node_id, NodeStatus::Cancelled, None);
-        }
-        if let Some(run) = self.tasks.get_mut(&task_id) {
+        run.cancel_waiters.push(reply);
+        if !run.finished {
+            run.scope.cancel();
             for node in run.nodes.values_mut() {
-                if !node.status.is_terminal() {
+                // Keep running nodes and their grants live until their executor
+                // reports that its cancellation policy has safely drained.
+                if node.status != NodeStatus::Running
+                    && node.status != NodeStatus::UnknownAfterCrash
+                    && !node.status.is_terminal()
+                {
                     node.status = NodeStatus::Cancelled;
                 }
             }
-            run.finished = true;
+            run.finished = run.nodes.values().all(|node| node.status.is_terminal());
         }
-        Ok(())
+        self.settle_cancellations(task_id);
+    }
+
+    fn cancel_all(&mut self) {
+        for run in self.tasks.values_mut() {
+            if run.finished {
+                continue;
+            }
+            run.scope.cancel();
+            for node in run.nodes.values_mut() {
+                if node.status != NodeStatus::Running
+                    && node.status != NodeStatus::UnknownAfterCrash
+                    && !node.status.is_terminal()
+                {
+                    node.status = NodeStatus::Cancelled;
+                }
+            }
+            run.finished = run.nodes.values().all(|node| node.status.is_terminal());
+        }
+        let finished: Vec<TaskId> = self
+            .tasks
+            .values()
+            .filter_map(|run| run.finished.then_some(run.task_id))
+            .collect();
+        for task_id in finished {
+            self.settle_cancellations(task_id);
+        }
+    }
+
+    fn settle_cancellations(&mut self, task_id: TaskId) {
+        let Some(run) = self.tasks.get_mut(&task_id) else {
+            return;
+        };
+        if let Some(node_id) = run.unresolved_node {
+            if run
+                .nodes
+                .values()
+                .any(|node| node.status == NodeStatus::Running)
+            {
+                return;
+            }
+            for waiter in std::mem::take(&mut run.cancel_waiters) {
+                let _ = waiter.send(Err(SchedulerError::UnknownOutcome { task_id, node_id }));
+            }
+            return;
+        }
+        if !run.finished {
+            return;
+        }
+        for waiter in std::mem::take(&mut run.cancel_waiters) {
+            let _ = waiter.send(Ok(()));
+        }
+    }
+
+    /// Keeps an executor panic or abort unresolved instead of freeing its
+    /// grant or retrying an effect whose outcome is no longer known.
+    fn mark_unknown(&mut self, worker_id: tokio::task::Id, error: &str) {
+        let Some((task_id, node_id)) = self.in_flight.remove(&worker_id) else {
+            tracing::error!(%error, "scheduler worker ended without a tracked node");
+            return;
+        };
+        self.mark_unknown_node(task_id, node_id, error);
+    }
+
+    fn mark_unknown_node(&mut self, task_id: TaskId, node_id: NodeId, error: &str) {
+        if let Some(run) = self.tasks.get_mut(&task_id) {
+            // An unsettled effect makes every later task action unsafe. Stop
+            // dispatch immediately and ask all current siblings to drain.
+            run.scope.cancel();
+            for node in run.nodes.values_mut() {
+                if node.status != NodeStatus::Running
+                    && node.status != NodeStatus::UnknownAfterCrash
+                    && !node.status.is_terminal()
+                {
+                    node.status = NodeStatus::Cancelled;
+                }
+            }
+            if let Some(node) = run.nodes.get_mut(&node_id) {
+                node.status = NodeStatus::UnknownAfterCrash;
+            }
+            run.unresolved_node.get_or_insert(node_id);
+        }
+        tracing::error!(task = %task_id, node = %node_id, %error, "executor ended without a settled effect outcome");
+        self.settle_cancellations(task_id);
     }
 
     fn snapshot(&self, task_id: TaskId) -> Result<TaskRunSnapshot, SchedulerError> {
@@ -449,11 +541,12 @@ impl Loop {
                 .collect(),
             attempts: run.attempts.clone(),
             finished: run.finished,
+            unresolved_node: run.unresolved_node,
         })
     }
 
-    /// Releases one node's grant, if still held. No-op when the grant is
-    /// already gone (late completion after cancel).
+    /// Releases one node's grant after it has settled, or after a local
+    /// pre-dispatch failure that never started executor work.
     fn release_grant(&mut self, task_id: TaskId, node_id: NodeId) {
         if let Some(index) = self
             .grants
@@ -468,9 +561,8 @@ impl Loop {
         }
     }
 
-    /// Applies a completion to run state. Late completions for terminal
-    /// nodes (cancelled mid-flight) are ignored. Each step re-borrows so
-    /// grant release and state updates never alias.
+    /// Applies a completion after the executor has returned and drained.
+    /// Each step re-borrows so grant release and state updates never alias.
     fn complete(&mut self, completion: Completion) {
         let task_id = completion.task_id;
         let node_id = completion.node_id;
@@ -478,15 +570,21 @@ impl Loop {
             .tasks
             .get(&task_id)
             .and_then(|run| run.nodes.get(&node_id))
-            .is_some_and(|node| !node.status.is_terminal());
+            .is_some_and(|node| node.status == NodeStatus::Running);
         if !live {
             return;
         }
-        self.release_grant(task_id, node_id);
-        if let Some(run) = self.tasks.get_mut(&task_id) {
-            run.aborts.remove(&node_id);
-        }
         let duration = completion.outcome.duration;
+        let unknown_reason = match &completion.outcome.status {
+            OutcomeStatus::Unknown { reason } => Some(reason.clone()),
+            _ => None,
+        };
+        if let Some(reason) = unknown_reason {
+            self.mark_unknown_node(task_id, node_id, &reason);
+            self.observe_duration(task_id, node_id, duration);
+            return;
+        }
+        self.release_grant(task_id, node_id);
         match completion.outcome.status {
             OutcomeStatus::Success => {
                 let outputs = completion.outcome.outputs;
@@ -499,20 +597,22 @@ impl Loop {
                 }
             }
             OutcomeStatus::Failed { error } => {
-                let (made, budget, backoff) = self.tasks.get(&task_id).map_or((0, 1, 0), |run| {
-                    (
-                        run.attempts.get(&node_id).copied().unwrap_or(0),
-                        run.graph
-                            .nodes
-                            .get(&node_id)
-                            .map_or(1, |node| node.retry.attempts),
-                        run.graph
-                            .nodes
-                            .get(&node_id)
-                            .map_or(0, |node| node.retry.backoff_ms),
-                    )
-                });
-                if made < budget {
+                let (made, budget, backoff, cancelled) =
+                    self.tasks.get(&task_id).map_or((0, 1, 0, true), |run| {
+                        (
+                            run.attempts.get(&node_id).copied().unwrap_or(0),
+                            run.graph
+                                .nodes
+                                .get(&node_id)
+                                .map_or(1, |node| node.retry.attempts),
+                            run.graph
+                                .nodes
+                                .get(&node_id)
+                                .map_or(0, |node| node.retry.backoff_ms),
+                            run.scope.is_cancelled(),
+                        )
+                    });
+                if made < budget && !cancelled {
                     if let Some(run) = self.tasks.get_mut(&task_id)
                         && let Some(node) = run.nodes.get_mut(&node_id)
                     {
@@ -536,9 +636,11 @@ impl Loop {
                     node.status = NodeStatus::Cancelled;
                 }
             }
+            OutcomeStatus::Unknown { .. } => unreachable!("handled above"),
         }
         self.observe_duration(task_id, node_id, duration);
         self.update_finished(task_id);
+        self.settle_cancellations(task_id);
     }
 
     /// Records a duration sample for the node's capability estimate.
@@ -581,10 +683,8 @@ impl Loop {
             }
         }
         self.release_grant(task_id, node_id);
-        if let Some(run) = self.tasks.get_mut(&task_id) {
-            run.aborts.remove(&node_id);
-        }
         self.update_finished(task_id);
+        self.settle_cancellations(task_id);
     }
 
     fn update_finished(&mut self, task_id: TaskId) {
@@ -800,7 +900,7 @@ impl Loop {
         }
         let child = run_scope_child(self, task_id);
         let timeout = def.timeout.hard_ms;
-        let abort = running.spawn(async move {
+        let worker = running.spawn(async move {
             let outcome = run_one(executor, def, inputs, child, timeout).await;
             Completion {
                 task_id,
@@ -808,9 +908,7 @@ impl Loop {
                 outcome,
             }
         });
-        if let Some(run) = self.tasks.get_mut(&task_id) {
-            run.aborts.insert(node_id, abort);
-        }
+        self.in_flight.insert(worker.id(), (task_id, node_id));
     }
 
     /// Resolves a node's input bindings against ancestors' outputs.
@@ -899,7 +997,8 @@ fn run_scope_child(app: &Loop, task_id: TaskId) -> CancellationToken {
         .map_or_else(CancellationToken::new, |run| run.scope.child_token())
 }
 
-/// Runs one attempt: timeout-wrapped execution with cooperative cancel.
+/// Runs one attempt. Cancellation and timeout are cooperative: signal the
+/// executor, then retain the future (and its scheduler grant) until it returns.
 async fn run_one(
     executor: Arc<dyn Executor>,
     node: ExecutionNode,
@@ -907,29 +1006,32 @@ async fn run_one(
     cancel: CancellationToken,
     timeout_ms: Option<u64>,
 ) -> NodeOutcome {
-    let started = Instant::now();
-    let execution = executor.execute(&node, inputs, cancel.clone());
-    let outcome = tokio::select! {
-        biased;
-        () = cancel.cancelled() => NodeOutcome::cancelled(started.elapsed()),
-        result = with_timeout(execution, timeout_ms) => result,
-    };
-    let _ = started;
-    outcome
-}
-
-async fn with_timeout(
-    execution: impl std::future::Future<Output = NodeOutcome>,
-    timeout_ms: Option<u64>,
-) -> NodeOutcome {
-    match timeout_ms {
-        Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), execution).await {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                NodeOutcome::failed(format!("timeout after {ms}ms"), Duration::from_millis(ms))
+    let mut execution = Box::pin(executor.execute(&node, inputs, cancel.clone()));
+    if let Some(ms) = timeout_ms {
+        let mut deadline = Box::pin(tokio::time::sleep(Duration::from_millis(ms)));
+        tokio::select! {
+            biased;
+            outcome = &mut execution => outcome,
+            () = cancel.cancelled() => execution.await,
+            () = &mut deadline => {
+                cancel.cancel();
+                let outcome = execution.await;
+                if outcome.status == OutcomeStatus::Cancelled {
+                    NodeOutcome::failed(format!("timeout after {ms}ms"), outcome.duration)
+                } else {
+                    // A worker that completed successfully after its deadline
+                    // must not be reported as failed: a consequential effect
+                    // may already have happened. Keep the known outcome.
+                    outcome
+                }
             }
-        },
-        None => execution.await,
+        }
+    } else {
+        tokio::select! {
+            biased;
+            outcome = &mut execution => outcome,
+            () = cancel.cancelled() => execution.await,
+        }
     }
 }
 
@@ -1040,10 +1142,528 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{assemble, block_on, spawn_with_fake, test_node};
+    use super::{Budgets, ExecutorRegistry, SchedulerError, finish_poll_delay, spawn};
+    use crate::executor::{Executor, NodeOutcome, ResolvedInputs};
+    use async_trait::async_trait;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use tachyon_ir::{DependencyCondition, ExecutorKind, NodeStatus};
-    use tachyon_types::TaskId;
+    use tachyon_ir::{
+        DependencyCondition, EffectClass, ExecutionNode, ExecutorKind, Idempotency, NodeStatus,
+    };
+    use tachyon_types::{NodeId, TaskId};
+    use tokio::sync::{Notify, mpsc};
+
+    #[test]
+    fn fast_finish_poll_window_is_pinned_before_slow_backoff() {
+        assert_eq!(finish_poll_delay(0), Duration::from_millis(1));
+        assert_eq!(finish_poll_delay(49), Duration::from_millis(1));
+        assert_eq!(finish_poll_delay(50), Duration::from_millis(10));
+        assert_eq!(finish_poll_delay(u32::MAX), Duration::from_millis(10));
+    }
+
+    enum DrainEvent {
+        Started(NodeId),
+        CancellationObserved(NodeId),
+    }
+
+    struct DrainExecutor {
+        blocked_node: NodeId,
+        events: mpsc::UnboundedSender<DrainEvent>,
+        release: Arc<Notify>,
+        succeed_after_cancel: bool,
+    }
+
+    struct PanicOnCancelExecutor {
+        events: mpsc::UnboundedSender<DrainEvent>,
+    }
+
+    struct UnknownAfterCancelExecutor {
+        events: mpsc::UnboundedSender<DrainEvent>,
+        release: Arc<Notify>,
+    }
+
+    struct UnknownWithSlowSiblingExecutor {
+        events: mpsc::UnboundedSender<DrainEvent>,
+        unknown_node: NodeId,
+        release_unknown: Arc<Notify>,
+        release_sibling: Arc<Notify>,
+    }
+
+    struct UnknownCancelsTaskExecutor {
+        events: mpsc::UnboundedSender<DrainEvent>,
+        unknown_node: NodeId,
+        sibling_node: NodeId,
+        release_sibling: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Executor for DrainExecutor {
+        fn kind(&self) -> ExecutorKind {
+            ExecutorKind::Native
+        }
+
+        async fn execute(
+            &self,
+            node: &ExecutionNode,
+            _inputs: ResolvedInputs,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> NodeOutcome {
+            let started = Instant::now();
+            self.events.send(DrainEvent::Started(node.id)).unwrap();
+            if node.id == self.blocked_node {
+                cancel.cancelled().await;
+                self.events
+                    .send(DrainEvent::CancellationObserved(node.id))
+                    .unwrap();
+                self.release.notified().await;
+                if self.succeed_after_cancel
+                    || node.cancellation
+                        == tachyon_ir::CancellationPolicy::NonCancellableAfterCommit
+                {
+                    NodeOutcome::success(ResolvedInputs::new(), started.elapsed())
+                } else {
+                    NodeOutcome::cancelled(started.elapsed())
+                }
+            } else {
+                NodeOutcome::success(ResolvedInputs::new(), started.elapsed())
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Executor for PanicOnCancelExecutor {
+        fn kind(&self) -> ExecutorKind {
+            ExecutorKind::Native
+        }
+
+        async fn execute(
+            &self,
+            node: &ExecutionNode,
+            _inputs: ResolvedInputs,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> NodeOutcome {
+            self.events.send(DrainEvent::Started(node.id)).unwrap();
+            cancel.cancelled().await;
+            panic!("simulated executor panic with an unresolved effect outcome");
+        }
+    }
+
+    #[async_trait]
+    impl Executor for UnknownAfterCancelExecutor {
+        fn kind(&self) -> ExecutorKind {
+            ExecutorKind::Native
+        }
+
+        async fn execute(
+            &self,
+            node: &ExecutionNode,
+            _inputs: ResolvedInputs,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> NodeOutcome {
+            let started = Instant::now();
+            self.events.send(DrainEvent::Started(node.id)).unwrap();
+            cancel.cancelled().await;
+            self.events
+                .send(DrainEvent::CancellationObserved(node.id))
+                .unwrap();
+            self.release.notified().await;
+            NodeOutcome::unknown(
+                "simulated ambiguous effect outcome".into(),
+                started.elapsed(),
+            )
+        }
+    }
+
+    #[async_trait]
+    impl Executor for UnknownWithSlowSiblingExecutor {
+        fn kind(&self) -> ExecutorKind {
+            ExecutorKind::Native
+        }
+
+        async fn execute(
+            &self,
+            node: &ExecutionNode,
+            _inputs: ResolvedInputs,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> NodeOutcome {
+            let started = Instant::now();
+            self.events.send(DrainEvent::Started(node.id)).unwrap();
+            cancel.cancelled().await;
+            self.events
+                .send(DrainEvent::CancellationObserved(node.id))
+                .unwrap();
+            if node.id == self.unknown_node {
+                self.release_unknown.notified().await;
+                NodeOutcome::unknown(
+                    "simulated ambiguous effect outcome".into(),
+                    started.elapsed(),
+                )
+            } else {
+                self.release_sibling.notified().await;
+                NodeOutcome::cancelled(started.elapsed())
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Executor for UnknownCancelsTaskExecutor {
+        fn kind(&self) -> ExecutorKind {
+            ExecutorKind::Native
+        }
+
+        async fn execute(
+            &self,
+            node: &ExecutionNode,
+            _inputs: ResolvedInputs,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> NodeOutcome {
+            let started = Instant::now();
+            self.events.send(DrainEvent::Started(node.id)).unwrap();
+            if node.id == self.unknown_node {
+                return NodeOutcome::unknown(
+                    "simulated ambiguous effect outcome".into(),
+                    started.elapsed(),
+                );
+            }
+            if node.id == self.sibling_node {
+                cancel.cancelled().await;
+                self.events
+                    .send(DrainEvent::CancellationObserved(node.id))
+                    .unwrap();
+                self.release_sibling.notified().await;
+            }
+            NodeOutcome::success(ResolvedInputs::new(), started.elapsed())
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_require_executor_trust_and_consistent_effect_metadata() {
+        let task = TaskId::generate();
+        let mut forged = test_node(task, vec!["shared"]);
+        forged.effect_class = EffectClass::DestructiveExternalMutation;
+        forged.idempotency = Idempotency::Pure;
+        forged.retry.attempts = 2;
+        let node_id = forged.id;
+        let graph = assemble(task, vec![forged], &[], DependencyCondition::OnSuccess);
+        let (handle, _, _join) = spawn_with_fake(&[ExecutorKind::Native], Duration::from_millis(1));
+
+        assert!(matches!(
+            handle.submit(task, graph).await,
+            Err(SchedulerError::RetryNotAuthorized(id)) if id == node_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn panicking_executor_preserves_unknown_outcome_and_grant() {
+        let first_task = TaskId::generate();
+        let first_node = test_node(first_task, vec!["shared"]);
+        let first_id = first_node.id;
+        let first_graph = assemble(
+            first_task,
+            vec![first_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let second_task = TaskId::generate();
+        let second_node = test_node(second_task, vec!["shared"]);
+        let second_id = second_node.id;
+        let second_graph = assemble(
+            second_task,
+            vec![second_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(
+            ExecutorKind::Native,
+            Arc::new(PanicOnCancelExecutor { events: events_tx }),
+        );
+        let (handle, join) = spawn(Budgets::default(), registry);
+        handle.submit(first_task, first_graph).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == first_id
+        ));
+
+        let cancel_handle = handle.clone();
+        let cancellation = tokio::spawn(async move { cancel_handle.cancel_task(first_task).await });
+        assert!(matches!(
+            cancellation.await.unwrap(),
+            Err(SchedulerError::UnknownOutcome { task_id, node_id })
+                if task_id == first_task && node_id == first_id
+        ));
+        let first = handle.status(first_task).await.unwrap();
+        assert!(!first.finished);
+        assert_eq!(first.statuses[&first_id], NodeStatus::UnknownAfterCrash);
+
+        handle.submit(second_task, second_graph).await.unwrap();
+        let second = handle.status(second_task).await.unwrap();
+        assert_eq!(second.statuses[&second_id], NodeStatus::Ready);
+
+        handle.cancel_task(second_task).await.unwrap();
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("scheduler shutdown did not drain")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_unknown_outcome_keeps_conflicting_grant_and_surfaces_to_waiter() {
+        let first_task = TaskId::generate();
+        let first_node = test_node(first_task, vec!["shared"]);
+        let first_id = first_node.id;
+        let first_graph = assemble(
+            first_task,
+            vec![first_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let second_task = TaskId::generate();
+        let second_node = test_node(second_task, vec!["shared"]);
+        let second_id = second_node.id;
+        let second_graph = assemble(
+            second_task,
+            vec![second_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(
+            ExecutorKind::Native,
+            Arc::new(UnknownAfterCancelExecutor {
+                events: events_tx,
+                release: release.clone(),
+            }),
+        );
+        let (handle, join) = spawn(Budgets::default(), registry);
+
+        handle.submit(first_task, first_graph).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == first_id
+        ));
+        let cancel_handle = handle.clone();
+        let cancellation = tokio::spawn(async move { cancel_handle.cancel_task(first_task).await });
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::CancellationObserved(id)) if id == first_id
+        ));
+
+        handle.submit(second_task, second_graph).await.unwrap();
+        assert_eq!(
+            handle.status(second_task).await.unwrap().statuses[&second_id],
+            NodeStatus::Ready,
+            "conflicting work ran while the first outcome was unsettled"
+        );
+        assert!(
+            !cancellation.is_finished(),
+            "unknown outcome returned before drain"
+        );
+
+        release.notify_one();
+        assert!(matches!(
+            cancellation.await.unwrap(),
+            Err(SchedulerError::UnknownOutcome { task_id, node_id })
+                if task_id == first_task && node_id == first_id
+        ));
+        let first = handle.status(first_task).await.unwrap();
+        assert!(!first.finished);
+        assert_eq!(first.statuses[&first_id], NodeStatus::UnknownAfterCrash);
+        assert_eq!(first.unresolved_node, Some(first_id));
+
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("scheduler shutdown did not drain")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_waiter_drains_siblings_before_returning_unknown_outcome() {
+        let task = TaskId::generate();
+        let nodes: Vec<_> = (0..2).map(|_| test_node(task, vec![])).collect();
+        let unknown_node = nodes[0].id;
+        let sibling_node = nodes[1].id;
+        let graph = assemble(task, nodes, &[], DependencyCondition::OnSuccess);
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let release_unknown = Arc::new(Notify::new());
+        let release_sibling = Arc::new(Notify::new());
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(
+            ExecutorKind::Native,
+            Arc::new(UnknownWithSlowSiblingExecutor {
+                events: events_tx,
+                unknown_node,
+                release_unknown: release_unknown.clone(),
+                release_sibling: release_sibling.clone(),
+            }),
+        );
+        let (handle, join) = spawn(Budgets::default(), registry);
+        handle.submit(task, graph).await.unwrap();
+
+        let mut started = Vec::new();
+        for _ in 0..2 {
+            match tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap()
+            {
+                Some(DrainEvent::Started(id)) => started.push(id),
+                _ => panic!("expected both independent executors to start"),
+            }
+        }
+        started.sort_unstable();
+        let mut expected = vec![unknown_node, sibling_node];
+        expected.sort_unstable();
+        assert_eq!(started, expected);
+
+        let cancel_handle = handle.clone();
+        let cancellation = tokio::spawn(async move { cancel_handle.cancel_task(task).await });
+        let mut cancellation_observed = Vec::new();
+        for _ in 0..2 {
+            match tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap()
+            {
+                Some(DrainEvent::CancellationObserved(id)) => cancellation_observed.push(id),
+                _ => panic!("expected both executors to observe cancellation"),
+            }
+        }
+        cancellation_observed.sort_unstable();
+        assert_eq!(cancellation_observed, expected);
+
+        release_unknown.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = handle.status(task).await.unwrap();
+                if snapshot.statuses[&unknown_node] == NodeStatus::UnknownAfterCrash {
+                    assert_eq!(snapshot.statuses[&sibling_node], NodeStatus::Running);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first executor did not report its unknown outcome");
+        assert!(
+            !cancellation.is_finished(),
+            "cancel_task returned while a sibling executor was still running"
+        );
+
+        release_sibling.notify_one();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), cancellation)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(SchedulerError::UnknownOutcome { task_id, node_id })
+                if task_id == task && node_id == unknown_node
+        ));
+        let snapshot = handle.status(task).await.unwrap();
+        assert_eq!(snapshot.statuses[&sibling_node], NodeStatus::Cancelled);
+        assert_eq!(snapshot.unresolved_node, Some(unknown_node));
+
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("scheduler shutdown did not drain")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_effect_cancels_pending_nodes_and_drains_running_siblings() {
+        let task = TaskId::generate();
+        let nodes: Vec<_> = (0..3).map(|_| test_node(task, vec![])).collect();
+        let unknown_node = nodes[0].id;
+        let sibling_node = nodes[1].id;
+        let dependent_node = nodes[2].id;
+        let graph = assemble(task, nodes, &[(1, 2)], DependencyCondition::OnSuccess);
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let release_sibling = Arc::new(Notify::new());
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(
+            ExecutorKind::Native,
+            Arc::new(UnknownCancelsTaskExecutor {
+                events: events_tx,
+                unknown_node,
+                sibling_node,
+                release_sibling: release_sibling.clone(),
+            }),
+        );
+        let (handle, join) = spawn(Budgets::default(), registry);
+        handle.submit(task, graph).await.unwrap();
+
+        let mut started = Vec::new();
+        for _ in 0..2 {
+            match tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap()
+            {
+                Some(DrainEvent::Started(id)) => started.push(id),
+                _ => panic!("expected unknown node and sibling to start"),
+            }
+        }
+        started.sort_unstable();
+        let mut expected = vec![unknown_node, sibling_node];
+        expected.sort_unstable();
+        assert_eq!(started, expected);
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::CancellationObserved(id)) if id == sibling_node
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = handle.status(task).await.unwrap();
+                if snapshot.unresolved_node == Some(unknown_node) {
+                    assert_eq!(snapshot.statuses[&sibling_node], NodeStatus::Running);
+                    assert_eq!(snapshot.statuses[&dependent_node], NodeStatus::Cancelled);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("unknown effect did not stop later task work");
+
+        release_sibling.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = handle.status(task).await.unwrap();
+                if snapshot.statuses[&sibling_node] == NodeStatus::Succeeded {
+                    assert_eq!(snapshot.statuses[&dependent_node], NodeStatus::Cancelled);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("sibling did not drain after release");
+
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("scheduler shutdown did not drain")
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn independent_nodes_run_concurrently() {
@@ -1216,6 +1836,250 @@ mod tests {
             .filter(|status| **status == NodeStatus::Running)
             .count();
         assert_eq!(running, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_keeps_conflicting_grant_until_worker_drains() {
+        let first_task = TaskId::generate();
+        let first_node = test_node(first_task, vec!["shared"]);
+        let first_id = first_node.id;
+        let first_graph = assemble(
+            first_task,
+            vec![first_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let second_task = TaskId::generate();
+        let second_node = test_node(second_task, vec!["shared"]);
+        let second_id = second_node.id;
+        let second_graph = assemble(
+            second_task,
+            vec![second_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let independent_task = TaskId::generate();
+        let independent_node = test_node(independent_task, vec!["independent"]);
+        let independent_id = independent_node.id;
+        let independent_graph = assemble(
+            independent_task,
+            vec![independent_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let executor = Arc::new(DrainExecutor {
+            blocked_node: first_id,
+            events: events_tx,
+            release: release.clone(),
+            succeed_after_cancel: false,
+        });
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(ExecutorKind::Native, executor);
+        let (handle, _join) = spawn(Budgets::default(), registry);
+
+        handle.submit(first_task, first_graph).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == first_id
+        ));
+
+        let cancel_handle = handle.clone();
+        let cancellation = tokio::spawn(async move { cancel_handle.cancel_task(first_task).await });
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::CancellationObserved(id)) if id == first_id
+        ));
+
+        handle.submit(second_task, second_graph).await.unwrap();
+        handle
+            .submit(independent_task, independent_graph)
+            .await
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == independent_id
+        ));
+        let waiting = handle.status(second_task).await.unwrap();
+        assert_eq!(waiting.statuses[&second_id], NodeStatus::Ready);
+        assert!(
+            !cancellation.is_finished(),
+            "cancel acknowledged before the worker drained"
+        );
+
+        release.notify_one();
+        cancellation.await.unwrap().unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == second_id
+        ));
+
+        let second = handle
+            .wait_finished(second_task, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(second.statuses[&second_id], NodeStatus::Succeeded);
+        let first = handle
+            .wait_finished(first_task, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(first.statuses[&first_id], NodeStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn timeout_keeps_conflicting_grant_until_worker_drains() {
+        let first_task = TaskId::generate();
+        let mut first_node = test_node(first_task, vec!["shared"]);
+        first_node.timeout.hard_ms = Some(20);
+        first_node.cancellation = tachyon_ir::CancellationPolicy::NonCancellableAfterCommit;
+        let first_id = first_node.id;
+        let first_graph = assemble(
+            first_task,
+            vec![first_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let second_task = TaskId::generate();
+        let second_node = test_node(second_task, vec!["shared"]);
+        let second_id = second_node.id;
+        let second_graph = assemble(
+            second_task,
+            vec![second_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let independent_task = TaskId::generate();
+        let independent_node = test_node(independent_task, vec!["independent"]);
+        let independent_id = independent_node.id;
+        let independent_graph = assemble(
+            independent_task,
+            vec![independent_node],
+            &[],
+            DependencyCondition::OnSuccess,
+        );
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let executor = Arc::new(DrainExecutor {
+            blocked_node: first_id,
+            events: events_tx,
+            release: release.clone(),
+            succeed_after_cancel: false,
+        });
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(ExecutorKind::Native, executor);
+        let (handle, _join) = spawn(Budgets::default(), registry);
+
+        handle.submit(first_task, first_graph).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == first_id
+        ));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::CancellationObserved(id)) if id == first_id
+        ));
+
+        handle.submit(second_task, second_graph).await.unwrap();
+        handle
+            .submit(independent_task, independent_graph)
+            .await
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == independent_id
+        ));
+        let first = handle.status(first_task).await.unwrap();
+        assert!(
+            !first.finished,
+            "timeout finished before the worker drained"
+        );
+        assert_eq!(first.statuses[&first_id], NodeStatus::Running);
+        let waiting = handle.status(second_task).await.unwrap();
+        assert_eq!(waiting.statuses[&second_id], NodeStatus::Ready);
+
+        release.notify_one();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == second_id
+        ));
+        let first = handle
+            .wait_finished(first_task, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(first.statuses[&first_id], NodeStatus::Succeeded);
+        let second = handle
+            .wait_finished(second_task, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(second.statuses[&second_id], NodeStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn scheduler_shutdown_waits_for_running_worker_drain() {
+        let task = TaskId::generate();
+        let node = test_node(task, vec!["shared"]);
+        let node_id = node.id;
+        let graph = assemble(task, vec![node], &[], DependencyCondition::OnSuccess);
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let executor = Arc::new(DrainExecutor {
+            blocked_node: node_id,
+            events: events_tx,
+            release: release.clone(),
+            succeed_after_cancel: false,
+        });
+        let mut registry: ExecutorRegistry = HashMap::new();
+        registry.insert(ExecutorKind::Native, executor);
+        let (handle, join) = spawn(Budgets::default(), registry);
+
+        handle.submit(task, graph).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::Started(id)) if id == node_id
+        ));
+        drop(handle);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+                .await
+                .unwrap(),
+            Some(DrainEvent::CancellationObserved(id)) if id == node_id
+        ));
+        assert!(
+            !join.is_finished(),
+            "scheduler shut down before its worker drained"
+        );
+
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .expect("scheduler did not exit after its worker drained")
+            .unwrap();
     }
 
     #[test]
