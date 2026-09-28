@@ -42,6 +42,9 @@ pub const SUPERVISOR_MAILBOX: usize = 256;
 /// (spec §18: initial policy of 100), plus every terminal transition.
 pub const SNAPSHOT_EVERY_EVENTS: i64 = 100;
 
+/// Bumps when snapshot conversation history is guaranteed to match its journal prefix.
+const CONVERSATION_SNAPSHOT_VERSION: u64 = 1;
+
 /// Errors produced by the task kernel.
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -377,8 +380,8 @@ pub struct TaskState {
     #[serde(default)]
     pub agent_messages: Vec<String>,
     /// Durable user/agent conversation order for subsequent reasoning.
-    /// Older snapshots omit this field; journal replay fills entries for
-    /// messages written after the snapshot.
+    /// Recovery reconstructs this field from the journal when reading an
+    /// older snapshot that predates it.
     #[serde(default)]
     pub conversation: Vec<TaskConversationMessage>,
     /// Durable `approval_request` records: the parked ask, carried verbatim
@@ -1091,7 +1094,21 @@ pub async fn recover_task(
         .load_task(&task_id.to_string())
         .await?
         .ok_or(CoreError::UnknownTask(task_id))?;
-    let (mut state, mut covered) = starting_state(&row)?;
+    let (mut state, mut covered, legacy_conversation_snapshot) = starting_state(&row)?;
+
+    if legacy_conversation_snapshot {
+        // Earlier builds could persist the new `conversation` field before
+        // migrating messages covered by the snapshot. Rebuild it from the
+        // journal prefix even when the field exists, since it may be partial.
+        state.conversation.clear();
+        for event in store.load_events_since(&task_id.to_string(), -1).await? {
+            if event.seq > covered {
+                break;
+            }
+            append_legacy_conversation(&mut state, &event)?;
+        }
+        seed_legacy_conversation(&mut state);
+    }
 
     for event in store
         .load_events_since(&task_id.to_string(), covered)
@@ -1171,12 +1188,21 @@ pub async fn recover_task(
 }
 
 /// Snapshot state plus the sequence it covers.
-fn starting_state(row: &TaskRow) -> Result<(TaskState, i64), CoreError> {
+fn starting_state(row: &TaskRow) -> Result<(TaskState, i64, bool), CoreError> {
     if let (Some(json), Some(seq)) = (&row.snapshot_json, row.snapshot_seq) {
-        let state: TaskState = serde_json::from_str(json).map_err(|err| CoreError::Corrupt {
-            detail: format!("snapshot does not parse: {err}"),
-        })?;
-        return Ok((state, seq));
+        let snapshot: serde_json::Value =
+            serde_json::from_str(json).map_err(|err| CoreError::Corrupt {
+                detail: format!("snapshot does not parse: {err}"),
+            })?;
+        let legacy_conversation_snapshot = snapshot
+            .get("conversation_snapshot_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(CONVERSATION_SNAPSHOT_VERSION);
+        let state: TaskState =
+            serde_json::from_value(snapshot).map_err(|err| CoreError::Corrupt {
+                detail: format!("snapshot does not parse: {err}"),
+            })?;
+        return Ok((state, seq, legacy_conversation_snapshot));
     }
     let id = parse_task(&row.id)?;
     let state = TaskState {
@@ -1206,7 +1232,7 @@ fn starting_state(row: &TaskRow) -> Result<(TaskState, i64), CoreError> {
         created_at: Timestamp::from_micros(row.created_at),
         updated_at: Timestamp::from_micros(row.updated_at),
     };
-    Ok((state, -1))
+    Ok((state, -1, false))
 }
 
 fn parse_task(raw: &str) -> Result<TaskId, CoreError> {
@@ -1234,6 +1260,27 @@ fn apply_journal(state: &mut TaskState, event: &JournalEvent) -> Result<(), Core
             detail: format!("journal seq {} does not parse: {err}", event.seq),
         })?;
     apply_event(state, payload)
+}
+
+/// Rebuilds ordered messages covered by a pre-conversation snapshot without
+/// replaying other state transitions that the snapshot already contains.
+fn append_legacy_conversation(
+    state: &mut TaskState,
+    event: &JournalEvent,
+) -> Result<(), CoreError> {
+    let payload: StateEvent =
+        serde_json::from_str(&event.payload).map_err(|err| CoreError::Corrupt {
+            detail: format!("journal seq {} does not parse: {err}", event.seq),
+        })?;
+    let (speaker, content) = match payload {
+        StateEvent::Message { message } => (TaskConversationSpeaker::User, message),
+        StateEvent::AgentMessage { message } => (TaskConversationSpeaker::Agent, message),
+        _ => return Ok(()),
+    };
+    state
+        .conversation
+        .push(TaskConversationMessage { speaker, content });
+    Ok(())
 }
 
 fn apply_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
@@ -1960,7 +2007,7 @@ impl Loop {
         let base = self.snapshot_base.unwrap_or(self.covered);
         let snapshot =
             if self.covered + 1 - base >= SNAPSHOT_EVERY_EVENTS || next.status.is_terminal() {
-                Some(serde_json::to_string(&next)?)
+                Some(serialize_task_snapshot(&next)?)
             } else {
                 None
             };
@@ -2683,6 +2730,21 @@ impl Loop {
     }
 }
 
+/// Serialize a task snapshot with an explicit marker for complete conversation
+/// history. Older snapshots may contain a partially populated `conversation`
+/// array, so field presence alone is not enough to skip journal reconstruction.
+fn serialize_task_snapshot(state: &TaskState) -> Result<String, CoreError> {
+    let mut snapshot = serde_json::to_value(state)?;
+    snapshot
+        .as_object_mut()
+        .expect("TaskState serializes as a JSON object")
+        .insert(
+            "conversation_snapshot_version".to_owned(),
+            serde_json::Value::from(CONVERSATION_SNAPSHOT_VERSION),
+        );
+    Ok(serde_json::to_string(&snapshot)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConstraintStrength, TaskStatus, create_task, recover_task};
@@ -2921,6 +2983,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(continued.revision, 2);
+        recovered.shutdown().await.unwrap();
+        store.close().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn partial_conversation_snapshot_rebuilds_ordered_journal_history() {
+        let (store, dir) = open_test_store().await;
+        let session = SessionId::generate();
+        store.create_session(&session.to_string()).await.unwrap();
+        let handle = create_task(
+            session,
+            WorkspaceId::generate(),
+            "recover conversation".to_owned(),
+            store.clone(),
+        )
+        .await
+        .unwrap();
+        let task_id = handle.task_id();
+        handle
+            .add_message("before snapshot: first".to_owned())
+            .await
+            .unwrap();
+        handle
+            .add_message("before snapshot: second".to_owned())
+            .await
+            .unwrap();
+
+        let agent_message = "assistant answer before snapshot";
+        let agent_event = super::StateEvent::AgentMessage {
+            message: agent_message.to_owned(),
+        };
+        store
+            .append_event(
+                &task_id.to_string(),
+                super::event_kind(&agent_event),
+                &serde_json::to_string(&agent_event).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let before_snapshot = handle.get_state().await.unwrap();
+        let mut legacy_json = serde_json::to_value(&before_snapshot).unwrap();
+        // The preceding implementation wrote this field without a marker
+        // proving it included every journal message covered by the snapshot.
+        // Model an intermediate snapshot that contains only the second turn.
+        legacy_json["conversation"] = serde_json::json!([{
+            "speaker": "user",
+            "content": "before snapshot: second"
+        }]);
+        legacy_json["agent_messages"] = serde_json::json!([agent_message]);
+        let snapshot_seq = store.latest_seq(&task_id.to_string()).await.unwrap();
+        store
+            .save_snapshot(
+                &task_id.to_string(),
+                snapshot_seq,
+                &legacy_json.to_string(),
+                "Created",
+                i64::try_from(before_snapshot.revision).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        handle
+            .add_message("after snapshot".to_owned())
+            .await
+            .unwrap();
+        handle.shutdown().await.unwrap();
+
+        let recovered = recover_task(task_id, store.clone()).await.unwrap();
+        let state = recovered.get_state().await.unwrap();
+        let context = super::driver::TaskModelContext::from_task(&state);
+        let history: Vec<_> = context
+            .history
+            .iter()
+            .map(|turn| (turn.speaker, turn.content.as_str()))
+            .collect();
+        assert_eq!(
+            history,
+            vec![
+                (
+                    tachyon_models::HistorySpeaker::User,
+                    "before snapshot: first"
+                ),
+                (
+                    tachyon_models::HistorySpeaker::User,
+                    "before snapshot: second"
+                ),
+                (tachyon_models::HistorySpeaker::Assistant, agent_message),
+                (tachyon_models::HistorySpeaker::User, "after snapshot"),
+            ]
+        );
+        assert_eq!(state.agent_messages, vec![agent_message]);
+
         recovered.shutdown().await.unwrap();
         store.close().await;
         std::fs::remove_dir_all(&dir).unwrap();
@@ -3311,7 +3467,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let (base, _) = super::starting_state(&row).unwrap();
+        let (base, _, _) = super::starting_state(&row).unwrap();
         let journal = store
             .load_events_since(&task_id.to_string(), -1)
             .await

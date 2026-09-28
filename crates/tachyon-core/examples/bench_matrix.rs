@@ -524,6 +524,7 @@ async fn run_sample(
             objective: descriptor.objective.clone(),
             history: Vec::new(),
             constraints: Vec::new(),
+            hard_requirements: Vec::new(),
         },
         requested_checks: descriptor.requested_checks.clone(),
         available_checks: descriptor.available_checks.clone(),

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive};
+use tachyon_core::driver::{DriveError, DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive};
 use tachyon_core::{ConstraintStrength as TaskConstraintStrength, TaskStatus, create_task};
 use tachyon_models::fake::{FakeModelProvider, FakeResponse};
 use tachyon_mutation::blake3_hex;
@@ -151,6 +151,72 @@ fn test_plan(dir: &std::path::Path, state: &tachyon_core::TaskState) -> RunPlan 
 }
 
 #[tokio::test]
+async fn hard_constraints_require_contract_binding_before_provider_or_writes() {
+    let (dir, ws, store, task, context) = test_harness("hard-constraint-binding").await;
+    let observed = task.clone();
+    task.add_constraint(
+        "Do not change the public function signature".to_owned(),
+        TaskConstraintStrength::Hard,
+    )
+    .await
+    .unwrap();
+    let state = task.get_state().await.unwrap();
+    let provider = Arc::new(FakeModelProvider::new(ProviderId(
+        "unbound-constraint".into(),
+    )));
+    let script = serde_json::json!({
+        "decision": "propose_execution",
+        "operations": [{
+            "capability": "mutation.patch",
+            "reason": "repair",
+            "args": {
+                "path": TARGET,
+                "base_hash": blake3_hex(BROKEN.as_bytes()),
+                "new_content": FIXED,
+            }
+        }]
+    });
+    provider.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
+    let plan = test_plan(&dir, &state);
+
+    let result = drive(
+        DriveHost::Supervisor {
+            handle: task,
+            store: store.clone(),
+        },
+        context,
+        provider.clone(),
+        plan,
+    )
+    .await;
+
+    assert!(matches!(result, Err(DriveError::ConstraintBinding(_))));
+    assert_eq!(
+        provider.request_count(),
+        0,
+        "unbound constraints stop before inference"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join(TARGET)).unwrap(),
+        BROKEN,
+        "unbound constraints stop before mutation"
+    );
+    assert_eq!(
+        observed.get_state().await.unwrap().status,
+        TaskStatus::Created
+    );
+
+    observed.shutdown().await.unwrap();
+    store.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("tachyon-driver-run-{}-{id}", std::process::id()));
@@ -281,7 +347,9 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
     assert!(request.context.iter().any(|block| {
         block.kind == tachyon_models::ContextKind::Constraint
             && block.trust == tachyon_models::TrustLevel::User
-            && block.content.contains("[hard constraint | source:user]")
+            && block
+                .content
+                .contains("[hard constraint | source:user | trust:user]")
             && block
                 .content
                 .contains("Do not change the public function signature")

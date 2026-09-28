@@ -44,7 +44,7 @@ use tachyon_retrieval::{
 use tachyon_store::StoreWriter;
 use tachyon_tools::{ToolError, ToolsContext};
 use tachyon_types::{MutationBatchId, TaskId};
-use tachyon_verify::{AcceptanceContract, VerificationRisk, VerifyError};
+use tachyon_verify::{AcceptanceContract, HardRequirement, VerificationRisk, VerifyError};
 
 /// Which host contract this run follows.
 ///
@@ -128,6 +128,10 @@ pub struct TaskModelContext {
     pub history: Vec<HistoryTurn>,
     /// Current constraints, with source and strength preserved.
     pub constraints: Vec<ContextConstraint>,
+    /// Stable executable binding requirements for all hard constraints.
+    /// These are checked against the trusted acceptance contract before a
+    /// provider is invoked and again by the supervisor's verifier.
+    pub hard_requirements: Vec<HardRequirement>,
 }
 
 impl TaskModelContext {
@@ -174,11 +178,21 @@ impl TaskModelContext {
                 text: constraint.text.clone(),
             })
             .collect();
+        let hard_requirements = state
+            .constraints
+            .iter()
+            .filter(|constraint| constraint.strength == TaskConstraintStrength::Hard)
+            .map(|constraint| HardRequirement {
+                id: constraint.id,
+                text: constraint.text.clone(),
+            })
+            .collect();
         Self {
             revision: Some(state.revision),
             objective: state.objective.clone(),
             history,
             constraints,
+            hard_requirements,
         }
     }
 }
@@ -246,6 +260,10 @@ pub enum DriveError {
     /// Pre-mutation gate, intent, engine, or readback failure.
     #[error("mutation stage: {0}")]
     Mutation(String),
+    /// A canonical hard task constraint has no exact executable contract
+    /// binding. Fail before the provider can propose a mutation.
+    #[error("hard constraint binding refused: {0}")]
+    ConstraintBinding(String),
     /// The human denied a parked approval; the recorded reason is kept.
     #[error("approval denied: {reason}")]
     ApprovalDenied {
@@ -412,6 +430,7 @@ pub async fn drive(
     // cancelled run halts before `StartRun` if the cancel landed first,
     // and between every pair of stages after that.
     halted(&plan)?;
+    validate_hard_constraint_bindings(&plan.task_context.hard_requirements, &plan.contract)?;
 
     // M10 plan §2: the worker proposes, the supervisor acknowledges and
     // journals. `StartRun` first, then one revision-bound proposal per
@@ -459,6 +478,46 @@ pub async fn drive(
     outcome.state = Some(done.state);
     outcome.final_verification_ms = Some(done.final_verification_ms);
     Ok(outcome)
+}
+
+/// Validate exact executable bindings for every supervisor-owned hard
+/// requirement before any model call or consequential effect. The contract's
+/// checks come from trusted runtime configuration; this function never infers
+/// executable meaning from prose. Gateway admission uses it before pinning the
+/// workspace, and `drive` repeats it for non-gateway hosts.
+pub fn validate_hard_constraint_bindings(
+    hard: &[HardRequirement],
+    contract: &AcceptanceContract,
+) -> Result<(), DriveError> {
+    let contract_hard: Vec<_> = contract
+        .clauses
+        .iter()
+        .filter_map(|clause| {
+            if let tachyon_verify::Clause::HardConstraint {
+                id, text, check, ..
+            } = clause
+            {
+                Some((*id, text, check.as_ref()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !hard.is_empty() || !contract_hard.is_empty() {
+        tachyon_verify::validate_hard_requirements(contract, hard)
+            .map_err(|error| DriveError::ConstraintBinding(error.to_string()))?;
+    }
+
+    if let Some((id, _, _)) = contract_hard
+        .iter()
+        .find(|(_, _, check)| matches!(check, tachyon_verify::Clause::Unresolved { .. }))
+    {
+        return Err(DriveError::ConstraintBinding(format!(
+            "hard constraint {id} has an unresolved check"
+        )));
+    }
+    Ok(())
 }
 
 impl RunOutcome {
@@ -988,5 +1047,88 @@ impl Proposer {
             })
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hard_constraint_binding_tests {
+    use super::*;
+    use tachyon_verify::Clause;
+
+    fn wrapped(id: uuid::Uuid, text: &str, check: Clause) -> Clause {
+        Clause::HardConstraint {
+            id,
+            text: text.to_owned(),
+            check: Box::new(check),
+        }
+    }
+
+    fn path_check() -> Clause {
+        Clause::ChangedPathsWithin { paths: vec![] }
+    }
+
+    #[test]
+    fn hard_bindings_must_be_exact_unique_and_executable() {
+        let requirement = HardRequirement {
+            id: uuid::Uuid::now_v7(),
+            text: "preserve the public API".to_owned(),
+        };
+        let exact = AcceptanceContract {
+            clauses: vec![wrapped(requirement.id, &requirement.text, path_check())],
+        };
+        assert!(
+            validate_hard_constraint_bindings(std::slice::from_ref(&requirement), &exact).is_ok()
+        );
+        assert!(
+            validate_hard_constraint_bindings(
+                std::slice::from_ref(&requirement),
+                &AcceptanceContract::default()
+            )
+            .is_err()
+        );
+
+        let mismatched = AcceptanceContract {
+            clauses: vec![wrapped(requirement.id, "weakened", path_check())],
+        };
+        assert!(
+            validate_hard_constraint_bindings(std::slice::from_ref(&requirement), &mismatched)
+                .is_err()
+        );
+
+        let extra = AcceptanceContract {
+            clauses: vec![
+                wrapped(requirement.id, &requirement.text, path_check()),
+                wrapped(uuid::Uuid::now_v7(), "extra", path_check()),
+            ],
+        };
+        assert!(
+            validate_hard_constraint_bindings(std::slice::from_ref(&requirement), &extra).is_err()
+        );
+        assert!(validate_hard_constraint_bindings(&[], &extra).is_err());
+
+        let duplicate = AcceptanceContract {
+            clauses: vec![
+                wrapped(requirement.id, &requirement.text, path_check()),
+                wrapped(requirement.id, &requirement.text, path_check()),
+            ],
+        };
+        assert!(
+            validate_hard_constraint_bindings(std::slice::from_ref(&requirement), &duplicate)
+                .is_err()
+        );
+
+        let unresolved = AcceptanceContract {
+            clauses: vec![wrapped(
+                requirement.id,
+                &requirement.text,
+                Clause::Unresolved {
+                    description: "no executable check".to_owned(),
+                },
+            )],
+        };
+        assert!(
+            validate_hard_constraint_bindings(std::slice::from_ref(&requirement), &unresolved)
+                .is_err()
+        );
     }
 }

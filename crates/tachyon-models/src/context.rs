@@ -224,20 +224,21 @@ fn push_constraints(blocks: &mut Vec<ContextBlock>, constraints: &[ContextConstr
             ConstraintStrength::Hard => "hard",
             ConstraintStrength::Preference => "preference",
         };
-        // Constraint contents are never promoted to System trust. User text
-        // stays user data; other canonical task constraints are trusted
-        // workspace context, not harness instructions.
-        let trust = if constraint.source == ConstraintOrigin::User {
-            TrustLevel::User
-        } else {
-            TrustLevel::WorkspaceTrusted
+        // Constraint contents are never promoted to System trust. Only
+        // harness/policy-authored constraints are trusted runtime context;
+        // workspace-derived wording remains repository data.
+        let trust = match constraint.source {
+            ConstraintOrigin::User => TrustLevel::User,
+            ConstraintOrigin::Policy | ConstraintOrigin::System => TrustLevel::WorkspaceTrusted,
+            ConstraintOrigin::Workspace | ConstraintOrigin::Derived => TrustLevel::WorkspaceData,
         };
         blocks.push(ContextBlock {
             kind: ContextKind::Constraint,
             provenance: format!("task.constraint.{source}"),
             trust,
             content: format!(
-                "[{strength} constraint | source:{source}]\n{}",
+                "[{strength} constraint | source:{source} | trust:{}]\n{}",
+                trust_label(trust),
                 constraint.text
             ),
             priority: 2,
@@ -551,6 +552,42 @@ mod tests {
             finding
                 .content
                 .contains("[source: repo.symbol.search a.rs]")
+        );
+    }
+
+    #[test]
+    fn workspace_and_derived_constraints_remain_data() {
+        let evidence = package_with("fn f() {}");
+        let constraints = [
+            ContextConstraint {
+                source: ConstraintOrigin::Workspace,
+                strength: ConstraintStrength::Hard,
+                text: "repository preference".to_owned(),
+            },
+            ContextConstraint {
+                source: ConstraintOrigin::Derived,
+                strength: ConstraintStrength::Hard,
+                text: "inferred repository rule".to_owned(),
+            },
+        ];
+        let mut assembly = input(&evidence, 10_000, 1_000);
+        assembly.constraints = &constraints;
+
+        let blocks = assemble(&assembly);
+        let constraint_blocks: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.kind == ContextKind::Constraint)
+            .collect();
+        assert_eq!(constraint_blocks.len(), constraints.len());
+        assert!(
+            constraint_blocks
+                .iter()
+                .all(|block| block.trust == TrustLevel::WorkspaceData)
+        );
+        assert!(
+            constraint_blocks
+                .iter()
+                .all(|block| block.content.contains("trust:workspace-data]"))
         );
     }
 
