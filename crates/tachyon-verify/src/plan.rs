@@ -48,7 +48,7 @@ impl VerificationPlan {
         hard: &[HardRequirement],
         risk: VerificationRisk,
     ) -> Result<Self, VerifyError> {
-        validate_requirements(contract, hard)?;
+        validate_hard_requirements(contract, hard)?;
         let planned = WorkspaceSnapshot::capture(baseline.root())?;
         Self::from_snapshot(task_id, revision, contract, baseline, hard, risk, planned)
     }
@@ -64,7 +64,7 @@ impl VerificationPlan {
         risk: VerificationRisk,
         context: &tachyon_tools::ToolsContext,
     ) -> Result<Self, VerifyError> {
-        validate_requirements(contract, hard)?;
+        validate_hard_requirements(contract, hard)?;
         if context.workspace_root.canonicalize()? != baseline.root() {
             return Err(VerifyError::Blocked(
                 "verification context root differs from baseline".into(),
@@ -197,7 +197,9 @@ impl VerificationPlan {
     }
 }
 
-fn validate_requirements(
+/// Require one exact, unique top-level acceptance binding for every canonical
+/// task hard requirement, and reject extra bindings absent from task state.
+pub fn validate_hard_requirements(
     contract: &AcceptanceContract,
     hard: &[HardRequirement],
 ) -> Result<(), VerifyError> {

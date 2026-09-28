@@ -369,6 +369,59 @@ fn every_hard_binding_is_enforced_not_just_the_first() {
 }
 
 #[test]
+fn hard_constraint_path_scope_is_conjoined_with_the_acceptance_scope() {
+    use tachyon_verify::{AcceptanceContract, Clause};
+    let items = vec![
+        EvidenceItem {
+            path: "src/one.rs".into(),
+            hash: hash_bytes(b"one"),
+            bytes: b"one".to_vec(),
+        },
+        EvidenceItem {
+            path: "src/two.rs".into(),
+            hash: hash_bytes(b"two"),
+            bytes: b"two".to_vec(),
+        },
+    ];
+    let manifest = manifest_of(&items);
+    let bound = bind_contract(
+        AcceptanceContract {
+            clauses: vec![
+                Clause::ChangedPathsWithin {
+                    paths: vec!["src/".into()],
+                },
+                Clause::HardConstraint {
+                    id: uuid::Uuid::now_v7(),
+                    text: "only edit one.rs".into(),
+                    check: Box::new(Clause::ChangedPathsWithin {
+                        paths: vec!["src/one.rs".into()],
+                    }),
+                },
+            ],
+        },
+        3,
+    );
+
+    let inside_both = ProposedFile {
+        path: "src/one.rs".into(),
+        base_hash: Some(items[0].hash.clone()),
+        new_content: b"one!".to_vec(),
+    };
+    gate_proposal_writes(&bound, &[inside_both], &manifest, &[])
+        .expect("write inside acceptance and hard scopes passes");
+
+    let inside_acceptance_only = ProposedFile {
+        path: "src/two.rs".into(),
+        base_hash: Some(items[1].hash.clone()),
+        new_content: b"two!".to_vec(),
+    };
+    assert!(
+        gate_proposal_writes(&bound, &[inside_acceptance_only], &manifest, &[]).is_err(),
+        "broad acceptance scope must not widen a narrower hard constraint"
+    );
+}
+
+#[test]
 fn scopeless_contract_refuses_writes_fail_closed() {
     // A writes-capable contract with no path clause (only CommandPasses)
     // must not silently authorize any non-protected path.

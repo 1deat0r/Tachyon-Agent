@@ -36,7 +36,10 @@ impl ModelProvider for BlockingProvider {
 
     fn capabilities(&self) -> ModelCapabilities {
         BLOCKING_CAPABILITIES
-            .get_or_init(ModelCapabilities::default)
+            .get_or_init(|| ModelCapabilities {
+                context_window_tokens: 128_000,
+                ..ModelCapabilities::default()
+            })
             .clone()
     }
 

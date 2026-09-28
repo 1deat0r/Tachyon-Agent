@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tachyon_core::create_task;
-use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, drive};
+use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive};
 use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds, evidence_concurrency, max_overlap};
 use tachyon_models::fake::{FakeModelProvider, FakeResponse};
 use tachyon_models::{
@@ -369,6 +369,7 @@ fn build_script(descriptor: &Descriptor, ws: &Path) -> Result<serde_json::Value,
         }
         operations.push(serde_json::json!({
             "capability": "mutation.patch",
+            "reason": "Apply the tested fixture correction",
             "args": {
                 "path": rel,
                 "base_hash": blake3_hex(&current),
@@ -425,7 +426,12 @@ async fn run_sample(
         "bench-script-{}",
         descriptor.id
     ))));
-    fake.push_response(FakeResponse::respond(&script.to_string()));
+    fake.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
     let provider = Arc::new(TimedProvider::new(fake.clone()));
 
     let requests: Vec<EvidenceRequest> = descriptor
@@ -513,6 +519,13 @@ async fn run_sample(
         mutation_dir,
         batch_id: "bench-batch-1".into(),
         model: "scripted-replay-1".into(),
+        task_context: TaskModelContext {
+            revision: None,
+            objective: descriptor.objective.clone(),
+            history: Vec::new(),
+            constraints: Vec::new(),
+            hard_requirements: Vec::new(),
+        },
         requested_checks: descriptor.requested_checks.clone(),
         available_checks: descriptor.available_checks.clone(),
         bounds: RuntimeBounds::default(),

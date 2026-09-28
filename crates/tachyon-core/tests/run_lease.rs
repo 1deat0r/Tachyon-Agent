@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use tachyon_core::create_task;
-use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, drive};
+use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive};
 use tachyon_models::fake::{FakeModelProvider, FakeResponse};
 use tachyon_mutation::blake3_hex;
 use tachyon_policy::Policy;
@@ -89,6 +89,7 @@ async fn run_held_lease_passes_through_verification_without_self_deadlock() {
         "decision": "propose_execution",
         "operations": [{
             "capability": "mutation.patch",
+            "reason": "Correct the return value to satisfy the task objective",
             "args": {
                 "path": TARGET,
                 "base_hash": blake3_hex(BROKEN.as_bytes()),
@@ -96,7 +97,12 @@ async fn run_held_lease_passes_through_verification_without_self_deadlock() {
             }
         }]
     });
-    provider.push_response(FakeResponse::respond(&script.to_string()));
+    provider.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
 
     let plan = RunPlan {
         origin: Instant::now(),
@@ -114,6 +120,7 @@ async fn run_held_lease_passes_through_verification_without_self_deadlock() {
         mutation_dir: dir.join("mutation-state"),
         batch_id: "run-lease-batch-1".to_owned(),
         model: "scripted-replay-1".to_owned(),
+        task_context: TaskModelContext::from_task(&task.get_state().await.unwrap()),
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds: RuntimeBounds::default(),

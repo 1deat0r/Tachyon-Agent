@@ -58,6 +58,7 @@ async fn comp_model_wait_harness_overhead() {
     let input = AssembleInput {
         system_prompt: "Explain behavior differences between implementations. Cite file paths.",
         objective: &question,
+        constraints: &[],
         evidence: &evidence,
         history: &[],
         total_budget_tokens: 8_192,

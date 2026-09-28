@@ -13,7 +13,7 @@ mod plan;
 mod project;
 mod runner;
 mod snapshot;
-pub use plan::{HardRequirement, VerificationPlan, VerificationRisk};
+pub use plan::{HardRequirement, VerificationPlan, VerificationRisk, validate_hard_requirements};
 pub use project::{ProjectDetector, RustProjectDetector};
 pub use runner::{CheckEvidence, VerificationReport, run, run_with_lifetime};
 pub use snapshot::WorkspaceSnapshot;

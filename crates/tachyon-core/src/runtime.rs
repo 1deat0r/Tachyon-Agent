@@ -805,7 +805,10 @@ pub fn gate_proposal_writes(
             }
         }
     }
-    let mut allowed: Vec<String> = Vec::new();
+    // Every `ChangedPathsWithin` clause is required by the contract. Paths
+    // inside one clause are alternatives; separate clauses are conjunctive,
+    // including checks wrapped by `HardConstraint`.
+    let mut allowed: Vec<Vec<String>> = Vec::new();
     let mut unchanged: Vec<String> = Vec::new();
     let mut unresolved = false;
     for clause in &bound.contract.clauses {
@@ -816,14 +819,13 @@ pub fn gate_proposal_writes(
             "unresolved contract clause".into(),
         ));
     }
-    // Every bound extra_hard scope independently constrains the write: the
-    // proposal must fall within the contract scope AND within each binding.
-    // Checking only the first binding let later bindings go unenforced; an
-    // empty scope set with a non-empty proposal fails closed.
-    let extra_scopes: Vec<String> = extra_hard
+    // Every bound extra_hard scope independently constrains the write in
+    // addition to all contract clauses. Each binding is one single-path
+    // scope, so a broad acceptance clause cannot widen a narrower hard rule.
+    let extra_scopes: Vec<Vec<String>> = extra_hard
         .iter()
         .filter_map(|b| b.bound_check.as_ref())
-        .map(|scope| normalize_key(scope.as_str()))
+        .map(|scope| normalize_key(scope.as_str()).map(|scope| vec![scope]))
         .collect::<Result<Vec<_>, _>>()?;
     if !files.is_empty() && allowed.is_empty() {
         return Err(RuntimeError::WriteRefused(
@@ -845,18 +847,20 @@ pub fn gate_proposal_writes(
                 return Err(RuntimeError::WriteRefused(format!("file unchanged: {rel}")));
             }
         }
-        if !allowed
-            .iter()
-            .any(|scope| rel == *scope || rel.starts_with(&format!("{scope}/")))
-        {
+        let is_within_any = |scopes: &[String]| {
+            scopes
+                .iter()
+                .any(|scope| rel == *scope || rel.starts_with(&format!("{scope}/")))
+        };
+        if !allowed.iter().all(|scopes| is_within_any(scopes)) {
             return Err(RuntimeError::WriteRefused(format!(
                 "outside acceptance scope: {rel}"
             )));
         }
-        for scope in &extra_scopes {
-            if rel != *scope && !rel.starts_with(&format!("{scope}/")) {
+        for scopes in &extra_scopes {
+            if !is_within_any(scopes) {
                 return Err(RuntimeError::WriteRefused(format!(
-                    "outside hard binding {scope}: {rel}"
+                    "outside hard binding scope: {rel}"
                 )));
             }
         }
@@ -880,17 +884,21 @@ pub fn gate_proposal_writes(
 
 fn collect_bindings(
     clause: &Clause,
-    allowed: &mut Vec<String>,
+    allowed: &mut Vec<Vec<String>>,
     unchanged: &mut Vec<String>,
     unresolved: &mut bool,
 ) -> Result<(), RuntimeError> {
     match clause {
         Clause::ChangedPathsWithin { paths } => {
-            for path in paths {
-                // Normalize exactly like proposed files so `src/` and
-                // `src` admit the same writes; escapes fail closed here.
-                allowed.push(normalize_key(path.as_str())?);
-            }
+            let scope = paths
+                .iter()
+                .map(|path| {
+                    // Normalize exactly like proposed files so `src/` and
+                    // `src` admit the same writes; escapes fail closed here.
+                    normalize_key(path.as_str())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            allowed.push(scope);
         }
         Clause::FileUnchanged { path } => {
             unchanged.push(normalize_key(path.as_str())?);

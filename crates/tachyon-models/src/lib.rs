@@ -41,8 +41,9 @@ pub use capabilities::{
     CapabilityRequirements, CostClass, LatencyClass, ModelCapabilities, ModelFeature,
 };
 pub use context::{
-    AssembleInput, CHARS_PER_TOKEN, ContextBlock, ContextKind, HistorySpeaker, HistoryTurn,
-    MAX_EXCERPT_CHARS, TrustLevel, assemble, collapse_repeated_lines, estimate_tokens,
+    AssembleInput, CHARS_PER_TOKEN, ConstraintOrigin, ConstraintStrength, ContextBlock,
+    ContextConstraint, ContextKind, HistorySpeaker, HistoryTurn, MAX_EXCERPT_CHARS, TrustLevel,
+    assemble, collapse_repeated_lines, estimate_tokens,
 };
 pub use decision::{AgentDecision, CapabilityRequest, ProposedOperation, parse_decision};
 pub use fake::{FakeModelProvider, FakeResponse};

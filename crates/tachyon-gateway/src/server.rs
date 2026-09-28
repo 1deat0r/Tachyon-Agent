@@ -11,7 +11,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use tachyon_core::driver::{DriveError, DriveHost, EvidenceMode, RunPlan, drive};
+use tachyon_core::driver::{
+    DriveError, DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive,
+    validate_hard_constraint_bindings,
+};
 use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds};
 use tachyon_core::{CoreError, SupervisorHandle, TaskStatus, create_task, recover_task};
 use tachyon_models::ModelProvider;
@@ -1309,9 +1312,9 @@ async fn resume_task(state: &Arc<GatewayState>, task_id: TaskId) -> CommandResul
 /// Order is the safety property, not a convenience: one in-flight run
 /// per task (checked and inserted under a single lock), honest provider
 /// refusal before any work, supervisor/terminal check, workspace root
-/// existence + canonicalization rejection, acceptance resolution — all
-/// BEFORE any lease exists. Then the workspace lease is drawn on the
-/// canonical root (typed `workspace_busy` exclusion) and the SAME
+/// existence + canonicalization, and acceptance/hard-binding preflight
+/// all happen before any lease exists. Then the workspace lease is drawn
+/// on the canonical root (typed `workspace_busy` exclusion) and the SAME
 /// canonical value is pinned into durable task state — R1 board B1
 /// amended the plan's original pin-then-lease order: every refusal
 /// (busy workspace, pin conflict) must leave NO pin from a run that
@@ -1347,8 +1350,8 @@ async fn start_run(
 
 /// Every pre-spawn step of [`start_run`]. The workspace lease is drawn
 /// BEFORE the durable pin, so every refusal here — provider, terminal,
-/// canonicalization, acceptance, `workspace_busy`, pin conflict — leaves
-/// no pin from an attempted-but-refused run; no refusal spawns a driver.
+/// canonicalization, acceptance/binding, `workspace_busy`, pin conflict —
+/// leaves no pin from an attempted-but-refused run; no refusal spawns a driver.
 async fn prepare_run(
     state: &Arc<GatewayState>,
     task_id: TaskId,
@@ -1384,9 +1387,12 @@ async fn prepare_run(
     //    (tachyon-tools/src/lib.rs) never sees a raw or broken root.
     let canonical = canonical_workspace_root(workspace_root)?;
 
-    // 4. Acceptance resolution (item 9): explicit file wins, Cargo
-    //    default detects, everything else fails closed.
+    // 4. Acceptance resolution (item 9) and exact task hard-constraint
+    //    binding: explicit file wins, Cargo default detects, everything
+    //    else fails closed. A missing or unresolved hard binding refuses
+    //    before a lease or durable workspace pin exists.
     let contract = resolve_acceptance(acceptance, &canonical)?;
+    let task_context = task_context_for_contract(&current, &contract)?;
 
     // 5. Workspace lease BEFORE the durable pin (R1 board B1): a busy
     //    workspace must refuse without pinning anything — a pin left by
@@ -1440,6 +1446,7 @@ async fn prepare_run(
             .join("mutation-state"),
         batch_id: format!("run-{}", uuid::Uuid::now_v7()),
         model,
+        task_context,
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds,
@@ -1628,6 +1635,24 @@ fn resolve_acceptance(
         .validate()
         .map_err(|err| fail("acceptance_invalid", err.to_string()))?;
     Ok(detected)
+}
+
+/// Builds the immutable task context from the same snapshot whose hard
+/// requirements are checked against this run's trusted acceptance contract.
+fn task_context_for_contract(
+    state: &tachyon_core::TaskState,
+    contract: &AcceptanceContract,
+) -> Result<TaskModelContext, CommandResult> {
+    let task_context = TaskModelContext::from_task(state);
+    validate_hard_constraint_bindings(&task_context.hard_requirements, contract).map_err(
+        |error| {
+            fail(
+                "acceptance_constraint_binding",
+                format!("hard task constraints require exact executable bindings: {error}"),
+            )
+        },
+    )?;
+    Ok(task_context)
 }
 
 /// Default contract for a detected Cargo workspace (plan item 9):
@@ -2024,6 +2049,102 @@ mod stale_supervisor_tests {
                 panic!("retry must admit, got {code}|{message}")
             }
         }
+
+        gateway.shutdown().await;
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn unbound_hard_constraint_refuses_start_before_pin_or_provider_call() {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("tachyon-hard-binding-{}-{id}", std::process::id()));
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(
+            ws.join("Cargo.toml"),
+            "[package]\nname=\"hard-binding\"\nversion=\"0.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(ws.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n").unwrap();
+
+        let provider = Arc::new(tachyon_models::fake::FakeModelProvider::new(
+            tachyon_types::ProviderId("hard-binding-test".into()),
+        ));
+        let runtime = GatewayRuntime {
+            provider: Some(provider.clone()),
+            label: "hard-binding-test".to_owned(),
+            model: "scripted-replay-1".to_owned(),
+            redactor: CredentialBroker::default(),
+        };
+        let gateway = start_with(&dir, runtime).await.expect("gateway starts");
+        let state = gateway.state.clone();
+
+        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session_id: SessionId = session["session_id"]
+            .as_str()
+            .expect("session id")
+            .parse()
+            .expect("session id parses");
+        let task = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateTask {
+                    session_id,
+                    objective: "preserve the public API".to_owned(),
+                },
+            )
+            .await,
+        );
+        let task_id: TaskId = task["task_id"]
+            .as_str()
+            .expect("task id")
+            .parse()
+            .expect("task id parses");
+        let supervisor = state
+            .supervisors
+            .lock()
+            .await
+            .get(&task_id)
+            .cloned()
+            .expect("task supervisor is mapped");
+        supervisor
+            .add_constraint(
+                "Do not change the public function signature".to_owned(),
+                tachyon_core::ConstraintStrength::Hard,
+            )
+            .await
+            .expect("hard constraint is journalled");
+
+        let refused = handle_command(
+            &state,
+            &Command::StartRun {
+                task_id,
+                workspace_root: ws.display().to_string(),
+                acceptance: None,
+            },
+        )
+        .await;
+        match refused {
+            CommandResult::Err { code, .. } => {
+                assert_eq!(code, "acceptance_constraint_binding");
+            }
+            CommandResult::Ok { payload } => {
+                panic!("unbound hard constraint must refuse before spawn: {payload}")
+            }
+        }
+
+        let read = ok_payload(handle_command(&state, &Command::GetTask { task_id }).await);
+        assert!(
+            read["task"]["workspace_root"].is_null(),
+            "preflight refusal must not pin the workspace: {read}"
+        );
+        assert_eq!(read["task"]["status"], "Created");
+        assert_eq!(provider.request_count(), 0, "provider must not be invoked");
+        assert_eq!(
+            std::fs::read_to_string(ws.join("src/lib.rs")).unwrap(),
+            "pub fn value() -> u8 { 1 }\n"
+        );
 
         gateway.shutdown().await;
         std::fs::remove_dir_all(&dir).ok();
