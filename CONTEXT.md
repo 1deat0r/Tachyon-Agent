@@ -8,7 +8,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 
 | Term | Meaning |
 |------|---------|
-| **Gateway** | Local IPC (and optional remote) boundary. Clients (CLI/TUI) talk only to the gateway; no client owns agent decisions. |
+| **Gateway** | Local IPC (and optional remote) boundary. CLI/TUI are MVP clients; the ACP v1 Agent is a post-MVP client target (ADR-0005). Clients talk only to the gateway; no client owns agent decisions. |
 | **Task Supervisor** | Single logical writer of canonical task state for one task. Owns routing, planning, steering, recovery, completion coordination. |
 | **Session** | Persistent user interaction context. Owns zero or more tasks. |
 | **Task** | Executable unit of work with a durable status machine. |
