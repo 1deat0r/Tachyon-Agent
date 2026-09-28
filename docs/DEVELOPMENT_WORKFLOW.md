@@ -16,6 +16,12 @@ GitHub backs up and synchronizes the work, hosts long-lived tracking when useful
 - Pull requests are optional. Use one for risky or substantial changes that benefit from remote review, public contributions, parallel work, or a repository rule that requires one. Do not create a PR solely to satisfy convention.
 - Skills are tools for planning, implementation, tests, debugging, and review. This repository policy overrides a skill's default request to publish an Issue, create a branch, or open a PR when that step adds no value.
 
+## Skills and hooks
+
+Treat the current task and conversation as sufficient context for routine work. Do not add a `/to-spec`, `/to-tickets`, `/wayfinder`, Issue, branch, or PR stage unless it materially improves durable planning, coordination, isolation, or review. Skills may still provide useful decomposition, TDD, debugging, and review; adapt their output to the smallest useful local artifact. For a multi-session plan, keep it in the task or a local document unless a shared GitHub Issue/map adds coordination value. `/implement` must run `cargo verify`, review the diff, and make a coherent commit. Use a PR when this workflow's PR criteria or repository protections call for one.
+
+Keep blocking Git hooks fast: formatting, lightweight lint, and secret checks are suitable. Do not put the full test suite in a hook; `cargo verify` is the required agent gate before committing.
+
 ## Local verification
 
 The canonical entry point is `cargo verify`; it uses only the Rust toolchain and repository scripts, with no added task-runner dependency.
@@ -38,6 +44,6 @@ Local VERIFY is the normal pre-commit gate. Review the diff yourself on every ch
 
 ## CI and releases
 
-Main-branch pushes and pull requests run the same `cargo verify` entry point on Ubuntu, Windows, and macOS. Feature-branch pushes are checked by the PR run, avoiding a duplicate matrix before a pull request exists. Those checks provide independent platform coverage and remain part of repository branch protection. Continue useful local work while remote checks run; a protected merge or release must still satisfy the applicable repository rules.
+Main-branch pushes and pull requests run `cargo verify` on Ubuntu, where formatting, workspace checks, tests, and strict Clippy run once. Windows and macOS run `cargo verify platform`, which exercises the workspace tests on those supported platforms without repeating formatting and Clippy. This keeps clean-checkout and platform coverage in CI while reducing duplicate work. Feature-branch pushes are checked when a pull request is open. Continue useful local work while remote checks run; a protected merge or release must still satisfy the applicable repository rules.
 
 The scheduled/manual acceptance workflow runs `cargo verify full`. Keep expensive or platform-specific checks there when they add confidence without slowing routine commits. Do not remove security, release, or platform checks without evidence that they are redundant and no longer protect a supported path.

@@ -1,6 +1,6 @@
 # Handoff — 2026-09-26 session: scaffold research → Skeleton v2 → Tachyon delivery
 
-Fresh-session entry point. Nothing below is in-progress mid-edit; everything landed is committed/green, everything open is listed under **Open work**.
+Historical session snapshot. The open-work list below reflects 2026-09-26 and may be stale; verify tracker state before resuming it. Current development follows [`AGENTS.md`](AGENTS.md) and [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md), which supersede delivery instructions recorded in this snapshot.
 
 ## What this session established (condensed)
 
@@ -16,7 +16,7 @@ Fresh-session entry point. Nothing below is in-progress mid-edit; everything lan
 
 ## Open work (priority order)
 
-1. **Issue #31 fix PR** — stabilize the reap-vs-durable-cancel race at `crates/tachyon-core/tests/responsive_actor.rs:351` (tolerate the interleaving or sync on the durable-cancel receipt). Follow Tachyon `AGENTS.md` delivery loop: branch → gates before push → PR template → squash only when 3-OS green → stop-the-line if red.
+1. **Issue #31 cancellation race** — stabilize the reap-vs-durable-cancel race at `crates/tachyon-core/tests/responsive_actor.rs:351` (tolerate the interleaving or sync on the durable-cancel receipt). The Issue is optional tracking for this multi-session fix. Work locally, run `cargo verify`, review the diff, and commit atomically; use a branch or PR only if isolation, review value, or repository protection calls for it.
 2. **project-skeleton v0.2.0 merge** (offered, not yet approved) — edit canonical source at `/run/media/its1deat0r/Projects/Skills/canonical/project-skeleton/` (never the opencode view), bump `VERSION` 0.1.0 → 0.2.0 + CHANGELOG, add: `.claude/skills/` frozen path, permission-layer element, lazy `evals/` element, the four method rules above, refreshed source citations. Then re-export views (`export.py`) and run `scripts/validate-all.sh` per home `AGENTS.md`. **Input**: Hindsight document titled `Skeleton v2 sources pass (2026-09-26) — verified scaffold findings` (retrieve via `hindsight_search_knowledge_pages`).
 3. **Review-gate revisit trigger** — when a second identity/bot exists, enable `required_approving_review_count` on main (solo self-approval deadlock recorded in ADR 0003).
 4. Optional: first *scheduled* acceptance run fires 03:17 UTC nightly — glance at Actions after the first one.

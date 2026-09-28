@@ -24,7 +24,7 @@ Adopt the Skeleton v2 content layer — five paths, no frozen path moved:
 2. `opencode.json` — `git push` and `git push *` → `ask`; `read`/`edit` deny `*.env` and `*.env.*`, allow `*.env.example`.
 3. `.github/workflows/acceptance.yml` — `workflow_dispatch` plus nightly schedule, `permissions: contents: read`, running `scripts/m14_suites.sh` → `scripts/m14_fixture_gate.sh` → `scripts/m14_matrix.sh` (`M14_SAMPLES=10`) → `scripts/m14_matrix_check.mjs`, off the PR path.
 4. Track `skills-lock.json`; `.gitignore` switches `.claude/` to `.claude/*` + `!.claude/settings.json` (a directory exclusion cannot re-include children).
-5. Branch protection stays checks-only (alternative 2 above); review remains prose-enforced by the `/code-review` step of the delivery workflow.
+5. Branch protection stays checks-only (alternative 2 above). The `/code-review` sentence records the delivery workflow in force on 2026-09-26; current review policy is local diff review on every change and independent expert review when it adds value, as defined in [`docs/DEVELOPMENT_WORKFLOW.md`](../DEVELOPMENT_WORKFLOW.md).
 
 ## Evidence
 
@@ -36,7 +36,7 @@ Adopt the Skeleton v2 content layer — five paths, no frozen path moved:
 - `AGENTS.md` stamped `Skeleton: v2 — 2026-09-26`.
 - Fresh clones carry the permission policy and can reinstall pinned skills; the nightly acceptance run fails loudly if the suites, fixture gate, or matrix contracts break. First live run is a manual `workflow_dispatch` after this lands.
 - The required-review gate stays absent on GitHub until a second identity exists; that revisit trigger lives in this record.
-- Unchanged from v1: per-push three-OS CI, frozen paths, delivery loop, lazy skeleton rule.
+- Unchanged from v1 at decision time: three-OS CI, frozen paths, delivery loop, lazy skeleton rule. The current local-first workflow and CI triggers are defined by [`docs/DEVELOPMENT_WORKFLOW.md`](../DEVELOPMENT_WORKFLOW.md).
 
 ## Migration/rollback plan
 

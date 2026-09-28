@@ -25,6 +25,7 @@ fn dispatch() -> Result<(), String> {
             Ok(())
         }
         "fast" => fast_checks(),
+        "platform" => platform_checks(),
         "verify" => verify_checks(),
         "full" => {
             ensure_full_tools()?;
@@ -36,9 +37,10 @@ fn dispatch() -> Result<(), String> {
 }
 
 fn usage() -> &'static str {
-    "usage: cargo verify [fast|full]\n\
+    "usage: cargo verify [fast|platform|full]\n\
      fast: formatting and workspace compile checks\n\
      verify (default): fast checks, workspace tests, and strict Clippy\n\
+     platform: workspace tests for supported-platform CI runners\n\
      full: verify plus M14 security/recovery, fixture, benchmark-matrix, and perf gates"
 }
 
@@ -75,6 +77,10 @@ fn verify_checks() -> Result<(), String> {
         "-D",
         "warnings",
     ])
+}
+
+fn platform_checks() -> Result<(), String> {
+    run_cargo(&["test", "--workspace", "--locked"])
 }
 
 fn full_checks() -> Result<(), String> {

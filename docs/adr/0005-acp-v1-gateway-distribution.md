@@ -46,7 +46,7 @@ Advertise any optional Agent capability only after its full behavior is implemen
 - Offer one-shot `allow_once` and `reject_once` outcomes only. Do not offer `allow_always` or `reject_always` until persistent grants have a separate durable policy design.
 - On `session/cancel`, the ACP Client MUST answer each outstanding `session/request_permission` request with outcome `cancelled`. The Agent treats that result as no approval, stops model and tool work, waits for a Supervisor-owned drain acknowledgement, sends final updates, and only then returns `stopReason: cancelled` for the original `session/prompt` request. A `Cancelled` task status alone does not prove drain. Cancellation acknowledgement does not claim that an external effect was undone; effect idempotency and recovery rules still apply.
 
-Before ACP can be called supported, Tachyon must implement durable session lookup and ordered replay, safe prompt creation/start reconciliation, MCP subprocess launch/tool mediation, environment and secret handling, and Supervisor-owned cancellation drain and crash recovery in separate issue-sized slices. These are release blockers; the ACP layer must not add a parallel or less restrictive execution path.
+Before ACP can be called supported, Tachyon must implement durable session lookup and ordered replay, safe prompt creation/start reconciliation, MCP subprocess launch/tool mediation, environment and secret handling, and Supervisor-owned cancellation drain and crash recovery in separately scoped, independently verified small implementation slices. These are release blockers; the ACP layer must not add a parallel or less restrictive execution path.
 
 ## Alternatives considered
 
