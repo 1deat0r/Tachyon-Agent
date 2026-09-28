@@ -22,7 +22,7 @@ The architecture already makes CLI and TUI clients of one persistent gateway. Ad
 
 ### ACP requirements and Tachyon target
 
-The ACP v1 contract requires an Agent to implement `initialize` and return a negotiated protocol version and its capabilities. Agents MUST support the baseline session methods `session/new`, `session/prompt`, `session/cancel`, and `session/update`, plus Text and ResourceLink prompt content. Agents MUST support the MCP stdio transport; clients MAY provide server configurations, and agents SHOULD connect to the configured servers. The client launches the ACP Agent subprocess using UTF-8 newline-delimited JSON-RPC; stdout carries only valid ACP messages, while stderr may carry logs.
+The ACP Client begins the connection by calling `initialize`; the Agent MUST implement it and return a negotiated protocol version and its capabilities. Agents MUST support the baseline session methods `session/new`, `session/prompt`, `session/cancel`, and `session/update`, plus Text and ResourceLink prompt content. Agents MUST support the MCP stdio transport; clients MAY provide server configurations, and agents SHOULD connect to the configured servers. The client launches the ACP Agent subprocess using UTF-8 newline-delimited JSON-RPC; stdout carries only valid ACP messages, while stderr may carry logs.
 
 ACP `session/load` is optional. An Agent that advertises `loadSession: true` MUST replay the complete conversation before responding. Tachyon chooses complete durable session loading and ordered replay as a release requirement, and must not advertise `loadSession` before that contract is implemented. Tachyon also chooses to support client-supplied MCP servers over stdio for its ACP release target.
 
