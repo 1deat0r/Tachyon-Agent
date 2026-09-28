@@ -80,7 +80,7 @@ Implement these only after the MVP exit gate or an approved ADR.
 
 ## Local-first development
 
-Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the default local loop, verification tiers, commits, and when GitHub tracking, PRs, and CI add value. Run `cargo verify` before committing. Issues, branches, and PRs are optional for routine work. Skills may provide planning, implementation, TDD, review, and debugging techniques, but their default Issue, branch, PR, hook, or CI steps do not override this repository policy.
+Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the default local loop, verification tiers, atomic commits, and when GitHub tracking, PRs, and CI add value. For routine work, implement in the current working tree, run `cargo verify`, inspect the diff, and commit. Do not add an Issue, branch, PR, hook, or CI wait solely by convention. Skills may provide planning, implementation, TDD, review, and debugging techniques, but their default process steps do not override this repository policy. Preserve branch protections and other real security/release controls.
 
 ### Optional GitHub tracking
 
