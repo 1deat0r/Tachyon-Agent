@@ -2417,6 +2417,7 @@ dependencies = [
  "tachyon-models",
  "tachyon-mutation",
  "tachyon-policy",
+ "tachyon-retrieval",
  "tachyon-store",
  "tachyon-tools",
  "tachyon-types",

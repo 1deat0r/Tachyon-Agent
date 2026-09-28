@@ -35,7 +35,10 @@ impl ModelProvider for LeakyProvider {
     }
 
     fn capabilities(&self) -> ModelCapabilities {
-        ModelCapabilities::default()
+        ModelCapabilities {
+            context_window_tokens: 128_000,
+            ..ModelCapabilities::default()
+        }
     }
 
     fn estimate(&self, request: &ModelRequest) -> ProviderEstimate {

@@ -37,6 +37,8 @@ pub enum ContextKind {
     System,
     /// The user's objective verbatim.
     Objective,
+    /// Supervisor-recorded task constraints, separate from prompt text.
+    Constraint,
     /// Retrieved material (findings, contradictions, gaps).
     Evidence,
     /// Earlier conversation turns.
@@ -68,6 +70,43 @@ pub enum TrustLevel {
     WorkspaceData,
     /// Anything fetched past the workspace boundary.
     ExternalUntrusted,
+}
+
+/// Where a supervisor-recorded constraint originated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintOrigin {
+    /// Stated by the user.
+    User,
+    /// Added by policy.
+    Policy,
+    /// Inferred from the workspace.
+    Workspace,
+    /// Added by the harness.
+    System,
+    /// Derived from other task state.
+    Derived,
+}
+
+/// Whether a supervisor-recorded constraint is binding or advisory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintStrength {
+    /// Cannot be weakened by model output.
+    Hard,
+    /// Advisory preference.
+    Preference,
+}
+
+/// A task constraint supplied to context assembly.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextConstraint {
+    /// Origin used for provenance and trust classification.
+    pub source: ConstraintOrigin,
+    /// Binding strength.
+    pub strength: ConstraintStrength,
+    /// Constraint text.
+    pub text: String,
 }
 
 /// One typed, trusted, prioritized context unit.
@@ -105,6 +144,8 @@ pub struct AssembleInput<'a> {
     pub system_prompt: &'a str,
     /// The user's objective verbatim.
     pub objective: &'a str,
+    /// Supervisor-recorded task constraints.
+    pub constraints: &'a [ContextConstraint],
     /// Retrieved evidence; may be empty for pure-conversation calls.
     pub evidence: &'a EvidencePackage,
     /// Earlier turns, oldest first.
@@ -156,6 +197,7 @@ pub fn assemble(input: &AssembleInput<'_>) -> Vec<ContextBlock> {
     let mut blocks = Vec::new();
     push_system(&mut blocks, input.system_prompt);
     push_objective(&mut blocks, input.objective);
+    push_constraints(&mut blocks, input.constraints);
     push_evidence(&mut blocks, &input.evidence.contradictions, 60);
     push_evidence(&mut blocks, &input.evidence.findings, 100);
     push_history(&mut blocks, input.history);
@@ -169,6 +211,41 @@ pub fn assemble(input: &AssembleInput<'_>) -> Vec<ContextBlock> {
     blocks
 }
 
+fn push_constraints(blocks: &mut Vec<ContextBlock>, constraints: &[ContextConstraint]) {
+    for constraint in constraints {
+        let source = match constraint.source {
+            ConstraintOrigin::User => "user",
+            ConstraintOrigin::Policy => "policy",
+            ConstraintOrigin::Workspace => "workspace",
+            ConstraintOrigin::System => "system",
+            ConstraintOrigin::Derived => "derived",
+        };
+        let strength = match constraint.strength {
+            ConstraintStrength::Hard => "hard",
+            ConstraintStrength::Preference => "preference",
+        };
+        // Constraint contents are never promoted to System trust. User text
+        // stays user data; other canonical task constraints are trusted
+        // workspace context, not harness instructions.
+        let trust = if constraint.source == ConstraintOrigin::User {
+            TrustLevel::User
+        } else {
+            TrustLevel::WorkspaceTrusted
+        };
+        blocks.push(ContextBlock {
+            kind: ContextKind::Constraint,
+            provenance: format!("task.constraint.{source}"),
+            trust,
+            content: format!(
+                "[{strength} constraint | source:{source}]\n{}",
+                constraint.text
+            ),
+            priority: 2,
+            created_at: Timestamp::now(),
+        });
+    }
+}
+
 /// Trust for retrieved sources. Known workspace sources are data; anything
 /// external-looking is untrusted; anything unrecognized fails closed to
 /// `ExternalUntrusted`. Nothing retrieved ever becomes `System` or `User`.
@@ -177,6 +254,7 @@ fn trust_for_source(source: &str) -> TrustLevel {
         || source.starts_with("fs.")
         || source.starts_with("git.")
         || source.starts_with("process.")
+        || source.starts_with("tachyon.verify.")
     {
         TrustLevel::WorkspaceData
     } else {
@@ -335,8 +413,9 @@ fn context_kind_rank(kind: ContextKind) -> u8 {
     match kind {
         ContextKind::System => 0,
         ContextKind::Objective => 1,
-        ContextKind::Evidence => 2,
-        ContextKind::History(_) => 3,
+        ContextKind::Constraint => 2,
+        ContextKind::Evidence => 3,
+        ContextKind::History(_) => 4,
     }
 }
 
@@ -448,6 +527,7 @@ mod tests {
         AssembleInput {
             system_prompt: "sys",
             objective: "obj",
+            constraints: &[],
             evidence,
             history: &[],
             total_budget_tokens: total,
@@ -525,6 +605,7 @@ mod tests {
         let input = AssembleInput {
             system_prompt: &"s".repeat(4_000),
             objective: &"o".repeat(4_000),
+            constraints: &[],
             evidence: &evidence,
             history: &[],
             total_budget_tokens: 40,
@@ -553,6 +634,7 @@ mod tests {
         let input = AssembleInput {
             system_prompt: "",
             objective: "",
+            constraints: &[],
             evidence: &evidence,
             history: &[],
             total_budget_tokens: 0,
@@ -576,6 +658,7 @@ mod tests {
         let input = AssembleInput {
             system_prompt: "system prompt text",
             objective: "user objective text",
+            constraints: &[],
             evidence: &evidence,
             history: &[],
             total_budget_tokens: 10,
@@ -610,6 +693,7 @@ mod tests {
         let input = AssembleInput {
             system_prompt: "sys",
             objective: "obj",
+            constraints: &[],
             evidence: &evidence,
             history: &history,
             total_budget_tokens: 10_000,
@@ -644,6 +728,7 @@ mod tests {
         let input = AssembleInput {
             system_prompt: "sys",
             objective: "obj",
+            constraints: &[],
             evidence: &evidence,
             history: &[],
             total_budget_tokens: 10_000,

@@ -204,6 +204,7 @@ async fn class_b_step(router: &mut Router, index: &SymbolIndex) {
     let input = AssembleInput {
         system_prompt: SYSTEM_B,
         objective: REQUEST_B,
+        constraints: &[],
         evidence: &package,
         history: &[],
         total_budget_tokens: 8_192,

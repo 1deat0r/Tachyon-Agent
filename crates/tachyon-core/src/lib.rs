@@ -297,6 +297,25 @@ pub struct OpenQuestion {
     pub text: String,
 }
 
+/// Speaker for a durable message attached to one task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskConversationSpeaker {
+    /// User message or steering input.
+    User,
+    /// Model response recorded by the Supervisor.
+    Agent,
+}
+
+/// One ordered, durable conversation message for model context and replay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskConversationMessage {
+    /// Who produced the message.
+    pub speaker: TaskConversationSpeaker,
+    /// Message content.
+    pub content: String,
+}
+
 /// Canonical task state: the supervisor is its only logical writer (spec §3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskState {
@@ -357,6 +376,11 @@ pub struct TaskState {
     /// text only, bounded by the writer; never source blobs) (M11 item 7).
     #[serde(default)]
     pub agent_messages: Vec<String>,
+    /// Durable user/agent conversation order for subsequent reasoning.
+    /// Older snapshots omit this field; journal replay fills entries for
+    /// messages written after the snapshot.
+    #[serde(default)]
+    pub conversation: Vec<TaskConversationMessage>,
     /// Durable `approval_request` records: the parked ask, carried verbatim
     /// from [`tachyon_policy::ApprovalRequest`] (M11 item 8 / D4).
     #[serde(default)]
@@ -1018,6 +1042,7 @@ pub async fn create_task(
         evidence_summary: Vec::new(),
         changed_files: Vec::new(),
         agent_messages: Vec::new(),
+        conversation: Vec::new(),
         approval_requests: Vec::new(),
         verification: None,
         status: TaskStatus::Created,
@@ -1174,6 +1199,7 @@ fn starting_state(row: &TaskRow) -> Result<(TaskState, i64), CoreError> {
         evidence_summary: Vec::new(),
         changed_files: Vec::new(),
         agent_messages: Vec::new(),
+        conversation: Vec::new(),
         approval_requests: Vec::new(),
         verification: None,
         status: TaskStatus::from_str(&row.status)?,
@@ -1215,7 +1241,12 @@ fn apply_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError
         StateEvent::Created { state: fresh } => {
             *state = *fresh;
         }
-        StateEvent::Message { .. } => {
+        StateEvent::Message { message } => {
+            seed_legacy_conversation(state);
+            state.conversation.push(TaskConversationMessage {
+                speaker: TaskConversationSpeaker::User,
+                content: message,
+            });
             state.revision += 1;
             if let Some(v) = &mut state.verification {
                 v.report = None;
@@ -1488,12 +1519,38 @@ fn apply_display_event(state: &mut TaskState, event: StateEvent) -> Result<(), C
         StateEvent::Stage { record } => state.stages.push(record),
         StateEvent::EvidenceSummary { entries } => state.evidence_summary.extend(entries),
         StateEvent::ChangedFiles { files } => state.changed_files.extend(files),
-        StateEvent::AgentMessage { message } => state.agent_messages.push(message),
+        StateEvent::AgentMessage { message } => {
+            seed_legacy_conversation(state);
+            state.conversation.push(TaskConversationMessage {
+                speaker: TaskConversationSpeaker::Agent,
+                content: message.clone(),
+            });
+            state.agent_messages.push(message);
+        }
         StateEvent::ApprovalRequest { request } => state.approval_requests.push(request),
         StateEvent::WorkspacePinned { root } => state.workspace_root = Some(root),
         _ => return Err(unexpected_event("display", &event)),
     }
     Ok(())
+}
+
+/// Preserve pre-conversation snapshots as a best-effort assistant history
+/// before replaying any newly journalled user or agent message.
+fn seed_legacy_conversation(state: &mut TaskState) {
+    if state.conversation.is_empty() {
+        state
+            .conversation
+            .extend(
+                state
+                    .agent_messages
+                    .iter()
+                    .cloned()
+                    .map(|content| TaskConversationMessage {
+                        speaker: TaskConversationSpeaker::Agent,
+                        content,
+                    }),
+            );
+    }
 }
 
 fn unexpected_event(group: &str, event: &StateEvent) -> CoreError {

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use tachyon_core::driver::{DriveError, DriveHost, EvidenceMode, RunPlan, drive};
+use tachyon_core::driver::{DriveError, DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive};
 use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds};
 use tachyon_core::{CoreError, SupervisorHandle, TaskStatus, create_task, recover_task};
 use tachyon_models::ModelProvider;
@@ -1440,6 +1440,7 @@ async fn prepare_run(
             .join("mutation-state"),
         batch_id: format!("run-{}", uuid::Uuid::now_v7()),
         model,
+        task_context: TaskModelContext::from_task(&current),
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds,

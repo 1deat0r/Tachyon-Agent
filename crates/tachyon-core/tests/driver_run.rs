@@ -7,13 +7,14 @@
 //! record proposals acknowledged by the supervisor before each stage.
 //! There is no second orchestration implementation.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, drive};
-use tachyon_core::{TaskStatus, create_task};
+use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive};
+use tachyon_core::{ConstraintStrength as TaskConstraintStrength, TaskStatus, create_task};
 use tachyon_models::fake::{FakeModelProvider, FakeResponse};
 use tachyon_mutation::blake3_hex;
 use tachyon_policy::Policy;
@@ -29,6 +30,125 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 const TARGET: &str = "src/lib.rs";
 const BROKEN: &str = "pub fn answer() -> u8 { 7 }\n";
 const FIXED: &str = "pub fn answer() -> u8 { 42 }\n";
+
+struct DelayedModelProvider {
+    entered: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<tachyon_models::ModelRequest>>>,
+    release: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    decision: tachyon_models::AgentDecision,
+}
+
+#[async_trait::async_trait]
+impl tachyon_models::ModelProvider for DelayedModelProvider {
+    fn id(&self) -> ProviderId {
+        ProviderId("delayed-test-provider".to_owned())
+    }
+
+    fn capabilities(&self) -> tachyon_models::ModelCapabilities {
+        tachyon_models::ModelCapabilities {
+            features: BTreeSet::from([tachyon_models::ModelFeature::StructuredOutput]),
+            context_window_tokens: 128_000,
+            ..tachyon_models::ModelCapabilities::default()
+        }
+    }
+
+    fn estimate(&self, request: &tachyon_models::ModelRequest) -> tachyon_models::ProviderEstimate {
+        tachyon_models::ProviderEstimate {
+            latency_ms: 1.0,
+            input_tokens: request.estimated_input_tokens(),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        request: tachyon_models::ModelRequest,
+        sink: tachyon_models::ModelEventSink,
+    ) -> Result<tachyon_models::ModelResult, tachyon_models::ModelError> {
+        self.entered
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| tachyon_models::ModelError::Internal("missing entry receiver".into()))?
+            .send(request.clone())
+            .map_err(|_| tachyon_models::ModelError::Internal("test ended before invoke".into()))?;
+        self.release
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| tachyon_models::ModelError::Internal("missing release gate".into()))?
+            .await
+            .map_err(|_| tachyon_models::ModelError::Cancelled)?;
+        let _ignored = sink.send(tachyon_models::ModelEvent::Done);
+        Ok(tachyon_models::ModelResult {
+            decision: self.decision.clone(),
+            input_tokens: 0,
+            output_tokens: 0,
+            usage: tachyon_models::ModelUsage::default(),
+            latency_ms: 1.0,
+            provider: self.id(),
+            model: request.model,
+        })
+    }
+}
+
+async fn test_harness(
+    label: &str,
+) -> (
+    PathBuf,
+    PathBuf,
+    Arc<StoreWriter>,
+    tachyon_core::SupervisorHandle,
+    Arc<ToolsContext>,
+) {
+    let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "tachyon-driver-{label}-{}-{id}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let ws = dir.join("ws");
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(ws.join(TARGET), BROKEN).unwrap();
+    std::fs::create_dir_all(dir.join("state")).unwrap();
+    std::fs::create_dir_all(dir.join("mutation-state")).unwrap();
+    let store = Arc::new(StoreWriter::open(&dir.join("state")).await.unwrap());
+    let session = SessionId::generate();
+    store.create_session(&session.to_string()).await.unwrap();
+    let task = create_task(
+        session,
+        WorkspaceId::generate(),
+        "Fix the wrong answer".to_owned(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let context = Arc::new(ToolsContext::new(
+        ws.clone(),
+        Policy::trusted_workspace(),
+        ArtifactSpool::new(dir.join("artifacts")),
+    ));
+    (dir, ws, store, task, context)
+}
+
+fn test_plan(dir: &std::path::Path, state: &tachyon_core::TaskState) -> RunPlan {
+    RunPlan {
+        origin: Instant::now(),
+        evidence_mode: EvidenceMode::Serial,
+        evidence: vec![EvidenceRequest {
+            capability: "fs.read".to_owned(),
+            path: TARGET.to_owned(),
+        }],
+        contract: AcceptanceContract::default(),
+        risk: VerificationRisk::Affected,
+        mutation_dir: dir.join("mutation-state"),
+        batch_id: "driver-stale-context-test".to_owned(),
+        model: "scripted-replay-1".to_owned(),
+        task_context: TaskModelContext::from_task(state),
+        requested_checks: Vec::new(),
+        available_checks: Vec::new(),
+        bounds: RuntimeBounds::default(),
+        cancel: tokio_util::sync::CancellationToken::new(),
+    }
+}
 
 #[tokio::test]
 async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
@@ -63,6 +183,35 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
     )
     .await
     .unwrap();
+    task.add_message("Keep the public function signature unchanged".to_owned())
+        .await
+        .unwrap();
+    task.add_constraint(
+        "Do not change the public function signature".to_owned(),
+        TaskConstraintStrength::Hard,
+    )
+    .await
+    .unwrap();
+    let task_state = task.get_state().await.unwrap();
+    let task_context = TaskModelContext::from_task(&task_state);
+    let hard_constraint = task_state.constraints[0].clone();
+    let contract = AcceptanceContract {
+        clauses: vec![
+            Clause::ChangedPathsWithin {
+                paths: vec![TARGET.to_owned()],
+            },
+            Clause::FileUnchanged {
+                path: "Cargo.toml".to_owned(),
+            },
+            Clause::HardConstraint {
+                id: hard_constraint.id,
+                text: hard_constraint.text,
+                check: Box::new(Clause::ChangedPathsWithin {
+                    paths: vec![TARGET.to_owned()],
+                }),
+            },
+        ],
+    };
     let task_id = task.task_id();
 
     // Scripted test/replay provider, example-owned inputs (plan item 6).
@@ -71,6 +220,7 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
         "decision": "propose_execution",
         "operations": [{
             "capability": "mutation.patch",
+            "reason": "Correct the return value to satisfy the task objective",
             "args": {
                 "path": TARGET,
                 "base_hash": blake3_hex(BROKEN.as_bytes()),
@@ -78,7 +228,12 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
             }
         }]
     });
-    provider.push_response(FakeResponse::respond(&script.to_string()));
+    provider.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
 
     let plan = RunPlan {
         origin: Instant::now(),
@@ -93,20 +248,12 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
                 path: "notes/readme.txt".to_owned(),
             },
         ],
-        contract: AcceptanceContract {
-            clauses: vec![
-                Clause::ChangedPathsWithin {
-                    paths: vec![TARGET.to_owned()],
-                },
-                Clause::FileUnchanged {
-                    path: "Cargo.toml".to_owned(),
-                },
-            ],
-        },
+        contract,
         risk: VerificationRisk::Affected,
         mutation_dir: dir.join("mutation-state"),
         batch_id: "driver-batch-1".to_owned(),
         model: "scripted-replay-1".to_owned(),
+        task_context,
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds: RuntimeBounds::default(),
@@ -117,7 +264,63 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
         handle: task,
         store: store.clone(),
     };
-    let outcome = drive(host, context, provider, plan).await.unwrap();
+    let outcome = drive(host, context, provider.clone(), plan).await.unwrap();
+
+    let request = provider
+        .last_request()
+        .expect("the shared driver must invoke the provider");
+    assert!(request.context.iter().any(|block| {
+        block.kind == tachyon_models::ContextKind::Objective
+            && block.trust == tachyon_models::TrustLevel::User
+            && block.content == "Fix the wrong answer"
+    }));
+    assert!(request.context.iter().any(|block| {
+        block.kind == tachyon_models::ContextKind::History(tachyon_models::HistorySpeaker::User)
+            && block.content == "Keep the public function signature unchanged"
+    }));
+    assert!(request.context.iter().any(|block| {
+        block.kind == tachyon_models::ContextKind::Constraint
+            && block.trust == tachyon_models::TrustLevel::User
+            && block.content.contains("[hard constraint | source:user]")
+            && block
+                .content
+                .contains("Do not change the public function signature")
+    }));
+    let source_evidence = request
+        .context
+        .iter()
+        .find(|block| {
+            block.kind == tachyon_models::ContextKind::Evidence
+                && block.provenance == format!("fs.read:{TARGET}")
+        })
+        .expect("the bytes collected by the evidence stage must reach the model");
+    assert_eq!(
+        source_evidence.trust,
+        tachyon_models::TrustLevel::WorkspaceData
+    );
+    assert!(
+        source_evidence.content.contains(BROKEN),
+        "unexpected evidence block: {source_evidence:?}"
+    );
+    assert!(source_evidence.content.contains(TARGET));
+    assert!(
+        source_evidence
+            .content
+            .contains(&blake3_hex(BROKEN.as_bytes()))
+    );
+    let context_summary: Vec<_> = request
+        .context
+        .iter()
+        .map(|block| (&block.provenance, block.trust, &block.content))
+        .collect();
+    assert!(
+        request.context.iter().any(|block| {
+            block.provenance == "tachyon.verify.contract"
+                && block.trust == tachyon_models::TrustLevel::WorkspaceData
+                && block.content.contains(TARGET)
+        }),
+        "acceptance contract context missing from {context_summary:?}"
+    );
 
     // Durable completion through the shared supervisor path.
     assert_eq!(outcome.outcome.as_deref(), Some("completed"));
@@ -186,6 +389,118 @@ async fn driver_runs_one_shared_path_and_journals_the_supervisor_records() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[tokio::test]
+async fn respond_text_that_looks_like_a_proposal_is_never_executed() {
+    let (dir, ws, store, task, context) = test_harness("respond-json").await;
+    let state = task.get_state().await.unwrap();
+    let script = serde_json::json!({
+        "decision": "propose_execution",
+        "operations": [{
+            "capability": "mutation.patch",
+            "reason": "malicious text must not become an execution proposal",
+            "args": {
+                "path": TARGET,
+                "base_hash": blake3_hex(BROKEN.as_bytes()),
+                "new_content": FIXED,
+            }
+        }]
+    });
+    let provider = Arc::new(FakeModelProvider::new(ProviderId("respond-json".into())));
+    provider.push_response(FakeResponse::respond(&script.to_string()));
+
+    let result = drive(
+        DriveHost::Supervisor {
+            handle: task.clone(),
+            store: store.clone(),
+        },
+        context,
+        provider.clone(),
+        test_plan(&dir, &state),
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(tachyon_core::driver::DriveError::NonExecutionDecision(kind)) if kind == "respond"
+    ));
+    assert_eq!(provider.request_count(), 1);
+    assert_eq!(std::fs::read_to_string(ws.join(TARGET)).unwrap(), BROKEN);
+    task.shutdown().await.unwrap();
+    store.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn steering_during_model_call_rejects_the_stale_typed_proposal_before_write() {
+    let (dir, ws, store, task, context) = test_harness("stale-steering").await;
+    let state = task.get_state().await.unwrap();
+    let decision = serde_json::from_value(serde_json::json!({
+        "decision": "propose_execution",
+        "operations": [{
+            "capability": "mutation.patch",
+            "reason": "correct the stale fixture",
+            "args": {
+                "path": TARGET,
+                "base_hash": blake3_hex(BROKEN.as_bytes()),
+                "new_content": FIXED,
+            }
+        }]
+    }))
+    .expect("typed proposal fixture");
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let provider = Arc::new(DelayedModelProvider {
+        entered: tokio::sync::Mutex::new(Some(entered_tx)),
+        release: tokio::sync::Mutex::new(Some(release_rx)),
+        decision,
+    });
+    let driver_task = task.clone();
+    let driver_store = store.clone();
+    let provider_for_drive = provider.clone();
+    let plan = test_plan(&dir, &state);
+    let drive_join = tokio::spawn(async move {
+        drive(
+            DriveHost::Supervisor {
+                handle: driver_task,
+                store: driver_store,
+            },
+            context,
+            provider_for_drive,
+            plan,
+        )
+        .await
+    });
+
+    let _actual_request = tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+        .await
+        .expect("driver reaches the provider")
+        .expect("provider reports the request");
+    task.add_message("Leave the implementation unchanged".to_owned())
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+
+    let result = drive_join.await.unwrap();
+    assert!(matches!(
+        result,
+        Err(tachyon_core::driver::DriveError::Core(
+            tachyon_core::CoreError::StaleRunProposal { .. }
+        ))
+    ));
+    assert_eq!(std::fs::read_to_string(ws.join(TARGET)).unwrap(), BROKEN);
+    let updated = task.get_state().await.unwrap();
+    assert!(
+        updated
+            .conversation
+            .iter()
+            .any(|message| message.content == "Leave the implementation unchanged")
+    );
+    assert!(updated.changed_files.is_empty());
+    task.shutdown().await.unwrap();
+    store.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// G6 through the shared driver: a policy ask during the evidence stage
 /// parks the supervisor-owned job (`WaitingApproval` + pending row +
 /// `approval_request` event); the grant is written `applied` before the
@@ -249,6 +564,7 @@ async fn driver_parks_on_evidence_ask_and_resumes_exactly_once_after_grant() {
         "decision": "propose_execution",
         "operations": [{
             "capability": "mutation.patch",
+            "reason": "Correct the return value to satisfy the task objective",
             "args": {
                 "path": TARGET,
                 "base_hash": blake3_hex(BROKEN.as_bytes()),
@@ -256,7 +572,12 @@ async fn driver_parks_on_evidence_ask_and_resumes_exactly_once_after_grant() {
             }
         }]
     });
-    provider.push_response(FakeResponse::respond(&script.to_string()));
+    provider.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
 
     let plan = RunPlan {
         origin: Instant::now(),
@@ -285,6 +606,7 @@ async fn driver_parks_on_evidence_ask_and_resumes_exactly_once_after_grant() {
         mutation_dir: dir.join("mutation-state"),
         batch_id: "driver-park-batch".to_owned(),
         model: "scripted-replay-1".to_owned(),
+        task_context: TaskModelContext::from_task(&task.get_state().await.unwrap()),
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds: RuntimeBounds::default(),
@@ -417,6 +739,7 @@ async fn driver_parks_on_mutation_ask_and_commits_exactly_one_effect_after_grant
         "decision": "propose_execution",
         "operations": [{
             "capability": "mutation.patch",
+            "reason": "Correct the return value to satisfy the task objective",
             "args": {
                 "path": TARGET,
                 "base_hash": blake3_hex(BROKEN.as_bytes()),
@@ -424,7 +747,12 @@ async fn driver_parks_on_mutation_ask_and_commits_exactly_one_effect_after_grant
             }
         }]
     });
-    provider.push_response(FakeResponse::respond(&script.to_string()));
+    provider.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
 
     let plan = RunPlan {
         origin: Instant::now(),
@@ -453,6 +781,7 @@ async fn driver_parks_on_mutation_ask_and_commits_exactly_one_effect_after_grant
         mutation_dir: dir.join("mutation-state"),
         batch_id: "driver-park-mut-batch".to_owned(),
         model: "scripted-replay-1".to_owned(),
+        task_context: TaskModelContext::from_task(&task.get_state().await.unwrap()),
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds: RuntimeBounds::default(),
@@ -615,6 +944,7 @@ async fn driver_verification_ask_denies_with_the_recorded_reason() {
         "decision": "propose_execution",
         "operations": [{
             "capability": "mutation.patch",
+            "reason": "Correct the return value to satisfy the task objective",
             "args": {
                 "path": TARGET,
                 "base_hash": blake3_hex(BROKEN.as_bytes()),
@@ -622,7 +952,12 @@ async fn driver_verification_ask_denies_with_the_recorded_reason() {
             }
         }]
     });
-    provider.push_response(FakeResponse::respond(&script.to_string()));
+    provider.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
 
     let plan = RunPlan {
         origin: Instant::now(),
@@ -654,6 +989,7 @@ async fn driver_verification_ask_denies_with_the_recorded_reason() {
         mutation_dir: dir.join("mutation-state"),
         batch_id: "driver-park-ver-batch".to_owned(),
         model: "scripted-replay-1".to_owned(),
+        task_context: TaskModelContext::from_task(&task.get_state().await.unwrap()),
         requested_checks: Vec::new(),
         available_checks: Vec::new(),
         bounds: RuntimeBounds::default(),

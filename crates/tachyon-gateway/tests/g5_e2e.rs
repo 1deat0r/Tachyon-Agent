@@ -145,6 +145,7 @@ async fn g5_run_reaches_durable_completed_with_live_events_and_untouched_fixture
         "decision": "propose_execution",
         "operations": [{
             "capability": "mutation.patch",
+            "reason": "Refresh the stale token before returning it",
             "args": {
                 "path": TARGET,
                 "base_hash": blake3_hex(&broken),
@@ -153,7 +154,12 @@ async fn g5_run_reaches_durable_completed_with_live_events_and_untouched_fixture
         }]
     });
     let fake = FakeModelProvider::new(ProviderId("bench-script".into()));
-    fake.push_response(FakeResponse::respond(&script.to_string()));
+    fake.push_response(FakeResponse {
+        text: script.to_string(),
+        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+        input_tokens: 0,
+        output_tokens: 0,
+    });
     let runtime = GatewayRuntime {
         provider: Some(Arc::new(fake) as Arc<dyn ModelProvider>),
         label: FAKE_PROVIDER_LABEL.to_owned(),

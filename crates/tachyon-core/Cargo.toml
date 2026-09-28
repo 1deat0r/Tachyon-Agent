@@ -12,6 +12,7 @@ tachyon-ir = { workspace = true }
 # Plan item 8: the `approval_request` journal event carries the
 # `tachyon_policy::ApprovalRequest` payload verbatim (provider-neutral).
 tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
+tachyon-retrieval = { version = "0.0.1", path = "../tachyon-retrieval" }
 tachyon-store = { workspace = true }
 tachyon-types = { workspace = true }
 # M11 item 6: the shared run driver compiles the evidence-graph IR and

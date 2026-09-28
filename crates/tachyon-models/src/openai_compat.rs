@@ -282,6 +282,7 @@ fn wire_message(block: &ContextBlock) -> WireMessage {
         ContextKind::System => "system",
         ContextKind::History(HistorySpeaker::Assistant) => "assistant",
         ContextKind::Objective
+        | ContextKind::Constraint
         | ContextKind::Evidence
         | ContextKind::History(HistorySpeaker::User) => "user",
     };

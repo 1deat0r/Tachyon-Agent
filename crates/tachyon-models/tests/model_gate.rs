@@ -54,6 +54,7 @@ fn context_marks_repo_text_as_data() {
     let input = AssembleInput {
         system_prompt: "You explain code differences.",
         objective: &evidence.question.clone(),
+        constraints: &[],
         evidence: &evidence,
         history: &[],
         total_budget_tokens: 8_192,
@@ -84,6 +85,7 @@ fn budget_truncation_is_deterministic_and_reserves_output() {
     let input = AssembleInput {
         system_prompt: "sys",
         objective: "obj",
+        constraints: &[],
         evidence: &evidence,
         history: &[],
         total_budget_tokens: 60,
@@ -127,6 +129,7 @@ async fn slice_b_one_reasoning_call_over_repo_evidence() {
     let input = AssembleInput {
         system_prompt: "Explain behavior differences between implementations. Cite file paths.",
         objective: &question,
+        constraints: &[],
         evidence: &evidence,
         history: &[],
         total_budget_tokens: 8_192,
