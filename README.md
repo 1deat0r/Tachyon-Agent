@@ -1,6 +1,6 @@
 # Tachyon
 
-![CI](https://github.com/1deat0r/tachyon/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/1deat0r/Tachyon-Agent/actions/workflows/ci.yml/badge.svg)
 
 A high-performance AI agent harness. Routine work runs through deterministic
 code, repository indexes, and bounded judgment — LLM reasoning pays only for
@@ -19,7 +19,7 @@ driver — watch this repo if the architecture interests you.
 Requires Rust 1.98.1 (`rustup` installs it from `rust-toolchain.toml`).
 
 ```bash
-cargo fmt --check && cargo check --workspace && cargo test --workspace
+cargo verify
 cargo run -p tachyon-app -- doctor
 ```
 
@@ -41,16 +41,17 @@ tachyon task list
 - **Predictive routing** — cheapest sufficient path first, not a model loop.
 - **Verification-gated completion** — done means proven, not self-reported.
 
-Start with [`AGENTS.md`](AGENTS.md), then `docs/` in numeric order: charter →
-architecture freeze → implementation spec → adversarial review → plan →
-acceptance → security.
+Start with [`AGENTS.md`](AGENTS.md), then read the domain and architecture
+references relevant to your task. The frozen architecture and implementation
+contract remain authoritative where applicable.
 
 ## Contributing
 
-Milestone-by-milestone, per `docs/04_IMPLEMENTATION_PLAN.md`. Keep the
-workspace compiling at every milestone boundary, add tests with every core
-invariant, and record results in `PROGRESS.md`. Frozen architecture changes
-need an ADR in `docs/adr/` first.
+Use the local-first loop in
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md): implement,
+run `cargo verify`, inspect the diff, and make an atomic commit. Issues and PRs
+are optional when they add tracking or review value. Keep tests for core
+invariants; frozen architecture changes need an ADR in `docs/adr/` first.
 
 ## Security
 

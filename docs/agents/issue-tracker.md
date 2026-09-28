@@ -1,10 +1,10 @@
-# Issue tracker: GitHub
+# Optional issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues on `1deat0r/tachyon`. Use the `gh` CLI for all operations.
+The canonical remote is `1deat0r/Tachyon-Agent`; `gh` resolves it from this checkout. GitHub Issues are one optional persistent tracker, not the default development loop. Apply the selection rules in [`docs/DEVELOPMENT_WORKFLOW.md`](../DEVELOPMENT_WORKFLOW.md) before creating or publishing tickets. Routine changes should stay in the current task and working tree.
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies. Apply `type/*`, `comp/*`, and `P*` labels when known.
+- **Create an issue when useful**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies. Apply `type/*`, `comp/*`, and `P*` labels when known.
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
@@ -25,15 +25,15 @@ When set to `yes`, PRs run through the same labels and states as issues, using t
 
 GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
 
-## When a skill says "publish to the issue tracker"
+## Skills and tracker choice
 
-Create a GitHub issue.
+When a skill says to publish to the issue tracker, first decide whether durable shared tracking adds value. If it does not, keep the plan in the current task or a focused local document and continue. Project policy overrides a skill's default Issue, branch, or PR sequence. Use `/wayfinder` only for work whose long-horizon decisions benefit from a shared map; its GitHub map and child Issues are optional.
 
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
 
-## Wayfinding operations
+## Wayfinding operations (when a GitHub map is chosen)
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 

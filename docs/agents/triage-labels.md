@@ -25,3 +25,5 @@ Apply alongside triage roles when classifying work:
 **Priority:** `P0` (data loss / security / crash), `P1` (major broken, no workaround), `P2` (degraded, workaround exists), `P3` (cosmetic)
 
 **Other:** `needs-repro` (bug needs reproduction steps on current `main`)
+
+**Wayfinder:** `wayfinder:map`, `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, `wayfinder:task`

@@ -1,4 +1,5 @@
 /target
+/xtask/target/
 /.idea
 /.vscode
 *.swp
@@ -12,7 +13,7 @@
 *.db-shm
 *.db-wal
 
-# Skill installer artifacts (live in ~/.config/opencode/skills, not this repo)
+# Locally installed or third-party agent skills; committed policy lives in AGENTS.md
 .agents/
 .agent/
 .claude/*

@@ -16,7 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rawDir = path.join(root, "target", "m14");
-const outPath = path.join(root, "docs", "milestones", "M14_MATRIX.json");
+const outPath = process.env.M14_MATRIX_OUT
+  ? path.resolve(root, process.env.M14_MATRIX_OUT)
+  : path.join(root, "docs", "milestones", "M14_MATRIX.json");
+if (!outPath.startsWith(`${root}${path.sep}`)) {
+  fail("M14_MATRIX_OUT must point inside the repository");
+}
 
 const FIXTURES = ["auth-refresh", "multi-file-migration", "architecture-plan"];
 const MODES = ["full", "no-speculation", "no-judgment", "serial", "reference"];

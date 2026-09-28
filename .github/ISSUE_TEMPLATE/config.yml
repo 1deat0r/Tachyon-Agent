@@ -1,5 +1,1 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Architecture / spec questions
-    url: https://github.com/1deat0r/tachyon/issues
-    about: Prefer a Discussion or issue with type/docs — read docs/01_ARCHITECTURE_FREEZE.md first.
+blank_issues_enabled: true

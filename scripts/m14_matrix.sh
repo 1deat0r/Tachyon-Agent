@@ -18,11 +18,11 @@ LEGS=target/m14/legs.jsonl
 : >"$RAW"
 : >"$LEGS"
 
-cargo build --release --example bench_matrix -p tachyon-core
+cargo build --release --locked --example bench_matrix -p tachyon-core
 
 # Legs: exactly two JSON lines, one per class; grep fails the gate if
 # either leg is missing from the test output.
-cargo test --release -p tachyon-router --test matrix_legs -- --ignored --nocapture \
+cargo test --release --locked -p tachyon-router --test matrix_legs -- --ignored --nocapture \
     >target/m14/legs.out 2>target/m14/legs.stderr
 grep '^{' target/m14/legs.out >"$LEGS"
 

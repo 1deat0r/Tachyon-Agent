@@ -8,7 +8,7 @@
 # Output is captured and printed even when cargo fails, so assertions and
 # suite failures are visible in the gate transcript.
 status=0
-out=$(cargo test --release \
+out=$(cargo test --release --locked \
   -p tachyon-router -p tachyon-scheduler -p tachyon-gateway -p tachyon-repo \
   -p tachyon-store -p tachyon-models -p tachyon-verify -p tachyon-tools \
   --test perf -- --ignored --nocapture 2>&1) || status=$?

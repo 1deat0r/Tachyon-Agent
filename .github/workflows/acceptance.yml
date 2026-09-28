@@ -1,12 +1,9 @@
 name: acceptance
 
-# M14 acceptance, off the PR path: ci.yml already gates every push with
-# fmt/check/test/clippy on three OSes. This workflow runs the gates whose
-# cost or scope makes them nightly material — the named security and
-# recovery suites (with the structural remote-exposure checks and their
-# positive controls), the fixture self-check, and the full spec §44
-# matrix in release mode, validated by the matrix contract checker.
-# Dispatch manually after a milestone; scheduled nightly otherwise.
+# Full local verification, off the PR path. The shared `cargo verify full`
+# entry point adds the security/recovery suites, fixture self-check, spec §44
+# matrix, and release performance gate to the normal VERIFY checks. Run on a
+# schedule or manually when a task changes these acceptance areas.
 
 on:
   workflow_dispatch:
@@ -20,17 +17,12 @@ jobs:
   acceptance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
-      - name: Security and recovery suites (structural exposure checks)
-        run: scripts/m14_suites.sh
-      - name: Fixture gate
-        run: scripts/m14_fixture_gate.sh
-      - name: Spec 44 matrix (release)
-        run: scripts/m14_matrix.sh
+          components: rustfmt, clippy
+      - name: Full local verification
+        run: cargo verify full
         env:
           M14_SAMPLES: "10"
-      - name: Matrix contract check
-        run: node scripts/m14_matrix_check.mjs
