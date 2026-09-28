@@ -24,11 +24,11 @@ This metric is separate from M13 T4, which starts with a task and subscription a
 
 | Run | Samples | p50 | p95 |
 |---:|---:|---:|---:|
-| 1 | 100 | 361.326 µs | 429.868 µs |
-| 2 | 100 | 372.286 µs | 520.609 µs |
-| 3 | 100 | 372.177 µs | 443.418 µs |
+| 1 | 100 | 402.167 µs | 526.429 µs |
+| 2 | 100 | 357.786 µs | 439.158 µs |
+| 3 | 100 | 388.847 µs | 488.949 µs |
 
-The observed p50 range was 361.326–372.286 µs and the p95 range was 429.868–520.609 µs across these runs. These are measurements from one local machine and one synthetic local workload; they do not establish a cross-machine service target or a general Tachyon speed advantage.
+The observed p50 range was 357.786–402.167 µs and the p95 range was 439.158–526.429 µs across these runs. These are measurements from one local machine and one synthetic local workload; they do not establish a cross-machine service target or a general Tachyon speed advantage.
 
 ## Reproduction
 

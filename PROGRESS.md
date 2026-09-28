@@ -14,7 +14,7 @@ is tracked by issues and the docs/04/§46 deferrals, see `MVP_REPORT.md`).
   write through the decoded Subscribe replay acknowledgment. The cursor is
   `after_seq: -1` so sequence-0 `created` is included and asserted on every
   sample. Three 100-sample runs on one Linux host measured p50
-  361–372 µs and p95 430–521 µs; this is a report-only measurement with no
+  358–402 µs and p95 439–526 µs; this is a report-only measurement with no
   new target or speed claim, separate from M13 T4. Report:
   `docs/milestones/POST_MVP_TTFR_REPORT.md`.
 

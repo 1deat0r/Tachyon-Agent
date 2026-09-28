@@ -132,6 +132,27 @@ async fn seeded_task(client: &mut Client) -> String {
     task["task_id"].as_str().unwrap().to_owned()
 }
 
+async fn replayed_creation_ack(address: &Path, task_id: tachyon_types::TaskId) -> ResponseEnvelope {
+    let mut subscription = Client::open(address).await;
+    subscription
+        .request(Command::Subscribe {
+            task_id,
+            after_seq: -1,
+        })
+        .await
+}
+
+fn assert_creation_replay(response: ResponseEnvelope, task_id: tachyon_types::TaskId) {
+    let CommandResult::Ok { payload } = response.result else {
+        panic!("subscription succeeds");
+    };
+    assert_eq!(payload["task_id"], task_id.to_string());
+    let events = payload["events"].as_array().expect("replay events array");
+    let first = events.first().expect("created event is replayed");
+    assert_eq!(first["seq"], 0);
+    assert_eq!(first["kind"], "created");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "M13 perf target: release mode, run with --ignored"]
 async fn t3_local_command_p95_under_5ms() {
@@ -234,7 +255,7 @@ async fn t4_first_task_event_p95_under_50ms() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "M15 post-MVP TTFR measurement: run in release mode with --ignored"]
+#[ignore = "Post-MVP TTFR measurement: run in release mode with --ignored"]
 async fn e2e_create_task_to_first_replayed_entry() {
     let dir = test_dir();
     let gateway = start(&dir).await.expect("gateway starts");
@@ -256,19 +277,8 @@ async fn e2e_create_task_to_first_replayed_entry() {
             })
             .await;
         let task_id: tachyon_types::TaskId = task["task_id"].as_str().unwrap().parse().unwrap();
-        let mut subscription = Client::open(&address).await;
-        let response = subscription
-            .request(Command::Subscribe {
-                task_id,
-                after_seq: -1,
-            })
-            .await;
-        let CommandResult::Ok { payload } = response.result else {
-            panic!("warmup subscription succeeds");
-        };
-        assert_eq!(payload["task_id"], task_id.to_string());
-        assert_eq!(payload["events"][0]["seq"], 0);
-        assert_eq!(payload["events"][0]["kind"], "created");
+        let response = replayed_creation_ack(&address, task_id).await;
+        assert_creation_replay(response, task_id);
     }
 
     let samples = 100_usize;
@@ -294,26 +304,12 @@ async fn e2e_create_task_to_first_replayed_entry() {
         };
         let task_id: tachyon_types::TaskId = created["task_id"].as_str().unwrap().parse().unwrap();
 
-        let mut subscription = Client::open(&address).await;
-        let response = subscription
-            .request(Command::Subscribe {
-                task_id,
-                after_seq: -1,
-            })
-            .await;
+        let response = replayed_creation_ack(&address, task_id).await;
         // t1: the Subscribe response is fully decoded, including its replay
         // array. Replay entries are carried in this response payload, not as
         // separate ServerFrame::Event frames.
         latencies.push(start.elapsed());
-
-        let CommandResult::Ok { payload } = response.result else {
-            panic!("measured subscription succeeds");
-        };
-        assert_eq!(payload["task_id"], task_id.to_string());
-        let events = payload["events"].as_array().expect("replay events array");
-        let first = events.first().expect("created event is replayed");
-        assert_eq!(first["seq"], 0);
-        assert_eq!(first["kind"], "created");
+        assert_creation_replay(response, task_id);
     }
 
     let (p50, p95) = percentiles(latencies);
