@@ -9,6 +9,15 @@ is tracked by issues and the docs/04/§46 deferrals, see `MVP_REPORT.md`).
 
 ## Completed gates
 
+- 2026-09-28 Post-MVP follow-up #55 — added ignore-gated release
+  measurement T6 for the gateway composition from the CreateTask request
+  write through the decoded Subscribe replay acknowledgment. The cursor is
+  `after_seq: -1` so sequence-0 `created` is included and asserted on every
+  sample. Three 100-sample runs on one Linux host measured p50
+  358–402 µs and p95 439–526 µs; this is a report-only measurement with no
+  new target or speed claim, separate from M13 T4. Report:
+  `docs/milestones/POST_MVP_TTFR_REPORT.md`.
+
 - 2026-09-28 Post-MVP follow-up #26 — general effect barriers are now
   journalled through the core Supervisor protocol and committed atomically
   with the effect-table projection. The internal test seam seeds durable

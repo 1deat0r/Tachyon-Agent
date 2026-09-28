@@ -53,7 +53,13 @@ impl Client {
             command,
         };
         let bytes = encode_frame(&request).expect("encode request");
-        self.stream.write_all(&bytes).await.expect("send request");
+        self.request_bytes(&bytes).await
+    }
+
+    /// Sends an already encoded request and returns its response, skipping
+    /// event frames (they belong to a subscription on another socket).
+    async fn request_bytes(&mut self, bytes: &[u8]) -> ResponseEnvelope {
+        self.stream.write_all(bytes).await.expect("send request");
         loop {
             match self.frame().await {
                 ServerFrame::Response(response) => return response,
@@ -124,6 +130,27 @@ async fn seeded_task(client: &mut Client) -> String {
         })
         .await;
     task["task_id"].as_str().unwrap().to_owned()
+}
+
+async fn replayed_creation_ack(address: &Path, task_id: tachyon_types::TaskId) -> ResponseEnvelope {
+    let mut subscription = Client::open(address).await;
+    subscription
+        .request(Command::Subscribe {
+            task_id,
+            after_seq: -1,
+        })
+        .await
+}
+
+fn assert_creation_replay(response: ResponseEnvelope, task_id: tachyon_types::TaskId) {
+    let CommandResult::Ok { payload } = response.result else {
+        panic!("subscription succeeds");
+    };
+    assert_eq!(payload["task_id"], task_id.to_string());
+    let events = payload["events"].as_array().expect("replay events array");
+    let first = events.first().expect("created event is replayed");
+    assert_eq!(first["seq"], 0);
+    assert_eq!(first["kind"], "created");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -222,6 +249,73 @@ async fn t4_first_task_event_p95_under_50ms() {
         "T4 miss: p95={p95:?} >= 50ms"
     );
     println!("perf[T4] PASS");
+
+    gateway.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Post-MVP TTFR measurement: run in release mode with --ignored"]
+async fn e2e_create_task_to_first_replayed_entry() {
+    let dir = test_dir();
+    let gateway = start(&dir).await.expect("gateway starts");
+    let address = gateway.address().to_owned();
+
+    let mut command = Client::open(&address).await;
+    let session = command.call(Command::CreateSession).await;
+    let session_id: tachyon_types::SessionId =
+        session["session_id"].as_str().unwrap().parse().unwrap();
+
+    // Prime the gateway, storage connection, and subscription path before
+    // measuring the steady-state user path. Every warmup uses a fresh task
+    // and subscriber, just like a measured sample.
+    for _ in 0..10 {
+        let task = command
+            .call(Command::CreateTask {
+                session_id,
+                objective: "m15 ttfr warmup".to_owned(),
+            })
+            .await;
+        let task_id: tachyon_types::TaskId = task["task_id"].as_str().unwrap().parse().unwrap();
+        let response = replayed_creation_ack(&address, task_id).await;
+        assert_creation_replay(response, task_id);
+    }
+
+    let samples = 100_usize;
+    let mut latencies = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let create_request = RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: EventId::generate(),
+            command: Command::CreateTask {
+                session_id,
+                objective: "m15 ttfr measured task".to_owned(),
+            },
+        };
+        let create_bytes = encode_frame(&create_request).expect("encode CreateTask request");
+
+        // t0: immediately before writing CreateTask to the already-running
+        // gateway. Session and gateway setup, plus request encoding, are out
+        // of the timed window.
+        let start = Instant::now();
+        let created = command.request_bytes(&create_bytes).await;
+        let CommandResult::Ok { payload: created } = created.result else {
+            panic!("CreateTask succeeds");
+        };
+        let task_id: tachyon_types::TaskId = created["task_id"].as_str().unwrap().parse().unwrap();
+
+        let response = replayed_creation_ack(&address, task_id).await;
+        // t1: the Subscribe response is fully decoded, including its replay
+        // array. Replay entries are carried in this response payload, not as
+        // separate ServerFrame::Event frames.
+        latencies.push(start.elapsed());
+        assert_creation_replay(response, task_id);
+    }
+
+    let (p50, p95) = percentiles(latencies);
+    println!(
+        "perf[T6] n={samples} p50={p50:?} p95={p95:?} (CreateTask write → Subscribe replay response decode; no target)"
+    );
 
     gateway.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
