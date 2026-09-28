@@ -157,10 +157,13 @@ p50 stage shares of `full` completion (from the same samples):
    one 15-file corpus. Representative of Classes C/D/E shapes, not of large real repositories.
    T5's 478-file workspace corpus is the only large corpus measured (single repository —
    disclosed in M13 as F8, unchanged here).
-4. **No end-to-end client-visible composition.** Driver-level `first_evidence_ms` stands in
-   for first visible progress; gateway transport legs come from M13's separate T3/T4
-   measurements. The creation→first-replayed-event composition remains unbuilt.
-   At 1 ms granularity the driver stage markers additionally cannot resolve
+4. **No end-to-end client-visible composition in the frozen matrix.** Driver-level
+   `first_evidence_ms` stands in for first visible progress; gateway transport legs come from
+   M13's separate T3/T4 measurements. The task-creation→first-replayed-entry composition was
+   measured post-MVP on 2026-09-28; see
+   [`docs/milestones/POST_MVP_TTFR_REPORT.md`](docs/milestones/POST_MVP_TTFR_REPORT.md).
+   That follow-up does not alter the frozen M14 matrix or establish a `tachyon-full` speed
+   advantage. At 1 ms granularity the driver stage markers additionally cannot resolve
    evidence/model/mutation apart on fixtures this small (see the TTFR caveat above);
    cross-mode TTFR reads are ties, and the completion comparison is the load-bearing one.
 5. **Alias modes are structural.** `no-speculation`/`no-judgment` prove the modes are
@@ -183,8 +186,9 @@ p50 stage shares of `full` completion (from the same samples):
 - **ACP distribution** — decided docs/11 #2: TUI-first for MVP, ACP adapter post-MVP.
 - **Live-model benchmark leg** with pinned model IDs + dates (docs/11 #11 future runs) and
   an external-harness comparison under identical model/environment (spec §44, “where practical”).
-- **End-to-end TTFR composition** (task creation → first replayed frame) — the M13 T4
-  candidate, still the right next measurement.
+- **End-to-end TTFR composition** — measured after the M14 freeze on 2026-09-28; see
+  [`docs/milestones/POST_MVP_TTFR_REPORT.md`](docs/milestones/POST_MVP_TTFR_REPORT.md). This
+  adds no latency target and does not change the §45 disposition.
 - **n ≥ 20 tail measurement** for p95-grade latency claims.
 - Launch-calendar / marketing items (docs/11 #21) remain post-MVP.
 
