@@ -1000,7 +1000,7 @@ mod actor_tests {
             std::fs::write(workspace.join("source.txt"), b"original").unwrap();
             let mut policy = Policy::trusted_workspace();
             policy.allow("verify.command", "workspace/**");
-            policy.allow("process.spawn", "python3");
+            policy.allow("process.spawn", "/bin/sh");
             let context = Arc::new(ToolsContext::new(
                 workspace,
                 policy,
@@ -1124,11 +1124,8 @@ mod actor_tests {
         let f = Fixture::with_contract(AcceptanceContract {
             clauses: vec![Clause::CommandPasses {
                 command: CommandCheck {
-                    program: "python3".into(),
-                    args: vec![
-                        "-c".into(),
-                        "from pathlib import Path\nimport time\nwith open('marker', 'a') as f: f.write('x')\ntime.sleep(30)".into(),
-                    ],
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "printf x >> marker; exec /bin/sleep 30".into()],
                     cwd: ".".into(),
                     env: BTreeMap::default(),
                     timeout_ms: 100,
