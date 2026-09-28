@@ -52,18 +52,17 @@ async fn approval_gates_park_seam_inert_unless_armed() {
         .expect("unarmed approval.park must not park");
 }
 
-/// Effect domain: armed-name check is independent of the §19 matrix tests.
-#[test]
-fn effect_gates_fixture_seam_naming_contract() {
-    // The fixture itself writes prepared→committed in the effects table;
-    // this pins the seam vocabulary documented in ADR 0001.
+/// Effect protocol seams are inert unless explicitly armed.
+#[tokio::test]
+async fn effect_barrier_seams_are_inert_unless_armed() {
     for seam in [
-        "evidence.read",
-        "model.enter",
-        "mutation.commit",
-        "verify.command",
-        "approval.park",
+        "effect.prepared",
+        "effect.remote_return",
+        "effect.committed",
     ] {
         assert!(!is_armed(seam), "default env must leave {seam} inert");
+        tokio::time::timeout(std::time::Duration::from_millis(50), reach(seam))
+            .await
+            .unwrap_or_else(|_| panic!("unarmed {seam} must not park"));
     }
 }

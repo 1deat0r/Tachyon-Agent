@@ -945,6 +945,8 @@ fn core_err(error: &CoreError) -> CommandResult {
         CoreError::MailboxFull => "mailbox_full",
         CoreError::SupervisorGone => "supervisor_gone",
         CoreError::Corrupt { .. } => "corrupt_state",
+        CoreError::InvalidExecutionGraph { .. } => "invalid_execution_graph",
+        CoreError::NodeTransitionRejected { .. } => "node_transition_rejected",
         CoreError::VerificationBlocked(_) => "verification_blocked",
         CoreError::Verification(_) => "verification_failed",
         CoreError::StaleRunProposal { .. } => "stale_run_proposal",

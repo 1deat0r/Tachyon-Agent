@@ -28,6 +28,11 @@ pub fn is_armed(name: &str) -> bool {
 /// env var, waits until the child hits the seam, then `Child::kill()`s.
 pub async fn reach(name: &str) {
     if is_armed(name) {
+        if let Some(path) = std::env::var_os("TACHYON_FAULT_REACHED_FILE") {
+            // A subprocess recovery test can wait for this marker before it
+            // kills the child, avoiding timing guesses around the seam.
+            let _ = std::fs::write(path, name);
+        }
         std::future::pending::<()>().await;
     }
 }
