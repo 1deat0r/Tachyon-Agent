@@ -38,6 +38,6 @@ Local VERIFY is the normal pre-commit gate. Review the diff yourself on every ch
 
 ## CI and releases
 
-Push/PR CI runs the same `cargo verify` entry point on Ubuntu, Windows, and macOS. Those checks provide independent platform coverage and remain part of repository branch protection. Continue useful local work while remote checks run; a protected merge or release must still satisfy the applicable repository rules.
+Main-branch pushes and pull requests run the same `cargo verify` entry point on Ubuntu, Windows, and macOS. Feature-branch pushes are checked by the PR run, avoiding a duplicate matrix before a pull request exists. Those checks provide independent platform coverage and remain part of repository branch protection. Continue useful local work while remote checks run; a protected merge or release must still satisfy the applicable repository rules.
 
 The scheduled/manual acceptance workflow runs `cargo verify full`. Keep expensive or platform-specific checks there when they add confidence without slowing routine commits. Do not remove security, release, or platform checks without evidence that they are redundant and no longer protect a supported path.
