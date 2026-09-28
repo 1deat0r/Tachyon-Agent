@@ -132,6 +132,11 @@ pub struct IntentSpec {
     pub desired_outcome: String,
     /// Required behaviors, each with provenance.
     pub requirements: Vec<AttributedText>,
+    /// Compatibility guarantees to preserve, each with provenance.
+    /// Defaults empty when reading intent specs written before this field
+    /// existed.
+    #[serde(default)]
+    pub compatibility_requirements: Vec<AttributedText>,
     /// Hard constraints; authoritative over any inferred item.
     pub constraints: Vec<String>,
     /// Soft preferences, each with provenance.
@@ -168,6 +173,10 @@ impl IntentSpec {
         }
         for (field, items) in [
             ("requirements", &self.requirements),
+            (
+                "compatibility_requirements",
+                &self.compatibility_requirements,
+            ),
             ("preferences", &self.preferences),
             ("assumptions", &self.assumptions),
         ] {
@@ -232,6 +241,9 @@ mod tests {
                 AttributedText::user("preserve all post URLs"),
                 AttributedText::inferred("keep the RSS feed working"),
             ],
+            compatibility_requirements: vec![AttributedText::user(
+                "file-unchanged: legacy-feed.xml",
+            )],
             constraints: vec!["no downtime during migration".into()],
             preferences: vec![AttributedText::repo("follow existing CSS tokens")],
             non_goals: vec!["redesigning the logo".into()],
@@ -285,6 +297,17 @@ mod tests {
         assert!(matches!(
             spec.validate(),
             Err(IntentError::EmptyAttributedText { .. })
+        ));
+
+        let mut spec = full_spec();
+        spec.compatibility_requirements
+            .push(AttributedText::inferred("   "));
+        assert!(matches!(
+            spec.validate(),
+            Err(IntentError::EmptyAttributedText {
+                field: "compatibility_requirements",
+                index: 1,
+            })
         ));
     }
 
@@ -348,6 +371,17 @@ mod tests {
         let raw = serde_json::to_value(&spec).expect("serialize");
         let back: IntentSpec = serde_json::from_value(raw).expect("deserialize");
         assert_eq!(spec, back);
+    }
+
+    #[test]
+    fn missing_compatibility_requirements_defaults_for_legacy_specs() {
+        let mut raw = serde_json::to_value(full_spec()).expect("serialize");
+        raw.as_object_mut()
+            .expect("object")
+            .remove("compatibility_requirements");
+
+        let back: IntentSpec = serde_json::from_value(raw).expect("legacy spec deserializes");
+        assert!(back.compatibility_requirements.is_empty());
     }
 
     #[test]

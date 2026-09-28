@@ -48,7 +48,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 
 | Term | Meaning |
 |------|---------|
-| **IntentSpec** | Belief record of what the human wants (goal, outcome, requirements, constraints, preferences, non-goals, criteria, ambiguities, assumptions, evidence, confidence). Inferred items carry provenance and never outrank hard constraints. |
+| **IntentSpec** | Belief record of what the human wants (goal, outcome, requirements, compatibility requirements, constraints, preferences, non-goals, criteria, ambiguities, assumptions, evidence, confidence). Inferred items carry provenance and never outrank hard constraints. |
 | **Intent conformance** | Advisory post-verification check (`IntentConformanceReport`) of whether the human objective was met. Only `Violated` fails conformance; never a completion gate. |
 | **Correction class** | One of six: task-specific, project convention, persistent preference, model misunderstanding, missing project context, bad evidence. Only the middle four may become durable knowledge. |
 | **Durable knowledge item** | A gated correction with evidence refs, confidence, contradicting observations, and revalidation/expiry policy. Task-specific notes never persist; bad evidence lowers confidence instead of creating prohibitions. |
