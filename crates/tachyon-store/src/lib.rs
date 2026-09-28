@@ -101,6 +101,9 @@ pub struct EffectRow {
     pub id: String,
     /// Owning task id.
     pub task_id: String,
+    /// Owning execution node. NULL only for legacy M12 rows written before
+    /// the general journal protocol.
+    pub node_id: Option<String>,
     /// Effect class name (spec §19 `EffectClass`).
     pub effect_class: String,
     /// Idempotency name (spec §19 `Idempotency`).
@@ -111,6 +114,34 @@ pub struct EffectRow {
     pub receipt: Option<String>,
     /// Last transition time (micros since epoch).
     pub updated_at: i64,
+}
+
+/// Effect-table projection updated in the same transaction as its journal
+/// event and task snapshot.
+pub enum EffectMutation<'a> {
+    /// Persist the `EffectPrepared` barrier before the action can run.
+    Prepared {
+        /// Stable effect identity and keyed idempotency key.
+        effect_id: &'a str,
+        /// Node which owns this effect.
+        node_id: &'a str,
+        /// Validated IR effect class name.
+        effect_class: &'a str,
+        /// Validated IR idempotency name.
+        idempotency: &'a str,
+    },
+    /// Persist the `EffectCommitted` receipt.
+    Committed {
+        /// Prepared effect identity.
+        effect_id: &'a str,
+        /// Resulting receipt or query result.
+        receipt: &'a str,
+    },
+    /// Persist a fail-closed recovery classification.
+    UnknownAfterCrash {
+        /// Prepared effect identity.
+        effect_id: &'a str,
+    },
 }
 
 /// The two human decisions a pending approval row accepts (M11 item 8):
@@ -318,7 +349,7 @@ impl StoreWriter {
         kind: &str,
         payload: &str,
     ) -> Result<i64, StoreError> {
-        self.append(task_id, kind, payload, None).await
+        self.append(task_id, kind, payload, None, None).await
     }
 
     /// Journal and projected status/revision/snapshot share one SQLite commit.
@@ -330,7 +361,22 @@ impl StoreWriter {
         payload: &str,
         state: TransitionState<'_>,
     ) -> Result<i64, StoreError> {
-        self.append(task_id, kind, payload, Some(state)).await
+        self.append(task_id, kind, payload, Some(state), None).await
+    }
+
+    /// Appends a journal transition, materialized task state, and effect
+    /// projection mutation in one SQLite transaction. Used for the
+    /// EffectPrepared/EffectCommitted crash barrier protocol.
+    pub async fn append_effect_transition(
+        &self,
+        task_id: &str,
+        kind: &str,
+        payload: &str,
+        state: TransitionState<'_>,
+        effect: EffectMutation<'_>,
+    ) -> Result<i64, StoreError> {
+        self.append(task_id, kind, payload, Some(state), Some(effect))
+            .await
     }
 
     async fn append(
@@ -339,6 +385,7 @@ impl StoreWriter {
         kind: &str,
         payload: &str,
         state: Option<TransitionState<'_>>,
+        effect: Option<EffectMutation<'_>>,
     ) -> Result<i64, StoreError> {
         let _guard = self.write.lock().await;
         let mut tx = self.pool.begin().await?;
@@ -381,6 +428,9 @@ impl StoreWriter {
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
+        }
+        if let Some(effect) = effect {
+            apply_effect_mutation(&mut tx, task_id, effect).await?;
         }
         tx.commit().await?;
         self.notify_commit(task_id, seq);
@@ -692,7 +742,9 @@ impl StoreWriter {
     }
 
     /// Records an effect at the `EffectPrepared` barrier (spec §19):
-    /// durable before the consequential action runs.
+    /// legacy M12 fixture helper. Production code must use the supervisor's
+    /// journalled effect protocol so the table and task state cannot diverge.
+    #[deprecated(note = "legacy M12 fixture only; use SupervisorHandle::prepare_effect")]
     pub async fn insert_effect_prepared(
         &self,
         effect_id: &str,
@@ -717,7 +769,9 @@ impl StoreWriter {
     }
 
     /// Records `EffectCommitted` with a receipt: only a `prepared` row
-    /// accepts the flip; anything else is a typed not-found/wrong-state.
+    /// accepts the flip; legacy M12 fixture helper. Production code must use
+    /// the supervisor's journalled effect protocol.
+    #[deprecated(note = "legacy M12 fixture only; use SupervisorHandle::commit_effect")]
     pub async fn commit_effect(
         &self,
         effect_id: &str,
@@ -742,7 +796,9 @@ impl StoreWriter {
     }
 
     /// Marks a still-`prepared` row `unknown_after_crash` (spec §19
-    /// NonIdempotent/Unknown). Recovery never blindly replays these.
+    /// NonIdempotent/Unknown). Legacy M12 fixture helper; production recovery
+    /// journals this projection update through the supervisor.
+    #[deprecated(note = "legacy M12 fixture only; recovery uses journalled transitions")]
     pub async fn mark_effect_unknown_after_crash(
         &self,
         effect_id: &str,
@@ -767,7 +823,7 @@ impl StoreWriter {
     /// All effect rows for one task, in insert order (recovery input).
     pub async fn load_effects_for_task(&self, task_id: &str) -> Result<Vec<EffectRow>, StoreError> {
         sqlx::query_as::<_, EffectRow>(
-            "SELECT id, task_id, effect_class, idempotency, state, receipt, updated_at
+            "SELECT id, task_id, node_id, effect_class, idempotency, state, receipt, updated_at
              FROM effects WHERE task_id = ? ORDER BY rowid",
         )
         .bind(task_id)
@@ -779,7 +835,7 @@ impl StoreWriter {
     /// Loads one effect row by id.
     pub async fn load_effect(&self, effect_id: &str) -> Result<Option<EffectRow>, StoreError> {
         sqlx::query_as::<_, EffectRow>(
-            "SELECT id, task_id, effect_class, idempotency, state, receipt, updated_at
+            "SELECT id, task_id, node_id, effect_class, idempotency, state, receipt, updated_at
              FROM effects WHERE id = ?",
         )
         .bind(effect_id)
@@ -814,9 +870,90 @@ impl StoreWriter {
     }
 }
 
+async fn apply_effect_mutation(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    task_id: &str,
+    effect: EffectMutation<'_>,
+) -> Result<(), StoreError> {
+    let now = Timestamp::now().as_micros();
+    match effect {
+        EffectMutation::Prepared {
+            effect_id,
+            node_id,
+            effect_class,
+            idempotency,
+        } => {
+            sqlx::query(
+                "INSERT INTO effects (id, task_id, node_id, effect_class, idempotency,
+                 state, receipt, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 'prepared', NULL, ?)",
+            )
+            .bind(effect_id)
+            .bind(task_id)
+            .bind(node_id)
+            .bind(effect_class)
+            .bind(idempotency)
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+        }
+        EffectMutation::Committed { effect_id, receipt } => {
+            let changed = sqlx::query(
+                "UPDATE effects SET state = 'committed', receipt = ?, updated_at = ?
+                 WHERE id = ? AND task_id = ? AND state = 'prepared'",
+            )
+            .bind(receipt)
+            .bind(now)
+            .bind(effect_id)
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            if changed == 0 {
+                return Err(effect_transition_error_in_tx(tx, effect_id).await);
+            }
+        }
+        EffectMutation::UnknownAfterCrash { effect_id } => {
+            let changed = sqlx::query(
+                "UPDATE effects SET state = 'unknown_after_crash', updated_at = ?
+                 WHERE id = ? AND task_id = ? AND state = 'prepared'",
+            )
+            .bind(now)
+            .bind(effect_id)
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            if changed == 0 {
+                return Err(effect_transition_error_in_tx(tx, effect_id).await);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn effect_transition_error_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    effect_id: &str,
+) -> StoreError {
+    match sqlx::query_as::<_, (String, String)>("SELECT task_id, state FROM effects WHERE id = ?")
+        .bind(effect_id)
+        .fetch_optional(&mut **tx)
+        .await
+    {
+        Ok(None) => StoreError::EffectNotFound {
+            effect_id: effect_id.to_owned(),
+        },
+        Ok(Some((_, state))) => StoreError::Corrupt {
+            detail: format!("effect {effect_id} in state {state} does not accept this transition"),
+        },
+        Err(error) => StoreError::Sqlx(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::StoreWriter;
+    use super::{EffectMutation, StoreWriter, TransitionState};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -1033,6 +1170,86 @@ mod tests {
 
         store.close().await;
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_effect_commit_rolls_back_journal_task_and_effect_projection() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .create_task("t", "s", "w", "obj", "Created", "{}", "{}")
+            .await
+            .unwrap();
+
+        store
+            .append_effect_transition(
+                "t",
+                "effect_prepared",
+                "{\"effect_id\":\"effect-1\"}",
+                TransitionState {
+                    status: "Created",
+                    revision: 0,
+                    snapshot_json: Some("{\"barrier\":\"prepared\"}"),
+                },
+                EffectMutation::Prepared {
+                    effect_id: "effect-1",
+                    node_id: "node-1",
+                    effect_class: "DestructiveExternalMutation",
+                    idempotency: "Keyed",
+                },
+            )
+            .await
+            .unwrap();
+        let mut rx = store.subscribe_commits();
+
+        sqlx::query(
+            "CREATE TRIGGER fault_effect_commit BEFORE UPDATE OF state ON effects
+             WHEN NEW.state = 'committed'
+             BEGIN SELECT RAISE(ABORT, 'injected effect commit failure'); END",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let result = store
+            .append_effect_transition(
+                "t",
+                "effect_committed",
+                "{\"effect_id\":\"effect-1\",\"receipt\":\"receipt-1\"}",
+                TransitionState {
+                    status: "Created",
+                    revision: 0,
+                    snapshot_json: Some("{\"barrier\":\"committed\"}"),
+                },
+                EffectMutation::Committed {
+                    effect_id: "effect-1",
+                    receipt: "receipt-1",
+                },
+            )
+            .await;
+        assert!(result.is_err(), "the injected projection fault must abort");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        let events = store.load_events_since("t", -1).await.unwrap();
+        assert_eq!(events.len(), 2, "the failed event must roll back");
+        assert_eq!(events[1].kind, "effect_prepared");
+        let task = store.load_task("t").await.unwrap().unwrap();
+        assert_eq!(task.status, "Created");
+        assert_eq!(task.revision, 0);
+        assert_eq!(task.snapshot_seq, Some(1));
+        assert_eq!(
+            task.snapshot_json.as_deref(),
+            Some("{\"barrier\":\"prepared\"}")
+        );
+        let effect = store.load_effect("effect-1").await.unwrap().unwrap();
+        assert_eq!(effect.state, "prepared");
+        assert_eq!(effect.receipt, None);
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

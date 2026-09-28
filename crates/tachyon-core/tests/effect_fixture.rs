@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! M12 effect fixture gate: §19 crash reconcile through `recover_task`.
 //!
 //! The fixture writes `effects.state` prepared→committed around a fake

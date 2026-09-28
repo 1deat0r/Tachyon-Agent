@@ -24,6 +24,22 @@ pub const IR_VERSION: u16 = 1;
 /// Errors produced while validating an [`ExecutionGraph`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum IrError {
+    /// The graph schema version is not understood by this binary.
+    #[error("unsupported execution graph version {got}; expected {expected}")]
+    UnsupportedVersion {
+        /// Expected schema version.
+        expected: u16,
+        /// Version found in the graph.
+        got: u16,
+    },
+    /// A node map key differs from the identity stored inside its node.
+    #[error("node map key {key} does not match node identity {node_id}")]
+    NodeKeyMismatch {
+        /// Key under which the node was stored.
+        key: NodeId,
+        /// Identity declared by the node.
+        node_id: NodeId,
+    },
     /// A dependency names a node absent from [`ExecutionGraph::nodes`].
     #[error("dependency references unknown node {0}")]
     UnknownNode(NodeId),
@@ -555,7 +571,19 @@ impl ExecutionGraph {
     /// Milestone 3 registry and core; the invocation shape check here
     /// (non-empty capability, object args) is the M2 prerequisite.
     pub fn validate(&self, task_id: TaskId) -> Result<(), IrError> {
-        for node in self.nodes.values() {
+        if self.version != IR_VERSION {
+            return Err(IrError::UnsupportedVersion {
+                expected: IR_VERSION,
+                got: self.version,
+            });
+        }
+        for (key, node) in &self.nodes {
+            if *key != node.id {
+                return Err(IrError::NodeKeyMismatch {
+                    key: *key,
+                    node_id: node.id,
+                });
+            }
             if node.task_id != task_id {
                 return Err(IrError::ForeignTask(node.id));
             }
@@ -646,7 +674,9 @@ fn has_cycle(nodes: &BTreeMap<NodeId, ExecutionNode>, edges: &[Dependency]) -> b
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessSet, EffectClass, ExecutionGraph, Idempotency, Invocation, IrError};
+    use super::{
+        AccessSet, EffectClass, ExecutionGraph, IR_VERSION, Idempotency, Invocation, IrError,
+    };
     use super::{CancellationPolicy, ExecutorKind, TimeoutPolicy};
     use super::{Dependency, DependencyCondition, ExecutionNode};
     use super::{NodePriority, ResourceClaim, ResourceKey, RetryPolicy, SpeculationPolicy};
@@ -698,6 +728,37 @@ mod tests {
         let task = TaskId::generate();
         let graph = ExecutionGraph::empty(task, 0);
         assert_eq!(graph.validate(task), Ok(()));
+    }
+
+    #[test]
+    fn unsupported_graph_version_is_rejected() {
+        let task = TaskId::generate();
+        let mut graph = ExecutionGraph::empty(task, 0);
+        graph.version = IR_VERSION + 1;
+        assert_eq!(
+            graph.validate(task),
+            Err(IrError::UnsupportedVersion {
+                expected: IR_VERSION,
+                got: IR_VERSION + 1,
+            })
+        );
+    }
+
+    #[test]
+    fn node_map_key_must_match_node_identity() {
+        let task = TaskId::generate();
+        let node = node(task);
+        let key = NodeId::generate();
+        let node_id = node.id;
+        let graph = ExecutionGraph {
+            version: IR_VERSION,
+            nodes: std::collections::BTreeMap::from([(key, node)]),
+            dependencies: vec![],
+        };
+        assert_eq!(
+            graph.validate(task),
+            Err(IrError::NodeKeyMismatch { key, node_id })
+        );
     }
 
     #[test]

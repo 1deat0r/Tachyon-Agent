@@ -9,6 +9,23 @@ is tracked by issues and the docs/04/§46 deferrals, see `MVP_REPORT.md`).
 
 ## Completed gates
 
+- 2026-09-28 Post-MVP follow-up #26 — general effect barriers are now
+  journalled through the core Supervisor protocol and committed atomically
+  with the effect-table projection. The internal test seam seeds durable
+  node statuses; conflicting access sets are refused before dispatch.
+  Recovery puts interrupted nonterminal node tasks in `Recovering`, resets
+  unprepared `Running` nodes to `Pending`, preserves reconcilable prepared
+  effects, and marks non-idempotent/unknown effects plus their nodes
+  `UnknownAfterCrash`; terminal tasks retain their terminal status while
+  those classifications are journalled. Process-kill coverage now covers
+  prepared, remote return and committed seams; failed effect commits roll
+  back the journal, task snapshot and effect row together. The unchecked graph
+  constructor is test-only; no production validation token or scheduler
+  call path exists yet. The legacy M12 direct store helpers are deprecated.
+  Runtime integration still needs trusted graph validation, exact-operation
+  authorization permits, and Supervisor-owned worker draining. Report:
+  `docs/milestones/M12_REPORT.md`.
+
 - 2026-09-25 Milestone 14 — MVP freeze: full spec §44 benchmark matrix
   (3 fixtures × 5 modes × n=10 = 150 driver runs + Class A/B composed
   legs)   through the descriptor-driven `bench_matrix` host (generalizes

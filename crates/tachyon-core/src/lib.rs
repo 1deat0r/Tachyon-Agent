@@ -12,22 +12,24 @@
 #![warn(unsafe_code)]
 
 pub mod driver;
+#[cfg(test)]
+mod effect_recovery_tests;
 pub mod ownership;
 pub mod runtime;
 mod verification;
 pub use tachyon_verify::AcceptanceContract;
 pub use verification::VerificationState;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use ownership::{OwnedWorkers, TaskLifecycle, TaskOwnership};
 use serde::{Deserialize, Serialize};
-use tachyon_ir::ExecutionGraph;
-use tachyon_store::{ApprovalOutcome, JournalEvent, StoreWriter, TaskRow};
+use tachyon_ir::{EffectClass, ExecutionGraph, Idempotency, NodeStatus};
+use tachyon_store::{ApprovalOutcome, EffectMutation, JournalEvent, StoreWriter, TaskRow};
 use tachyon_tools::ToolsContext;
-use tachyon_types::{ApprovalId, SessionId, TaskId, Timestamp, WorkspaceId};
+use tachyon_types::{ApprovalId, NodeId, SessionId, TaskId, Timestamp, WorkspaceId};
 use tachyon_verify::{VerificationReport, VerificationRisk, VerifyError, WorkspaceSnapshot};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -78,6 +80,20 @@ pub enum CoreError {
     #[error("corrupt task state: {detail}")]
     Corrupt {
         /// What failed to parse.
+        detail: String,
+    },
+    /// Proposed execution graph failed validation or was stale.
+    #[error("execution graph rejected: {detail}")]
+    InvalidExecutionGraph {
+        /// Validation failure.
+        detail: String,
+    },
+    /// A node/effect operation violates the durable execution state machine.
+    #[error("node {node_id} transition rejected: {detail}")]
+    NodeTransitionRejected {
+        /// Node identity.
+        node_id: NodeId,
+        /// State-machine rejection.
         detail: String,
     },
     /// A run proposal arrived with a revision the task has moved past
@@ -315,6 +331,16 @@ pub struct TaskState {
     pub verification: Option<VerificationState>,
     /// Validated execution graph (empty until Milestone 2 plans).
     pub graph: ExecutionGraph,
+    /// Runtime execution graph whose node states are journalled below.
+    /// Separate from `graph`, which is the verification graph.
+    #[serde(default)]
+    pub execution_graph: Option<ExecutionGraph>,
+    /// Durable scheduler node states, keyed by validated IR node identity.
+    #[serde(default)]
+    pub node_statuses: BTreeMap<NodeId, NodeStatus>,
+    /// Durable effect barrier history keyed by stable effect identity.
+    #[serde(default)]
+    pub effects: BTreeMap<String, EffectRecord>,
     /// Durable `stage` journal records (append-only, display-facing).
     /// Never bumps `revision`: steering owns that counter.
     #[serde(default)]
@@ -342,6 +368,62 @@ pub struct TaskState {
     /// Last transition time.
     pub updated_at: Timestamp,
 }
+
+/// Durable state of one effect barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectState {
+    /// `EffectPrepared` is durable; the outcome may need reconciliation.
+    Prepared,
+    /// A successful outcome receipt is durable.
+    Committed,
+    /// Recovery cannot safely determine the external outcome.
+    UnknownAfterCrash,
+}
+
+/// Effect identity and declaration carried by the journal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectRecord {
+    /// Stable effect identity and keyed idempotency key.
+    pub id: String,
+    /// Validated execution node that owns the operation.
+    pub node_id: NodeId,
+    /// Consequence class from the validated graph.
+    pub effect_class: EffectClass,
+    /// Recovery semantics from the validated graph.
+    pub idempotency: Idempotency,
+    /// Durable barrier state.
+    pub state: EffectState,
+    /// Committed result receipt, if available.
+    pub receipt: Option<String>,
+}
+
+/// Reserved internal seam for a future trusted planner result.
+///
+/// This wrapper is not yet a validation proof: the production planner does
+/// not mint it, and the runtime driver does not install scheduler graphs.
+/// Its field is private to this child module, and its unchecked constructor
+/// exists only in unit-test builds. Do not add a production constructor until
+/// capability schemas, hard constraints, access/resource minimums, and
+/// required effect barriers are validated.
+mod execution_graph_token {
+    use tachyon_ir::ExecutionGraph;
+
+    pub(super) struct ValidatedExecutionGraph(ExecutionGraph);
+
+    impl ValidatedExecutionGraph {
+        pub(super) fn into_graph(self) -> ExecutionGraph {
+            self.0
+        }
+    }
+
+    #[cfg(test)]
+    impl ValidatedExecutionGraph {
+        pub(super) fn from_unchecked_test_graph(graph: ExecutionGraph) -> Self {
+            Self(graph)
+        }
+    }
+}
+use execution_graph_token::ValidatedExecutionGraph;
 
 /// One durable `stage` journal record: which runtime stage moved and a
 /// display-facing detail line. Carries no source content, hashes, or
@@ -441,6 +523,33 @@ enum StateEvent {
         from: TaskStatus,
         to: TaskStatus,
     },
+    ExecutionGraphInstalled {
+        graph: ExecutionGraph,
+    },
+    NodeStatusChanged {
+        node_id: NodeId,
+        from: NodeStatus,
+        to: NodeStatus,
+    },
+    EffectPrepared {
+        effect_id: String,
+        node_id: NodeId,
+        effect_class: EffectClass,
+        idempotency: Idempotency,
+    },
+    EffectCommitted {
+        effect_id: String,
+        receipt: String,
+    },
+    EffectUnknownAfterCrash {
+        effect_id: String,
+        node_id: NodeId,
+    },
+    /// Compatibility reconciliation for pre-protocol M12 rows, which
+    /// have no node identity or matching journal event.
+    LegacyEffectUnknownAfterCrash {
+        effect_id: String,
+    },
     Approval {
         approval: ApprovalId,
         granted: bool,
@@ -485,6 +594,8 @@ enum StateEvent {
 /// Commands the supervisor owns (spec §15). Node/provider events arrive
 /// with Milestones 2 and 6; the enum grows then.
 enum SupervisorCommand {
+    #[allow(dead_code)] // Scheduler dispatch is wired in the next planner integration slice.
+    Execution(ExecutionCommand),
     AddUserMessage {
         message: String,
         reply: oneshot::Sender<Result<TaskState, CoreError>>,
@@ -562,6 +673,33 @@ enum SupervisorCommand {
     },
 }
 
+/// Node and effect commands share one supervisor dispatch path.
+#[allow(dead_code)] // Kept internal until the trusted planner integration is completed.
+enum ExecutionCommand {
+    InstallExecutionGraph {
+        graph: ValidatedExecutionGraph,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
+    StartNode {
+        node_id: NodeId,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
+    PrepareEffect {
+        node_id: NodeId,
+        effect_id: String,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
+    CommitEffect {
+        effect_id: String,
+        receipt: String,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
+    CompleteNode {
+        node_id: NodeId,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
+}
+
 /// How a parked approval resolved for the waiting worker (M11 item 8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApprovalResolution {
@@ -606,6 +744,88 @@ impl SupervisorHandle {
     #[must_use]
     pub fn task_id(&self) -> TaskId {
         self.task_id
+    }
+
+    /// Installs the one validated execution graph for this task and seeds
+    /// every node as `Pending`. Its structure and planned revision are
+    /// checked before the graph is journalled.
+    #[allow(dead_code)] // Internal scheduler seam; raw graphs are not public API.
+    async fn install_execution_graph(
+        &self,
+        graph: ValidatedExecutionGraph,
+    ) -> Result<TaskState, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::Execution(
+            ExecutionCommand::InstallExecutionGraph { graph, reply },
+        ))
+        .await;
+        receive(rx).await?
+    }
+
+    /// Durably marks a dependency-ready, non-conflicting node `Running`
+    /// before the scheduler dispatches it.
+    #[allow(dead_code)] // Internal scheduler seam.
+    async fn start_node(&self, node_id: NodeId) -> Result<TaskState, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::Execution(ExecutionCommand::StartNode {
+            node_id,
+            reply,
+        }))
+        .await;
+        receive(rx).await?
+    }
+
+    /// Persists `EffectPrepared` and its effect-table projection atomically.
+    /// The caller may begin the consequential action only after this returns.
+    /// Effect class and idempotency are taken from the validated node.
+    #[allow(dead_code)] // Internal scheduler seam.
+    async fn prepare_effect(
+        &self,
+        node_id: NodeId,
+        effect_id: String,
+    ) -> Result<TaskState, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::Execution(
+            ExecutionCommand::PrepareEffect {
+                node_id,
+                effect_id,
+                reply,
+            },
+        ))
+        .await;
+        receive(rx).await?
+    }
+
+    /// Persists `EffectCommitted` and its receipt atomically with the effect
+    /// projection. The effect must already have crossed `prepare_effect`.
+    #[allow(dead_code)] // Internal scheduler seam.
+    async fn commit_effect(
+        &self,
+        effect_id: &str,
+        receipt: String,
+    ) -> Result<TaskState, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::Execution(
+            ExecutionCommand::CommitEffect {
+                effect_id: effect_id.to_owned(),
+                receipt,
+                reply,
+            },
+        ))
+        .await;
+        receive(rx).await?
+    }
+
+    /// Marks a node `Succeeded` only after each of its prepared effects has
+    /// a durable committed receipt.
+    #[allow(dead_code)] // Internal scheduler seam.
+    async fn complete_node(&self, node_id: NodeId) -> Result<TaskState, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::Execution(
+            ExecutionCommand::CompleteNode { node_id, reply },
+        ))
+        .await;
+        receive(rx).await?
     }
 
     /// Current canonical state.
@@ -791,6 +1011,9 @@ pub async fn create_task(
         open_questions: Vec::new(),
         acceptance: AcceptanceContract::default(),
         graph: ExecutionGraph::empty(task_id, 0),
+        execution_graph: None,
+        node_statuses: BTreeMap::new(),
+        effects: BTreeMap::new(),
         stages: Vec::new(),
         evidence_summary: Vec::new(),
         changed_files: Vec::new(),
@@ -865,22 +1088,6 @@ pub async fn recover_task(
     for row in store.load_granted_for_task(&task_id.to_string()).await? {
         store.expire_granted(&row.id).await?;
     }
-    // M12 §19: reconcile still-`prepared` effect rows by idempotency
-    // class. Keyed/Queryable/Compensatable stay `prepared` for the
-    // re-entry path to retry or inspect; NonIdempotent/Unknown — and any
-    // unrecognized class — become `unknown_after_crash` and are never
-    // blindly replayed (fail-safe default).
-    for effect in store.load_effects_for_task(&task_id.to_string()).await? {
-        if effect.state != "prepared" {
-            continue;
-        }
-        match effect.idempotency.as_str() {
-            "Keyed" | "Queryable" | "Compensatable" | "Idempotent" | "Pure" => {}
-            _ => {
-                store.mark_effect_unknown_after_crash(&effect.id).await?;
-            }
-        }
-    }
     // The journal tail, not stale task-row metadata, is recovery truth.
     state.updated_at = Timestamp::now();
     let interrupted = state.verification.as_ref().is_some_and(|v| v.in_progress);
@@ -906,6 +1113,28 @@ pub async fn recover_task(
         })
         .await?;
     }
+    let has_interrupted_nodes = app.state.node_statuses.values().any(|status| {
+        matches!(
+            status,
+            NodeStatus::Running | NodeStatus::Prepared | NodeStatus::UnknownAfterCrash
+        )
+    });
+    // A terminal task cannot be reopened merely to reconcile interrupted
+    // nodes. The recovery-only node/effect records below preserve its
+    // terminal status while making crash uncertainty durable.
+    if has_interrupted_nodes
+        && !app.state.status.is_terminal()
+        && app.state.status != TaskStatus::Recovering
+    {
+        let from = app.state.status;
+        app.transition_journalled(StateEvent::Status {
+            from,
+            to: TaskStatus::Recovering,
+        })
+        .await?;
+    }
+    app.reconcile_effect_rows().await?;
+    app.recover_running_nodes().await?;
     let snapshot_base = app.snapshot_base;
     Ok(spawn(
         app.state,
@@ -938,6 +1167,9 @@ fn starting_state(row: &TaskRow) -> Result<(TaskState, i64), CoreError> {
         open_questions: Vec::new(),
         acceptance: AcceptanceContract::default(),
         graph: ExecutionGraph::empty(id, 0),
+        execution_graph: None,
+        node_statuses: BTreeMap::new(),
+        effects: BTreeMap::new(),
         stages: Vec::new(),
         evidence_summary: Vec::new(),
         changed_files: Vec::new(),
@@ -975,7 +1207,11 @@ fn apply_journal(state: &mut TaskState, event: &JournalEvent) -> Result<(), Core
         serde_json::from_str(&event.payload).map_err(|err| CoreError::Corrupt {
             detail: format!("journal seq {} does not parse: {err}", event.seq),
         })?;
-    match payload {
+    apply_event(state, payload)
+}
+
+fn apply_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
+    match event {
         StateEvent::Created { state: fresh } => {
             *state = *fresh;
         }
@@ -995,7 +1231,209 @@ fn apply_journal(state: &mut TaskState, event: &JournalEvent) -> Result<(), Core
         StateEvent::Status { to, .. } => {
             state.status = to;
         }
-        StateEvent::Approval { .. } => {}
+        StateEvent::Approval { .. } | StateEvent::LegacyEffectUnknownAfterCrash { .. } => {}
+        execution_event @ (StateEvent::ExecutionGraphInstalled { .. }
+        | StateEvent::NodeStatusChanged { .. }) => apply_node_event(state, execution_event)?,
+        effect_event @ (StateEvent::EffectPrepared { .. }
+        | StateEvent::EffectCommitted { .. }
+        | StateEvent::EffectUnknownAfterCrash { .. }) => apply_effect_event(state, effect_event)?,
+        verification_event @ (StateEvent::VerificationConfigured { .. }
+        | StateEvent::VerificationStarted { .. }
+        | StateEvent::VerificationFinished { .. }
+        | StateEvent::VerificationInterrupted) => {
+            apply_verification_event(state, verification_event)?;
+        }
+        display_event @ (StateEvent::Stage { .. }
+        | StateEvent::EvidenceSummary { .. }
+        | StateEvent::ChangedFiles { .. }
+        | StateEvent::AgentMessage { .. }
+        | StateEvent::ApprovalRequest { .. }
+        | StateEvent::WorkspacePinned { .. }) => apply_display_event(state, display_event)?,
+    }
+    Ok(())
+}
+
+fn apply_node_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
+    match event {
+        StateEvent::ExecutionGraphInstalled { graph } => {
+            graph
+                .validate(state.id)
+                .map_err(|error| CoreError::Corrupt {
+                    detail: format!("journalled execution graph is invalid: {error}"),
+                })?;
+            if graph
+                .nodes
+                .values()
+                .any(|node| node.planned_revision != state.revision)
+            {
+                return Err(CoreError::Corrupt {
+                    detail: "journalled execution graph has a stale planned revision".into(),
+                });
+            }
+            state.node_statuses = graph
+                .nodes
+                .keys()
+                .map(|node_id| (*node_id, NodeStatus::Pending))
+                .collect();
+            state.execution_graph = Some(graph);
+        }
+        StateEvent::NodeStatusChanged { node_id, from, to } => {
+            let current = state.node_statuses.get(&node_id).copied();
+            if current != Some(from) || !node_status_transition_allowed(from, to) {
+                return Err(CoreError::Corrupt {
+                    detail: format!(
+                        "invalid journalled node transition for {node_id}: {current:?} -> {to:?}"
+                    ),
+                });
+            }
+            if to == NodeStatus::Succeeded {
+                validate_node_success_barrier(state, node_id).map_err(|detail| {
+                    CoreError::Corrupt {
+                        detail: format!(
+                            "node {node_id} succeeded without a valid effect barrier: {detail}"
+                        ),
+                    }
+                })?;
+            }
+            state.node_statuses.insert(node_id, to);
+        }
+        _ => return Err(unexpected_event("node", &event)),
+    }
+    Ok(())
+}
+
+fn apply_effect_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
+    match event {
+        StateEvent::EffectPrepared {
+            effect_id,
+            node_id,
+            effect_class,
+            idempotency,
+        } => apply_effect_prepared(state, effect_id, node_id, effect_class, idempotency)?,
+        StateEvent::EffectCommitted { effect_id, receipt } => {
+            let record = state
+                .effects
+                .get_mut(&effect_id)
+                .ok_or_else(|| CoreError::Corrupt {
+                    detail: format!("effect {effect_id} committed without preparation"),
+                })?;
+            if record.state != EffectState::Prepared {
+                return Err(CoreError::Corrupt {
+                    detail: format!("effect {effect_id} committed from {:?}", record.state),
+                });
+            }
+            record.state = EffectState::Committed;
+            record.receipt = Some(receipt);
+        }
+        StateEvent::EffectUnknownAfterCrash { effect_id, node_id } => {
+            apply_effect_unknown(state, &effect_id, node_id)?;
+        }
+        _ => return Err(unexpected_event("effect", &event)),
+    }
+    Ok(())
+}
+
+fn apply_effect_prepared(
+    state: &mut TaskState,
+    effect_id: String,
+    node_id: NodeId,
+    effect_class: EffectClass,
+    idempotency: Idempotency,
+) -> Result<(), CoreError> {
+    let graph_node = state
+        .execution_graph
+        .as_ref()
+        .and_then(|graph| graph.nodes.get(&node_id))
+        .ok_or_else(|| CoreError::Corrupt {
+            detail: format!("effect {effect_id} references unknown node {node_id}"),
+        })?;
+    if graph_node.effect_class != effect_class || graph_node.idempotency != idempotency {
+        return Err(CoreError::Corrupt {
+            detail: format!("effect {effect_id} declaration differs from validated node"),
+        });
+    }
+    if effect_id.trim().is_empty() || effect_id.len() > 256 {
+        return Err(CoreError::Corrupt {
+            detail: format!("effect {effect_id:?} has an invalid identity"),
+        });
+    }
+    if graph_node.effect_class.speculation_safe() {
+        return Err(CoreError::Corrupt {
+            detail: format!("effect {effect_id} was prepared for a side-effect-free node"),
+        });
+    }
+    if state.effects.contains_key(&effect_id)
+        || state
+            .effects
+            .values()
+            .any(|record| record.node_id == node_id)
+    {
+        return Err(CoreError::Corrupt {
+            detail: format!("node {node_id} or effect {effect_id} was prepared more than once"),
+        });
+    }
+    if graph_node.planned_revision != state.revision || !dispatch_lifecycle_allowed(state.status) {
+        return Err(CoreError::Corrupt {
+            detail: format!("effect {effect_id} crossed a stale or non-dispatchable plan boundary"),
+        });
+    }
+    match state.node_statuses.get(&node_id) {
+        Some(NodeStatus::Running) => {}
+        status => {
+            return Err(CoreError::Corrupt {
+                detail: format!("effect {effect_id} prepared while node {node_id} was {status:?}"),
+            });
+        }
+    }
+    state.effects.insert(
+        effect_id.clone(),
+        EffectRecord {
+            id: effect_id,
+            node_id,
+            effect_class,
+            idempotency,
+            state: EffectState::Prepared,
+            receipt: None,
+        },
+    );
+    state.node_statuses.insert(node_id, NodeStatus::Prepared);
+    Ok(())
+}
+
+fn apply_effect_unknown(
+    state: &mut TaskState,
+    effect_id: &str,
+    node_id: NodeId,
+) -> Result<(), CoreError> {
+    let record = state
+        .effects
+        .get_mut(effect_id)
+        .ok_or_else(|| CoreError::Corrupt {
+            detail: format!("effect {effect_id} classified without preparation"),
+        })?;
+    if record.node_id != node_id || record.state != EffectState::Prepared {
+        return Err(CoreError::Corrupt {
+            detail: format!("effect {effect_id} has conflicting recovery classification"),
+        });
+    }
+    record.state = EffectState::UnknownAfterCrash;
+    match state.node_statuses.get(&node_id) {
+        Some(NodeStatus::Prepared | NodeStatus::UnknownAfterCrash) => {
+            state
+                .node_statuses
+                .insert(node_id, NodeStatus::UnknownAfterCrash);
+        }
+        status => {
+            return Err(CoreError::Corrupt {
+                detail: format!("effect {effect_id} recovered while node {node_id} was {status:?}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn apply_verification_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
+    match event {
         StateEvent::VerificationConfigured {
             contract,
             baseline,
@@ -1039,28 +1477,104 @@ fn apply_journal(state: &mut TaskState, event: &JournalEvent) -> Result<(), Core
             }
             state.status = TaskStatus::Recovering;
         }
-        // Append-only display record: no status, no revision, no
-        // verification invalidation (only steering owns those).
-        StateEvent::Stage { record } => {
-            state.stages.push(record);
-        }
-        StateEvent::EvidenceSummary { entries } => {
-            state.evidence_summary.extend(entries);
-        }
-        StateEvent::ChangedFiles { files } => {
-            state.changed_files.extend(files);
-        }
-        StateEvent::AgentMessage { message } => {
-            state.agent_messages.push(message);
-        }
-        StateEvent::ApprovalRequest { request } => {
-            state.approval_requests.push(request);
-        }
-        StateEvent::WorkspacePinned { root } => {
-            state.workspace_root = Some(root);
-        }
+        _ => return Err(unexpected_event("verification", &event)),
     }
     Ok(())
+}
+
+fn apply_display_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
+    // Append-only records do not alter task status or revision.
+    match event {
+        StateEvent::Stage { record } => state.stages.push(record),
+        StateEvent::EvidenceSummary { entries } => state.evidence_summary.extend(entries),
+        StateEvent::ChangedFiles { files } => state.changed_files.extend(files),
+        StateEvent::AgentMessage { message } => state.agent_messages.push(message),
+        StateEvent::ApprovalRequest { request } => state.approval_requests.push(request),
+        StateEvent::WorkspacePinned { root } => state.workspace_root = Some(root),
+        _ => return Err(unexpected_event("display", &event)),
+    }
+    Ok(())
+}
+
+fn unexpected_event(group: &str, event: &StateEvent) -> CoreError {
+    CoreError::Corrupt {
+        detail: format!("{group} event handler received {}", event_kind(event)),
+    }
+}
+
+fn node_status_transition_allowed(from: NodeStatus, to: NodeStatus) -> bool {
+    matches!(
+        (from, to),
+        (NodeStatus::Pending | NodeStatus::Ready, NodeStatus::Running)
+            | (NodeStatus::Running, NodeStatus::Pending)
+            | (
+                NodeStatus::Running | NodeStatus::Prepared,
+                NodeStatus::Succeeded
+            )
+    )
+}
+
+fn node_transition_error(node_id: NodeId, detail: impl Into<String>) -> CoreError {
+    CoreError::NodeTransitionRejected {
+        node_id,
+        detail: detail.into(),
+    }
+}
+
+fn effect_state_name(state: EffectState) -> &'static str {
+    match state {
+        EffectState::Prepared => "prepared",
+        EffectState::Committed => "committed",
+        EffectState::UnknownAfterCrash => "unknown_after_crash",
+    }
+}
+
+fn idempotency_reconcilable(idempotency: Idempotency) -> bool {
+    matches!(
+        idempotency,
+        Idempotency::Pure
+            | Idempotency::Idempotent
+            | Idempotency::Keyed
+            | Idempotency::Queryable
+            | Idempotency::Compensatable
+    )
+}
+
+fn dispatch_lifecycle_allowed(status: TaskStatus) -> bool {
+    matches!(status, TaskStatus::Created | TaskStatus::Executing)
+}
+
+fn validate_node_success_barrier(state: &TaskState, node_id: NodeId) -> Result<(), String> {
+    let node = state
+        .execution_graph
+        .as_ref()
+        .and_then(|graph| graph.nodes.get(&node_id))
+        .ok_or_else(|| "node is absent from the execution graph".to_owned())?;
+    let effects: Vec<_> = state
+        .effects
+        .values()
+        .filter(|effect| effect.node_id == node_id)
+        .collect();
+    if node.effect_class.speculation_safe() {
+        return if effects.is_empty() {
+            Ok(())
+        } else {
+            Err("side-effect-free node has an effect record".to_owned())
+        };
+    }
+    match effects.as_slice() {
+        [effect] if effect.state == EffectState::Committed => Ok(()),
+        [] => Err("consequential node has no prepared effect".to_owned()),
+        [_] => Err("effect has no committed receipt".to_owned()),
+        _ => Err("node has more than one effect record".to_owned()),
+    }
+}
+
+fn legacy_idempotency_reconcilable(idempotency: &str) -> bool {
+    matches!(
+        idempotency,
+        "Pure" | "Idempotent" | "Keyed" | "Queryable" | "Compensatable"
+    )
 }
 
 /// Starts the supervisor loop for `state`, which already covers journal
@@ -1169,6 +1683,12 @@ fn event_kind(event: &StateEvent) -> &'static str {
         StateEvent::Message { .. } => "message",
         StateEvent::Constraint { .. } => "constraint",
         StateEvent::Status { .. } => "status",
+        StateEvent::ExecutionGraphInstalled { .. } => "execution_graph_installed",
+        StateEvent::NodeStatusChanged { .. } => "node_status_changed",
+        StateEvent::EffectPrepared { .. } => "effect_prepared",
+        StateEvent::EffectCommitted { .. } => "effect_committed",
+        StateEvent::EffectUnknownAfterCrash { .. }
+        | StateEvent::LegacyEffectUnknownAfterCrash { .. } => "effect_unknown_after_crash",
         StateEvent::Approval { .. } => "approval",
         StateEvent::VerificationConfigured { .. } => "verification_configured",
         StateEvent::VerificationStarted { .. } => "verification_started",
@@ -1207,6 +1727,7 @@ impl Loop {
 
     async fn handle(&mut self, command: SupervisorCommand) {
         match command {
+            SupervisorCommand::Execution(command) => self.handle_execution(command).await,
             SupervisorCommand::ConfigureVerification {
                 context,
                 contract,
@@ -1294,16 +1815,72 @@ impl Loop {
         }
     }
 
+    async fn handle_execution(&mut self, command: ExecutionCommand) {
+        match command {
+            ExecutionCommand::InstallExecutionGraph { graph, reply } => {
+                let _ = reply.send(self.install_execution_graph(graph).await);
+            }
+            ExecutionCommand::StartNode { node_id, reply } => {
+                let _ = reply.send(self.start_node(node_id).await);
+            }
+            ExecutionCommand::PrepareEffect {
+                node_id,
+                effect_id,
+                reply,
+            } => {
+                let _ = reply.send(self.prepare_effect(node_id, effect_id).await);
+            }
+            ExecutionCommand::CommitEffect {
+                effect_id,
+                receipt,
+                reply,
+            } => {
+                let _ = reply.send(self.commit_effect(&effect_id, receipt).await);
+            }
+            ExecutionCommand::CompleteNode { node_id, reply } => {
+                let _ = reply.send(self.complete_node(node_id).await);
+            }
+        }
+    }
+
     /// Journals `event`, replays it onto a scratch copy (the single
     /// transition path shared with crash recovery), snapshots per policy,
     /// then commits the scratch copy as canonical. In-memory state only
     /// moves forward after the journal accepts the transition.
     async fn transition_journalled(&mut self, event: StateEvent) -> Result<TaskState, CoreError> {
+        self.transition_journalled_with_effect(event, None).await
+    }
+
+    async fn transition_journalled_with_effect(
+        &mut self,
+        event: StateEvent,
+        effect: Option<EffectMutation<'_>>,
+    ) -> Result<TaskState, CoreError> {
         let target = match &event {
             StateEvent::Status { to, .. } => *to,
             _ => self.state.status,
         };
-        if self.state.status.is_terminal() {
+        // Only fail-safe recovery classifications may extend a terminal
+        // journal; ordinary task changes remain refused after termination.
+        let terminal_reconciliation = match (&event, &effect) {
+            (
+                StateEvent::NodeStatusChanged {
+                    from: NodeStatus::Running,
+                    to: NodeStatus::Pending,
+                    ..
+                },
+                None,
+            ) => true,
+            (
+                StateEvent::EffectUnknownAfterCrash { effect_id, .. }
+                | StateEvent::LegacyEffectUnknownAfterCrash { effect_id },
+                Some(EffectMutation::UnknownAfterCrash {
+                    effect_id: projection_id,
+                }),
+            ) => effect_id.as_str() == *projection_id,
+            _ => false,
+        };
+        if self.state.status.is_terminal() && !terminal_reconciliation {
             return Err(CoreError::IllegalTransition {
                 from: self.state.status,
                 to: target,
@@ -1330,19 +1907,27 @@ impl Loop {
             } else {
                 None
             };
-        let seq = self
-            .store
-            .append_transition(
-                &next.id.to_string(),
-                event_kind(&event),
-                &payload,
-                tachyon_store::TransitionState {
-                    status: next.status.name(),
-                    revision: i64::try_from(next.revision).unwrap_or(i64::MAX),
-                    snapshot_json: snapshot.as_deref(),
-                },
-            )
-            .await?;
+        let task_id = next.id.to_string();
+        let transition_state = tachyon_store::TransitionState {
+            status: next.status.name(),
+            revision: i64::try_from(next.revision).unwrap_or(i64::MAX),
+            snapshot_json: snapshot.as_deref(),
+        };
+        let seq = if let Some(effect) = effect {
+            self.store
+                .append_effect_transition(
+                    &task_id,
+                    event_kind(&event),
+                    &payload,
+                    transition_state,
+                    effect,
+                )
+                .await?
+        } else {
+            self.store
+                .append_transition(&task_id, event_kind(&event), &payload, transition_state)
+                .await?
+        };
         self.covered = seq;
         if snapshot.is_some() {
             self.snapshot_base = Some(seq);
@@ -1366,6 +1951,436 @@ impl Loop {
         }
         self.transition_journalled(StateEvent::Status { from, to })
             .await
+    }
+
+    async fn install_execution_graph(
+        &mut self,
+        validated: ValidatedExecutionGraph,
+    ) -> Result<TaskState, CoreError> {
+        if !dispatch_lifecycle_allowed(self.state.status) {
+            return Err(CoreError::InvalidExecutionGraph {
+                detail: format!(
+                    "task status {:?} does not accept a graph",
+                    self.state.status
+                ),
+            });
+        }
+        if self.state.execution_graph.is_some() {
+            return Err(CoreError::InvalidExecutionGraph {
+                detail: "an execution graph is already installed".into(),
+            });
+        }
+        let graph = validated.into_graph();
+        graph
+            .validate(self.state.id)
+            .map_err(|error| CoreError::InvalidExecutionGraph {
+                detail: error.to_string(),
+            })?;
+        if graph
+            .nodes
+            .values()
+            .any(|node| node.planned_revision != self.state.revision)
+        {
+            return Err(CoreError::InvalidExecutionGraph {
+                detail: format!(
+                    "every node must be planned against task revision {}",
+                    self.state.revision
+                ),
+            });
+        }
+        self.transition_journalled(StateEvent::ExecutionGraphInstalled { graph })
+            .await
+    }
+
+    async fn start_node(&mut self, node_id: NodeId) -> Result<TaskState, CoreError> {
+        if !dispatch_lifecycle_allowed(self.state.status) {
+            return Err(node_transition_error(
+                node_id,
+                format!(
+                    "task status {:?} does not permit dispatch",
+                    self.state.status
+                ),
+            ));
+        }
+        let graph = self
+            .state
+            .execution_graph
+            .as_ref()
+            .ok_or_else(|| node_transition_error(node_id, "no execution graph is installed"))?;
+        let node = graph
+            .nodes
+            .get(&node_id)
+            .ok_or_else(|| node_transition_error(node_id, "node is absent from the graph"))?;
+        if node.planned_revision != self.state.revision {
+            return Err(node_transition_error(
+                node_id,
+                format!(
+                    "plan revision {} is stale at task revision {}",
+                    node.planned_revision, self.state.revision
+                ),
+            ));
+        }
+        let from = self
+            .state
+            .node_statuses
+            .get(&node_id)
+            .copied()
+            .ok_or_else(|| node_transition_error(node_id, "node has no durable status"))?;
+        if !matches!(from, NodeStatus::Pending | NodeStatus::Ready) {
+            return Err(node_transition_error(
+                node_id,
+                format!("cannot start from {from:?}"),
+            ));
+        }
+        for dependency in graph
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.to == node_id)
+        {
+            let upstream = self
+                .state
+                .node_statuses
+                .get(&dependency.from)
+                .copied()
+                .ok_or_else(|| {
+                    node_transition_error(node_id, "dependency has no durable status")
+                })?;
+            let satisfied = match dependency.condition {
+                tachyon_ir::DependencyCondition::OnSuccess => upstream == NodeStatus::Succeeded,
+                tachyon_ir::DependencyCondition::OnFailure => upstream == NodeStatus::Failed,
+                tachyon_ir::DependencyCondition::OnCompletion => upstream.is_terminal(),
+            };
+            if !satisfied {
+                return Err(node_transition_error(
+                    node_id,
+                    format!("dependency {} is {upstream:?}", dependency.from),
+                ));
+            }
+        }
+        for (other_id, other_status) in &self.state.node_statuses {
+            if *other_id == node_id
+                || !matches!(
+                    other_status,
+                    NodeStatus::Running | NodeStatus::Prepared | NodeStatus::UnknownAfterCrash
+                )
+            {
+                continue;
+            }
+            let Some(other) = graph.nodes.get(other_id) else {
+                return Err(CoreError::Corrupt {
+                    detail: format!("node status references absent graph node {other_id}"),
+                });
+            };
+            if node.access.conflicts_with(&other.access) {
+                return Err(node_transition_error(
+                    node_id,
+                    format!("access conflicts with active node {other_id}"),
+                ));
+            }
+        }
+        self.transition_journalled(StateEvent::NodeStatusChanged {
+            node_id,
+            from,
+            to: NodeStatus::Running,
+        })
+        .await
+    }
+
+    async fn prepare_effect(
+        &mut self,
+        node_id: NodeId,
+        effect_id: String,
+    ) -> Result<TaskState, CoreError> {
+        if !dispatch_lifecycle_allowed(self.state.status) {
+            return Err(node_transition_error(
+                node_id,
+                format!(
+                    "task status {:?} does not permit effects",
+                    self.state.status
+                ),
+            ));
+        }
+        if effect_id.trim().is_empty() || effect_id.len() > 256 {
+            return Err(node_transition_error(
+                node_id,
+                "effect identity must be non-empty and at most 256 bytes",
+            ));
+        }
+        let node = self
+            .state
+            .execution_graph
+            .as_ref()
+            .and_then(|graph| graph.nodes.get(&node_id))
+            .ok_or_else(|| node_transition_error(node_id, "node is absent from the graph"))?;
+        let effect_class = node.effect_class;
+        let idempotency = node.idempotency;
+        if node.planned_revision != self.state.revision {
+            return Err(node_transition_error(
+                node_id,
+                format!(
+                    "plan revision {} is stale at task revision {}",
+                    node.planned_revision, self.state.revision
+                ),
+            ));
+        }
+        if effect_class.speculation_safe() {
+            return Err(node_transition_error(
+                node_id,
+                "side-effect-free nodes do not use an effect commit barrier",
+            ));
+        }
+        let status = self
+            .state
+            .node_statuses
+            .get(&node_id)
+            .copied()
+            .ok_or_else(|| node_transition_error(node_id, "node has no durable status"))?;
+        if status != NodeStatus::Running {
+            return Err(node_transition_error(
+                node_id,
+                format!("cannot prepare an effect while node is {status:?}"),
+            ));
+        }
+        if self.state.effects.contains_key(&effect_id)
+            || self
+                .state
+                .effects
+                .values()
+                .any(|record| record.node_id == node_id)
+        {
+            return Err(node_transition_error(
+                node_id,
+                format!("effect identity {effect_id} or node is already recorded"),
+            ));
+        }
+        let node_id_text = node_id.to_string();
+        let effect_class_text = format!("{effect_class:?}");
+        let idempotency_text = format!("{idempotency:?}");
+        let state = self
+            .transition_journalled_with_effect(
+                StateEvent::EffectPrepared {
+                    effect_id: effect_id.clone(),
+                    node_id,
+                    effect_class,
+                    idempotency,
+                },
+                Some(EffectMutation::Prepared {
+                    effect_id: &effect_id,
+                    node_id: &node_id_text,
+                    effect_class: &effect_class_text,
+                    idempotency: &idempotency_text,
+                }),
+            )
+            .await?;
+        // Fault seam is after the atomic EffectPrepared commit and before
+        // the caller can begin the consequential action.
+        tachyon_tools::fault::reach("effect.prepared").await;
+        Ok(state)
+    }
+
+    async fn commit_effect(
+        &mut self,
+        effect_id: &str,
+        receipt: String,
+    ) -> Result<TaskState, CoreError> {
+        let record =
+            self.state
+                .effects
+                .get(effect_id)
+                .cloned()
+                .ok_or_else(|| CoreError::Corrupt {
+                    detail: format!("effect {effect_id} has no durable preparation"),
+                })?;
+        if record.state == EffectState::Committed {
+            if record.receipt.as_deref() == Some(receipt.as_str()) {
+                return Ok(self.state.clone());
+            }
+            return Err(node_transition_error(
+                record.node_id,
+                format!("effect {effect_id} already has a different receipt"),
+            ));
+        }
+        if record.state != EffectState::Prepared
+            || self.state.node_statuses.get(&record.node_id) != Some(&NodeStatus::Prepared)
+        {
+            return Err(node_transition_error(
+                record.node_id,
+                format!("effect {effect_id} is not commit-eligible"),
+            ));
+        }
+        // The caller enters this method only after the consequential action
+        // returned. Killing here exercises remote-success/local-uncommitted.
+        tachyon_tools::fault::reach("effect.remote_return").await;
+        let state = self
+            .transition_journalled_with_effect(
+                StateEvent::EffectCommitted {
+                    effect_id: effect_id.to_owned(),
+                    receipt: receipt.clone(),
+                },
+                Some(EffectMutation::Committed {
+                    effect_id,
+                    receipt: &receipt,
+                }),
+            )
+            .await?;
+        // Fault seam is after both the journal event and projection commit.
+        tachyon_tools::fault::reach("effect.committed").await;
+        Ok(state)
+    }
+
+    async fn complete_node(&mut self, node_id: NodeId) -> Result<TaskState, CoreError> {
+        let from = self
+            .state
+            .node_statuses
+            .get(&node_id)
+            .copied()
+            .ok_or_else(|| node_transition_error(node_id, "node has no durable status"))?;
+        if !matches!(from, NodeStatus::Running | NodeStatus::Prepared) {
+            return Err(node_transition_error(
+                node_id,
+                format!("cannot complete from {from:?}"),
+            ));
+        }
+        validate_node_success_barrier(&self.state, node_id)
+            .map_err(|detail| node_transition_error(node_id, detail))?;
+        let node = self
+            .state
+            .execution_graph
+            .as_ref()
+            .and_then(|graph| graph.nodes.get(&node_id))
+            .ok_or_else(|| node_transition_error(node_id, "node is absent from the graph"))?;
+        if node.planned_revision != self.state.revision
+            && self
+                .state
+                .effects
+                .values()
+                .all(|effect| effect.node_id != node_id)
+        {
+            return Err(node_transition_error(
+                node_id,
+                format!(
+                    "plan revision {} is stale at task revision {}",
+                    node.planned_revision, self.state.revision
+                ),
+            ));
+        }
+        self.transition_journalled(StateEvent::NodeStatusChanged {
+            node_id,
+            from,
+            to: NodeStatus::Succeeded,
+        })
+        .await
+    }
+
+    async fn reconcile_effect_rows(&mut self) -> Result<(), CoreError> {
+        let rows = self
+            .store
+            .load_effects_for_task(&self.state.id.to_string())
+            .await?;
+        let row_ids: std::collections::HashSet<_> =
+            rows.iter().map(|row| row.id.as_str()).collect();
+        for effect in &rows {
+            if let Some(record) = self.state.effects.get(&effect.id).cloned() {
+                let expected_node = record.node_id.to_string();
+                let expected_class = format!("{:?}", record.effect_class);
+                let expected_idempotency = format!("{:?}", record.idempotency);
+                if effect.node_id.as_deref() != Some(expected_node.as_str())
+                    || effect.effect_class != expected_class
+                    || effect.idempotency != expected_idempotency
+                    || effect.state != effect_state_name(record.state)
+                    || effect.receipt != record.receipt
+                {
+                    return Err(CoreError::Corrupt {
+                        detail: format!(
+                            "effect projection {} conflicts with its journal record",
+                            effect.id
+                        ),
+                    });
+                }
+                if record.state == EffectState::Prepared
+                    && !idempotency_reconcilable(record.idempotency)
+                {
+                    self.mark_effect_unknown_after_crash(&record.id, record.node_id)
+                        .await?;
+                }
+            } else {
+                if effect.node_id.is_some() {
+                    return Err(CoreError::Corrupt {
+                        detail: format!(
+                            "effect projection {} has no matching journal preparation",
+                            effect.id
+                        ),
+                    });
+                }
+                if effect.state == "prepared"
+                    && !legacy_idempotency_reconcilable(&effect.idempotency)
+                {
+                    self.transition_journalled_with_effect(
+                        StateEvent::LegacyEffectUnknownAfterCrash {
+                            effect_id: effect.id.clone(),
+                        },
+                        Some(EffectMutation::UnknownAfterCrash {
+                            effect_id: &effect.id,
+                        }),
+                    )
+                    .await?;
+                }
+            }
+        }
+        for effect_id in self.state.effects.keys() {
+            if !row_ids.contains(effect_id.as_str()) {
+                return Err(CoreError::Corrupt {
+                    detail: format!("journalled effect {effect_id} has no store projection"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn mark_effect_unknown_after_crash(
+        &mut self,
+        effect_id: &str,
+        node_id: NodeId,
+    ) -> Result<(), CoreError> {
+        self.transition_journalled_with_effect(
+            StateEvent::EffectUnknownAfterCrash {
+                effect_id: effect_id.to_owned(),
+                node_id,
+            },
+            Some(EffectMutation::UnknownAfterCrash { effect_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn recover_running_nodes(&mut self) -> Result<(), CoreError> {
+        let running: Vec<_> = self
+            .state
+            .node_statuses
+            .iter()
+            .filter_map(|(node_id, status)| (*status == NodeStatus::Running).then_some(*node_id))
+            .collect();
+        for node_id in running {
+            if self
+                .state
+                .effects
+                .values()
+                .any(|effect| effect.node_id == node_id)
+            {
+                return Err(CoreError::Corrupt {
+                    detail: format!(
+                        "running node {node_id} already has an effect barrier; status projection is inconsistent"
+                    ),
+                });
+            }
+            self.transition_journalled(StateEvent::NodeStatusChanged {
+                node_id,
+                from: NodeStatus::Running,
+                to: NodeStatus::Pending,
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     async fn resume(&mut self) -> Result<TaskState, CoreError> {

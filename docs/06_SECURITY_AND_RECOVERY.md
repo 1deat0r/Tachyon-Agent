@@ -82,6 +82,27 @@ Every consequential external effect declares:
 
 Before execution persist `EffectPrepared`. After confirmed execution persist `EffectCommitted` and a receipt/reference.
 
+The internal Supervisor protocol binds these barriers to an execution node.
+Its `prepare_effect` and `commit_effect` transitions commit the journal event,
+task metadata and any scheduled snapshot update, and the `effects` row in one
+SQLite transaction. A caller must wait for `prepare_effect` to return before
+starting the action. Recovery keeps explicitly reconcilable effects prepared,
+resets a `Running` node with no prepared effect to `Pending`, and marks a
+prepared non-idempotent or unknown effect and its node `UnknownAfterCrash`.
+Recovery keeps an already-terminal task terminal while journalling these
+node/effect classifications.
+
+This protocol is currently an internal persistence/recovery seam, not a live
+execution path. The private graph wrapper is not yet a validation proof; its
+unchecked constructor is available only in unit-test builds. Before production
+scheduler dispatch is connected, a trusted planner must validate capability
+schemas, hard constraints, access/resource minimums, and required commit
+barriers before minting the graph token. The live path must also require a
+one-shot authorization permit bound to the exact operation and effect, and
+run effects as Supervisor-owned workers whose cancellation and drain have
+completed before pause/cancel is acknowledged. The runtime driver is not yet
+wired to this protocol.
+
 ## Crash uncertainty
 
 If Tachyon cannot establish whether a non-idempotent operation occurred, the correct state is uncertainty, not retry.
