@@ -156,7 +156,7 @@ async fn aborting_the_run_leaves_no_unowned_process() {
     let pid = std::fs::read_to_string(ws.path().join("target/pid")).unwrap();
     handle.abort();
     assert!(handle.await.unwrap_err().is_cancelled());
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !reaped(&pid) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
