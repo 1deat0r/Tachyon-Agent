@@ -366,6 +366,7 @@ fn redact_json(value: &mut serde_json::Value) {
 async fn with_approval<T, E, F, Fut>(
     host: &DriveHost,
     context: &Arc<ToolsContext>,
+    cancel: &tokio_util::sync::CancellationToken,
     approval_of: fn(&E) -> Option<ApprovalRequest>,
     other: fn(E) -> DriveError,
     mut step: F,
@@ -385,7 +386,12 @@ where
                     return Err(other(err));
                 };
                 let waiter = handle.park_approval(context.clone(), request).await?;
-                match waiter.wait().await? {
+                let resolution = tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(DriveError::RunCancelled),
+                    resolution = waiter.wait() => resolution?,
+                };
+                match resolution {
                     ApprovalResolution::Granted => {}
                     ApprovalResolution::Denied { reason } => {
                         return Err(DriveError::ApprovalDenied { reason });
@@ -592,6 +598,7 @@ async fn stage_evidence(
     let (mut items, intervals_us, timings) = with_approval(
         host,
         context,
+        &plan.cancel,
         |err: &RuntimeError| match err {
             RuntimeError::Tool(ToolError::ApprovalRequired { request, .. }) => {
                 Some(*request.clone())
@@ -788,6 +795,7 @@ async fn stage_mutation(
     let prepared = with_approval(
         host,
         context,
+        &plan.cancel,
         |err: &MutationError| match err {
             MutationError::ApprovalRequired(request) => Some(request.clone()),
             _ => None,
@@ -799,6 +807,7 @@ async fn stage_mutation(
     let commit = with_approval(
         host,
         context,
+        &plan.cancel,
         |err: &MutationError| match err {
             MutationError::ApprovalRequired(request) => Some(request.clone()),
             _ => None,
@@ -864,15 +873,19 @@ async fn stage_verify(
     origin: Instant,
 ) -> Result<Verified, DriveError> {
     let ms = |t: Instant| u64::try_from(t.duration_since(origin).as_millis()).unwrap_or(u64::MAX);
+    let cancel = plan.cancel.clone();
     proposer
         .propose(RunRecord::Stage {
             stage: "verify".into(),
             detail: "running acceptance checks".into(),
         })
         .await?;
-    handle
-        .configure_verification(context.clone(), plan.contract, plan.risk)
-        .await?;
+    let configured = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(DriveError::RunCancelled),
+        configured = handle.configure_verification(context.clone(), plan.contract, plan.risk) => configured,
+    };
+    configured?;
     // M11 typed parking: an acceptance ask during verification surfaces
     // typed through tachyon-verify and the core, and parks here exactly
     // like the evidence stage; a grant re-enters `verify_and_complete`
@@ -885,6 +898,7 @@ async fn stage_verify(
     let state = with_approval(
         &host,
         &context,
+        &cancel,
         |err: &CoreError| match err {
             CoreError::Verification(VerifyError::ApprovalRequired(request)) => {
                 Some(request.clone())
@@ -897,8 +911,12 @@ async fn stage_verify(
             let context = context.clone();
             async move { handle.verify_and_complete(context).await }
         },
-    )
-    .await?;
+    );
+    let state = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(DriveError::RunCancelled),
+        state = state => state?,
+    };
     let final_verification_ms = ms(Instant::now());
     let status = state.status;
     let rev = state.revision;

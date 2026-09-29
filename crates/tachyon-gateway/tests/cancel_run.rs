@@ -26,6 +26,10 @@ use common::{armed_runtime, new_task, ok, test_dir};
 /// active and non-parked when the operator cancels.
 struct BlockingProvider;
 
+/// Panics after the run reaches the model stage. A panic is an unknown run
+/// outcome, so cancellation must not turn it into a normal terminal cancel.
+struct PanickingProvider;
+
 static BLOCKING_CAPABILITIES: OnceLock<ModelCapabilities> = OnceLock::new();
 
 #[async_trait::async_trait]
@@ -60,11 +64,40 @@ impl ModelProvider for BlockingProvider {
     }
 }
 
-/// After `CancelTask` the gateway has evicted its map entry while the
-/// driver's live handle still owns the task, so a read may transiently
-/// answer `task_already_owned`/`supervisor_gone` until the driver leaves
-/// and the actor drains (documented core semantics). Poll through that
-/// window; any other refusal is a real failure.
+#[async_trait::async_trait]
+impl ModelProvider for PanickingProvider {
+    fn id(&self) -> ProviderId {
+        ProviderId("bench-panic".into())
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        BLOCKING_CAPABILITIES
+            .get_or_init(|| ModelCapabilities {
+                context_window_tokens: 128_000,
+                ..ModelCapabilities::default()
+            })
+            .clone()
+    }
+
+    fn estimate(&self, request: &ModelRequest) -> ProviderEstimate {
+        ProviderEstimate {
+            latency_ms: 1.0,
+            input_tokens: request.estimated_input_tokens(),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        _request: ModelRequest,
+        _sink: ModelEventSink,
+    ) -> Result<ModelResult, ModelError> {
+        panic!("scripted provider panic");
+    }
+}
+
+/// After `CancelTask` the gateway evicts its supervisor map entry, so a read
+/// may need one journal recovery before the actor is available. Poll through
+/// that window; any other refusal is a real failure.
 async fn state_when_readable(socket: &std::path::Path, task: &str) -> serde_json::Value {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -167,9 +200,8 @@ async fn active_run_fixture() -> (RunningGateway, PathBuf, String, PathBuf, Path
 async fn cancel_during_an_active_run_halts_remaining_stages_with_receipts_reconciled() {
     let (gateway, socket, task, ws, canonical, cargo_body) = active_run_fixture().await;
 
-    // 2. The operator cancels the active run; the acknowledgement itself
-    //    carries the durably journalled state — cancel is recorded the
-    //    moment the command returns, before the driver has left.
+    // 2. The operator cancels the active run. The command waits for the
+    //    driver to leave before the supervisor makes cancellation terminal.
     let ack = ok(
         &socket,
         Command::CancelTask {
@@ -179,22 +211,13 @@ async fn cancel_during_an_active_run_halts_remaining_stages_with_receipts_reconc
     .await;
     assert_eq!(ack["task"]["status"], "Cancelled", "{ack}");
 
-    // 4. ...and the DRIVER halts: it leaves the model stage, releases
-    //    the workspace lease, and never enters the remaining stages.
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if WorkspaceLease::try_acquire(&canonical)
-                .await
-                .unwrap()
-                .is_some()
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("the cancelled run never halted: drive() kept the workspace lease past Cancel");
+    // The acknowledgement is also the drain barrier: the driver has left,
+    // released the workspace lease, and cannot enter another stage.
+    let lease = WorkspaceLease::try_acquire(&canonical)
+        .await
+        .unwrap()
+        .expect("CancelTask acknowledged before the run released its workspace lease");
+    drop(lease);
 
     let state = state_when_readable(&socket, &task).await;
     let stages: Vec<&str> = state["task"]["stages"]
@@ -231,6 +254,76 @@ async fn cancel_during_an_active_run_halts_remaining_stages_with_receipts_reconc
     gateway.shutdown().await;
 }
 
+#[tokio::test]
+async fn cancellation_does_not_hide_a_panicking_driver_outcome() {
+    let dir = test_dir();
+    let runtime = armed_runtime(Arc::new(PanickingProvider));
+    let gateway = start_with(&dir, runtime).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let ws = test_dir().join("panic-ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("Cargo.toml"), "[package]\nname = \"w\"\n").unwrap();
+    let canonical = std::fs::canonicalize(&ws).unwrap();
+    let task = new_task(&socket).await;
+
+    ok(
+        &socket,
+        Command::StartRun {
+            task_id: task.parse().unwrap(),
+            workspace_root: ws.display().to_string(),
+            acceptance: None,
+        },
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = ok(
+                &socket,
+                Command::GetTask {
+                    task_id: task.parse().unwrap(),
+                },
+            )
+            .await;
+            if state["task"]["stages"]
+                .as_array()
+                .is_some_and(|stages| stages.iter().any(|stage| stage["stage"] == "model"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the run never reached the panicking provider");
+
+    let got = common::err(
+        &socket,
+        Command::CancelTask {
+            task_id: task.parse().unwrap(),
+        },
+    )
+    .await;
+    assert_eq!(common::code_of(&got), "run_outcome_unknown", "{got}");
+    let state = ok(
+        &socket,
+        Command::GetTask {
+            task_id: task.parse().unwrap(),
+        },
+    )
+    .await;
+    assert_ne!(state["task"]["status"], "Cancelled", "{state}");
+    assert!(
+        WorkspaceLease::try_acquire(&canonical)
+            .await
+            .unwrap()
+            .is_some(),
+        "the panicking driver's dropped context must release its workspace lease"
+    );
+    assert!(gateway.task_failure(task.parse().unwrap()).await.is_some());
+    gateway.shutdown().await;
+}
+
 /// R1 board Seat5-B2: a command after `CancelTask` recovers an actor for
 /// the terminal task (reads must keep answering), so every mutation path
 /// must still refuse it. The recovered actor is write-proof by the
@@ -256,6 +349,13 @@ async fn commands_after_cancel_never_revive_the_terminal_task() {
     let state = state_when_readable(&socket, &task).await;
     assert_eq!(state["task"]["status"], "Cancelled", "{state}");
     let revision_before = state["task"]["revision"].clone();
+
+    let duplicate_cancel = err(&socket, Command::CancelTask { task_id: task_id() }).await;
+    assert_eq!(
+        code_of(&duplicate_cancel),
+        "illegal_transition",
+        "repeat cancellation of a terminal task: {duplicate_cancel}"
+    );
 
     // Every mutator is typed-refused by the recovered actor...
     let resume = err(&socket, Command::ResumeTask { task_id: task_id() }).await;

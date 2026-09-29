@@ -30,7 +30,7 @@ use tachyon_types::{ApprovalId, EventId, SessionId, TaskId, Timestamp, Workspace
 use tachyon_verify::{AcceptanceContract, Clause, CommandCheck, VerificationRisk};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::sync::{Mutex, Notify, broadcast, mpsc};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -78,14 +78,11 @@ struct GatewayState {
     data_dir: PathBuf,
     /// Configured model provider plus its redaction registry (plan item 5).
     runtime: GatewayRuntime,
-    /// Tasks with a `StartRun` admitted but not yet finished: one run in
-    /// flight per task, checked and inserted under one lock.
-    /// In-flight runs by task id, each with its cooperative cancel
-    /// token (M11 cancellation drain): `Command::Cancel` fires the token
-    /// so the driver halts at its next stage boundary; the entry itself
-    /// is removed only by prepare failure or the driver's own exit, so a
-    /// fresh `StartRun` stays refused until the driver leaves.
-    running: Mutex<HashMap<TaskId, CancellationToken>>,
+    /// Run admissions by task id: preparation slots, active drivers, and
+    /// cancellation tombstones. A tombstone remains until the supervisor
+    /// records `Cancelled`, preventing a replacement run from racing the
+    /// terminal acknowledgement. Admission and cleanup use the same lock.
+    running: Mutex<HashMap<TaskId, RunControl>>,
     /// Tasks with a journal recovery currently running (single-flight
     /// recovery): concurrent `supervisor_for` misses on one task elect a
     /// single recoverer; losers wait for its handle instead of racing
@@ -93,6 +90,37 @@ struct GatewayState {
     recovering: Mutex<HashSet<TaskId>>,
     /// Scrubbed failure text of runs this gateway spawned, keyed by task.
     failures: Mutex<HashMap<TaskId, String>>,
+}
+
+#[derive(Clone)]
+struct RunControl {
+    cancel: CancellationToken,
+    finished: watch::Receiver<Option<RunExit>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunExit {
+    NotStarted,
+    Succeeded,
+    Cancelled,
+    Failed,
+    Panicked,
+    Unknown,
+}
+
+impl RunControl {
+    async fn wait_finished(&self) -> RunExit {
+        let mut finished = self.finished.clone();
+        loop {
+            if let Some(exit) = *finished.borrow() {
+                return exit;
+            }
+            if finished.changed().await.is_err() {
+                // A dropped completion channel is not proof of a clean run.
+                return RunExit::Unknown;
+            }
+        }
+    }
 }
 
 /// Label the CLI/TUI prints for the scripted test/replay provider
@@ -1014,24 +1042,7 @@ async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> Command
             .await
         }
         Command::ResumeTask { task_id } => resume_task(state, *task_id).await,
-        Command::CancelTask { task_id } => {
-            // Cancellation drain first: fire the ACTIVE run's token so
-            // the driver halts at its next stage boundary while the
-            // supervisor records the terminal `Cancelled` transition.
-            // The running entry is left for the driver's own completion
-            // cleanup (a fresh StartRun stays refused until it leaves).
-            if let Some(cancel) = state.running.lock().await.get(task_id) {
-                cancel.cancel();
-            }
-            let outcome = mutate(
-                state,
-                *task_id,
-                |handle| async move { handle.cancel().await },
-            )
-            .await;
-            state.supervisors.lock().await.remove(task_id);
-            outcome
-        }
+        Command::CancelTask { task_id } => cancel_run(state, *task_id).await,
         Command::Approve {
             task_id,
             approval_id,
@@ -1061,6 +1072,105 @@ async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> Command
                 .to_owned(),
         ),
     }
+}
+
+async fn cancel_run(state: &Arc<GatewayState>, task_id: TaskId) -> CommandResult {
+    // Let the shared driver settle its current stage first. In particular,
+    // mutation reaches readback and its receipt before terminal cancellation.
+    let run = {
+        let mut running = state.running.lock().await;
+        if let Some(run) = running.get(&task_id).cloned() {
+            // Set the intent while holding the same admission lock used by
+            // StartRun and driver cleanup. This preserves the tombstone even
+            // when preflight is concurrently failing or a stage exits.
+            run.cancel.cancel();
+            run
+        } else {
+            // Cancellation also closes admission when preflight already
+            // ended or no run had started; otherwise a retry can enter while
+            // this command is waiting to journal Cancelled.
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let (finished, finished_rx) = watch::channel(Some(RunExit::NotStarted));
+            let run = RunControl {
+                cancel,
+                finished: finished_rx,
+            };
+            running.insert(task_id, run.clone());
+            drop(finished);
+            run
+        }
+    };
+    if matches!(
+        run.wait_finished().await,
+        RunExit::Panicked | RunExit::Unknown
+    ) {
+        return fail(
+            "run_outcome_unknown",
+            "the run driver ended unexpectedly; the task was not marked cancelled. Restart the gateway to reconcile durable state before continuing".to_owned(),
+        );
+    }
+    let outcome = mutate(
+        state,
+        task_id,
+        |handle| async move { handle.cancel().await },
+    )
+    .await;
+    let cancellation_acknowledged = matches!(
+        &outcome,
+        CommandResult::Ok { payload } if payload["task"]["status"] == "Cancelled"
+    );
+    let release_admission =
+        cancellation_acknowledged || task_terminal_or_missing(state, task_id).await;
+    if release_admission {
+        // A cancelled driver leaves its admission entry in place until the
+        // supervisor has journalled the terminal state. Otherwise StartRun
+        // can slip between driver drain and this transition and escape cancel.
+        state.running.lock().await.remove(&task_id);
+    }
+    if cancellation_acknowledged {
+        state.supervisors.lock().await.remove(&task_id);
+    }
+    outcome
+}
+
+async fn task_terminal_or_missing(state: &Arc<GatewayState>, task_id: TaskId) -> bool {
+    match supervisor_for(state, task_id).await {
+        Ok(handle) => handle
+            .get_state()
+            .await
+            .is_ok_and(|task| task.status.is_terminal()),
+        Err(CommandResult::Err { code, .. }) => code == "unknown_task",
+        Err(CommandResult::Ok { .. }) => false,
+    }
+}
+
+async fn release_run_admission_after_driver_exit(
+    state: &Arc<GatewayState>,
+    task_id: TaskId,
+    exit: RunExit,
+) {
+    let mut running = state.running.lock().await;
+    let cancellation_pending = running
+        .get(&task_id)
+        .is_some_and(|run| run.cancel.is_cancelled());
+    if !cancellation_pending && !matches!(exit, RunExit::Cancelled | RunExit::Panicked) {
+        running.remove(&task_id);
+    }
+}
+
+async fn finish_run_preparation(
+    state: &Arc<GatewayState>,
+    task_id: TaskId,
+    cancel: &CancellationToken,
+    finished: &watch::Sender<Option<RunExit>>,
+) {
+    let mut running = state.running.lock().await;
+    if !cancel.is_cancelled() {
+        running.remove(&task_id);
+    }
+    drop(running);
+    finished.send_replace(Some(RunExit::NotStarted));
 }
 
 async fn create_supervised(
@@ -1328,6 +1438,7 @@ async fn start_run(
     acceptance: Option<&str>,
 ) -> CommandResult {
     let cancel = CancellationToken::new();
+    let (finished, finished_rx) = watch::channel(None);
     {
         let mut running = state.running.lock().await;
         if running.contains_key(&task_id) {
@@ -1336,11 +1447,25 @@ async fn start_run(
                 format!("a run is already in flight for task {task_id}"),
             );
         }
-        running.insert(task_id, cancel.clone());
+        running.insert(
+            task_id,
+            RunControl {
+                cancel: cancel.clone(),
+                finished: finished_rx,
+            },
+        );
     }
-    let admitted = prepare_run(state, task_id, workspace_root, acceptance, cancel).await;
+    let admitted = prepare_run(
+        state,
+        task_id,
+        workspace_root,
+        acceptance,
+        cancel.clone(),
+        finished.clone(),
+    )
+    .await;
     if admitted.is_err() {
-        state.running.lock().await.remove(&task_id);
+        finish_run_preparation(state, task_id, &cancel, &finished).await;
     }
     match admitted {
         Ok(payload) => ok(payload),
@@ -1358,6 +1483,7 @@ async fn prepare_run(
     workspace_root: &str,
     acceptance: Option<&str>,
     cancel: CancellationToken,
+    finished: watch::Sender<Option<RunExit>>,
 ) -> Result<Value, CommandResult> {
     // 1. Honest provider refusal before any work starts (plan item 5).
     let Some(provider) = state.runtime.provider.clone() else {
@@ -1458,35 +1584,54 @@ async fn prepare_run(
     //    no second notification path. The context (and with it the
     //    workspace lease) moves into this task: exclusion lasts exactly
     //    as long as the run and releases with its last holder.
+    spawn_driver(state, task_id, handle, context, provider, plan, finished);
+
+    Ok(json!({
+        "task_id": task_id.to_string(),
+        "status": current.status.name(),
+        "workspace_root": canonical.display().to_string(),
+        "provider": label,
+    }))
+}
+
+fn spawn_driver(
+    state: &Arc<GatewayState>,
+    task_id: TaskId,
+    handle: SupervisorHandle,
+    context: Arc<ToolsContext>,
+    provider: Arc<dyn ModelProvider>,
+    plan: RunPlan,
+    finished: watch::Sender<Option<RunExit>>,
+) {
     let host = DriveHost::Supervisor {
-        handle: handle.clone(),
+        handle,
         store: state.store.clone(),
     };
     let spawn_state = state.clone();
     let redactor = state.runtime.redactor.clone();
     tokio::spawn(async move {
-        match drive(host, context, provider, plan).await {
-            Ok(outcome) => {
+        let result = tokio::spawn(drive(host, context, provider, plan)).await;
+        let exit = match result {
+            Ok(Ok(outcome)) => {
                 // The driver shut the supervisor down and recovered it
                 // once for its round-trip; the map's handle is now dead.
                 // Drop it so the next command recovers a fresh one.
                 spawn_state.supervisors.lock().await.remove(&task_id);
-                spawn_state.running.lock().await.remove(&task_id);
                 tracing::info!(
                     task = %task_id,
                     outcome = outcome.outcome.as_deref().unwrap_or("unknown"),
                     "shared-driver run finished"
                 );
+                RunExit::Succeeded
             }
-            Err(DriveError::RunCancelled) => {
+            Ok(Err(DriveError::RunCancelled)) => {
                 // A cancelled run is an operator outcome, not a run
-                // failure: the supervisor already journalled the terminal
-                // `Cancelled` state, so no failure text is recorded (and
-                // there is no error body to redact or leak).
+                // failure. The CancelTask handler records the terminal
+                // state only after this driver has released its resources.
                 tracing::info!(task = %task_id, "shared-driver run halted: task cancelled");
-                spawn_state.running.lock().await.remove(&task_id);
+                RunExit::Cancelled
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 // spec §35: the provider error body passes the redaction
                 // registry BEFORE it is logged or recorded anywhere.
                 // G7: the registered-key registry scrubs the body
@@ -1495,17 +1640,21 @@ async fn prepare_run(
                 let scrubbed = redactor.redact(&error.to_string());
                 tracing::error!(task = %task_id, error = %scrubbed, "shared-driver run failed");
                 spawn_state.failures.lock().await.insert(task_id, scrubbed);
-                spawn_state.running.lock().await.remove(&task_id);
+                RunExit::Failed
             }
-        }
+            Err(error) => {
+                let scrubbed =
+                    redactor.redact(&format!("shared driver task ended unexpectedly: {error}"));
+                tracing::error!(task = %task_id, error = %scrubbed, "shared-driver run outcome unknown");
+                spawn_state.failures.lock().await.insert(task_id, scrubbed);
+                // Preserve the running admission and supervisor handle until
+                // process recovery can reconcile any effect that panicked.
+                RunExit::Panicked
+            }
+        };
+        release_run_admission_after_driver_exit(&spawn_state, task_id, exit).await;
+        finished.send_replace(Some(exit));
     });
-
-    Ok(json!({
-        "task_id": task_id.to_string(),
-        "status": current.status.name(),
-        "workspace_root": canonical.display().to_string(),
-        "provider": label,
-    }))
 }
 
 /// Step 6 of [`prepare_run`]: take the workspace lease on the already
@@ -1877,6 +2026,123 @@ mod stale_supervisor_tests {
             payload["task"]["status"].as_str().unwrap_or(""),
             "Created",
             "durable journal answers after one recovery, no supervisor_gone"
+        );
+
+        gateway.shutdown().await;
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_during_successful_driver_exit_keeps_admission_until_ack() {
+        let (gateway, dir) = started_gateway().await;
+        let state = gateway.state.clone();
+
+        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session_id: SessionId = session["session_id"]
+            .as_str()
+            .expect("session id")
+            .parse()
+            .expect("session id parses");
+        let task = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateTask {
+                    session_id,
+                    objective: "cancel admission race probe".to_owned(),
+                },
+            )
+            .await,
+        );
+        let task_id: TaskId = task["task_id"]
+            .as_str()
+            .expect("task id")
+            .parse()
+            .expect("task id parses");
+
+        // Model a successful but nonterminal driver exit racing with
+        // CancelTask. The cancellation token wins admission cleanup even
+        // though the driver outcome itself is successful.
+        let (_finished, finished_rx) = watch::channel(Some(RunExit::Succeeded));
+        let cancel = CancellationToken::new();
+        state.running.lock().await.insert(
+            task_id,
+            RunControl {
+                cancel: cancel.clone(),
+                finished: finished_rx,
+            },
+        );
+        cancel.cancel();
+        release_run_admission_after_driver_exit(&state, task_id, RunExit::Succeeded).await;
+
+        let refused = start_run(&state, task_id, &dir.display().to_string(), None).await;
+        assert!(
+            matches!(refused, CommandResult::Err { ref code, .. } if code == "run_already_active"),
+            "StartRun escaped the pending cancellation tombstone: {refused:?}"
+        );
+
+        let cancelled = ok_payload(handle_command(&state, &Command::CancelTask { task_id }).await);
+        assert_eq!(cancelled["task"]["status"], "Cancelled");
+        assert!(
+            !state.running.lock().await.contains_key(&task_id),
+            "admission should be released only after the supervisor cancellation ack"
+        );
+
+        gateway.shutdown().await;
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancelled_preflight_failure_keeps_admission_until_supervisor_cancel_ack() {
+        let (gateway, dir) = started_gateway().await;
+        let state = gateway.state.clone();
+
+        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session_id: SessionId = session["session_id"]
+            .as_str()
+            .expect("session id")
+            .parse()
+            .expect("session id parses");
+        let task = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateTask {
+                    session_id,
+                    objective: "cancel preflight admission race probe".to_owned(),
+                },
+            )
+            .await,
+        );
+        let task_id: TaskId = task["task_id"]
+            .as_str()
+            .expect("task id")
+            .parse()
+            .expect("task id parses");
+
+        // Cancel arrives while prepare_run is pending, then preflight fails.
+        // Its NotStarted notification must retain the admission tombstone.
+        let cancel = CancellationToken::new();
+        let (finished, finished_rx) = watch::channel(None);
+        state.running.lock().await.insert(
+            task_id,
+            RunControl {
+                cancel: cancel.clone(),
+                finished: finished_rx,
+            },
+        );
+        cancel.cancel();
+        finish_run_preparation(&state, task_id, &cancel, &finished).await;
+
+        let refused = start_run(&state, task_id, &dir.display().to_string(), None).await;
+        assert!(
+            matches!(refused, CommandResult::Err { ref code, .. } if code == "run_already_active"),
+            "StartRun escaped the preflight cancellation tombstone: {refused:?}"
+        );
+
+        let cancelled = ok_payload(handle_command(&state, &Command::CancelTask { task_id }).await);
+        assert_eq!(cancelled["task"]["status"], "Cancelled");
+        assert!(
+            !state.running.lock().await.contains_key(&task_id),
+            "preflight tombstone should be released after the supervisor cancellation ack"
         );
 
         gateway.shutdown().await;
