@@ -20,21 +20,26 @@ fn dispatch() -> Result<(), String> {
         return Err(usage().to_owned());
     }
 
-    match mode.as_str() {
+    let checks: fn() -> Result<(), String> = match mode.as_str() {
         "-h" | "--help" | "help" => {
             println!("{}", usage());
-            Ok(())
+            return Ok(());
         }
-        "fast" => fast_checks(),
-        "platform" => platform_checks(),
-        "verify" => verify_checks(),
-        "full" => {
-            ensure_full_tools()?;
-            verify_checks()?;
-            full_checks()
-        }
-        _ => Err(usage().to_owned()),
-    }
+        "fast" => fast_checks,
+        "platform" => platform_checks,
+        "verify" => verify_checks,
+        "full" => full_run,
+        _ => return Err(usage().to_owned()),
+    };
+
+    println!("root: {}", workspace_root()?.display());
+    checks()
+}
+
+fn full_run() -> Result<(), String> {
+    ensure_full_tools()?;
+    verify_checks()?;
+    full_checks()
 }
 
 fn usage() -> &'static str {
@@ -205,11 +210,39 @@ fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     run_process(command, display)
 }
 
+/// Resolve the workspace root at runtime, so a binary that outlives a
+/// checkout move gates the tree it actually sits in. The compile-time path
+/// is the last resort, never the first choice.
 fn workspace_root() -> Result<PathBuf, String> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "could not locate the workspace root".to_owned())
+    let mut starts: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        starts.push(dir.to_path_buf());
+    }
+    if let Ok(cwd) = env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Some(dir) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+        starts.push(dir.to_path_buf());
+    }
+    for start in &starts {
+        if let Some(root) = start.ancestors().find(|dir| is_workspace_root(dir)) {
+            return Ok(root.to_path_buf());
+        }
+    }
+    let from = starts
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "could not locate the workspace root (searched up from {from})"
+    ))
+}
+
+fn is_workspace_root(dir: &Path) -> bool {
+    dir.join("Cargo.toml").is_file() && dir.join("xtask").join("Cargo.toml").is_file()
 }
 
 fn run_process(mut command: Command, display: String) -> Result<(), String> {
