@@ -109,6 +109,9 @@ pub struct ProviderConfig {
     pub model: Option<String>,
     /// Environment variable NAME holding the API key (optional).
     pub api_key_env: Option<String>,
+    /// Permit plaintext `http://` to non-loopback hosts (default false;
+    /// SECURITY.md §2.3). Refused at load when absent or false.
+    pub allow_insecure_remote: Option<bool>,
 }
 
 /// A secret resolved from the environment. `Debug` always prints
@@ -210,6 +213,15 @@ impl Config {
                         reason: "openai_compat requires base_url".to_owned(),
                     });
                 }
+                // §2.3: refuse plaintext remote at load, not first request.
+                if let Err(error) = OpenAiCompatConfig::validate_base_url(
+                    provider.base_url.as_deref().unwrap_or_default(),
+                    provider.allow_insecure_remote.unwrap_or(false),
+                ) {
+                    return Err(ConfigError::InvalidProvider {
+                        reason: error.to_string(),
+                    });
+                }
                 if provider.model.as_deref().is_none_or(str::is_empty) {
                     return Err(ConfigError::InvalidProvider {
                         reason: "openai_compat requires model".to_owned(),
@@ -262,6 +274,7 @@ impl Config {
                         api_key_env: section.api_key_env.clone(),
                         request_timeout_ms: 60_000,
                         context_window_tokens: 128_000,
+                        allow_insecure_remote: section.allow_insecure_remote.unwrap_or(false),
                     },
                 );
                 (
@@ -555,6 +568,7 @@ mod provider_tests {
                 base_url: Some("http://127.0.0.1:11434".to_owned()),
                 model: Some("llama-3".to_owned()),
                 api_key_env: Some("TEST_KEY_ENV_NAME".to_owned()),
+                allow_insecure_remote: None,
             }),
             ..FileConfig::default()
         };
@@ -619,6 +633,33 @@ mod provider_tests {
             err.to_string().contains(ABSENT_KEY_ENV),
             "error must name the variable"
         );
+    }
+
+    #[test]
+    fn plaintext_remote_base_url_fails_at_startup() {
+        let json = r#"{"provider":{"kind":"openai_compat","base_url":"http://api.example.com:8080","model":"llama-3"}}"#;
+        let path = write_config(json);
+        let err = Config::load(Some(path), CliOverrides::default())
+            .expect_err("non-loopback plaintext http:// must be refused at startup");
+        assert!(
+            matches!(err, ConfigError::InvalidProvider { .. }),
+            "expected InvalidProvider, got {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("refusing plaintext http:// to a non-loopback host"),
+            "loopback guard message expected, got {err}"
+        );
+    }
+
+    #[test]
+    fn loopback_plaintext_base_url_is_accepted() {
+        let json = r#"{"provider":{"kind":"openai_compat","base_url":"http://localhost:11434","model":"llama-3"}}"#;
+        let path = write_config(json);
+        let config = Config::load(Some(path), CliOverrides::default())
+            .expect("loopback plaintext http:// must stay accepted");
+        let provider = config.provider.as_ref().expect("provider section");
+        assert_eq!(provider.base_url.as_deref(), Some("http://localhost:11434"));
     }
 
     #[test]

@@ -1542,14 +1542,7 @@ async fn prepare_run(
     //    (step 6) builds the context — `new_from_canonical` performs no
     //    second resolution, so the policy, evidence and mutation roots
     //    can never diverge from the durable pin across that await.
-    let context = Arc::new(
-        ToolsContext::new_from_canonical(
-            canonical.clone(),
-            run_policy(),
-            ArtifactSpool::new(state.data_dir.join("artifacts").join(task_id.to_string())),
-        )
-        .with_workspace_lease(lease),
-    );
+    let context = run_tools_context(state, task_id, &canonical, lease);
     debug_assert_eq!(
         context.workspace_root, canonical,
         "pin/policy/evidence/mutation root must be one value"
@@ -1592,6 +1585,28 @@ async fn prepare_run(
         "workspace_root": canonical.display().to_string(),
         "provider": label,
     }))
+}
+
+/// Builds the [`ToolsContext`] a run executes through (step 7 of
+/// [`prepare_run`]): the pinned canonical root, the trusted run policy,
+/// the per-task artifact spool, and the run-held workspace lease. The
+/// runtime's credential redactor is attached so registered provider keys
+/// are scrubbed before any process output is recorded.
+fn run_tools_context(
+    state: &GatewayState,
+    task_id: TaskId,
+    canonical: &Path,
+    lease: WorkspaceLease,
+) -> Arc<ToolsContext> {
+    Arc::new(
+        ToolsContext::new_from_canonical(
+            canonical.to_owned(),
+            run_policy(),
+            ArtifactSpool::new(state.data_dir.join("artifacts").join(task_id.to_string())),
+        )
+        .with_workspace_lease(lease)
+        .with_credentials(state.runtime.redactor.clone()),
+    )
 }
 
 fn spawn_driver(
@@ -2413,6 +2428,60 @@ mod stale_supervisor_tests {
         );
 
         gateway.shutdown().await;
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// §2.1(b): the context a run executes through must carry the
+    /// runtime's credential redactor — a default (empty) broker here
+    /// would let a registered provider key reach recorded process output.
+    #[tokio::test]
+    async fn run_tools_context_carries_runtime_redactor() {
+        const SECRET: &str = "sk-live-super-secret-value";
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("tachyon-ctxredact-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let canonical = std::fs::canonicalize(&ws).unwrap();
+
+        let mut redactor = CredentialBroker::default();
+        let handle = redactor.register(SECRET.as_bytes(), "provider-api-key");
+
+        let state = Arc::new(GatewayState {
+            store: Arc::new(StoreWriter::open(&dir).await.expect("store opens")),
+            supervisors: Mutex::new(HashMap::new()),
+            data_dir: dir.clone(),
+            runtime: GatewayRuntime {
+                provider: None,
+                label: String::new(),
+                model: String::new(),
+                redactor,
+            },
+            running: Mutex::new(HashMap::new()),
+            recovering: Mutex::new(HashSet::new()),
+            failures: Mutex::new(HashMap::new()),
+        });
+
+        let lease = acquire_run_lease(&canonical).await.expect("lease acquired");
+        let context = run_tools_context(&state, TaskId::generate(), &canonical, lease);
+
+        let probe = format!("process stdout tail {SECRET} end");
+        let scrubbed = context.credentials.redact(&probe);
+        assert!(
+            !scrubbed.contains(SECRET),
+            "run context must scrub the runtime's registered secret: {scrubbed}"
+        );
+        assert_eq!(
+            scrubbed,
+            format!(
+                "process stdout tail {} end",
+                tachyon_tools::credential::redaction_for(&handle)
+            ),
+            "scrub must use the runtime's registered handle"
+        );
+
+        state.store.close().await;
         std::fs::remove_dir_all(&dir).ok();
     }
 }

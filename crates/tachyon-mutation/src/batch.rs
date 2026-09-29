@@ -15,10 +15,19 @@ pub fn blake3_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
-/// BLAKE3 hex of a file's current content, or `None` when missing.
-#[must_use]
-pub fn file_hash(path: &std::path::Path) -> Option<String> {
-    std::fs::read(path).ok().map(|bytes| blake3_hex(&bytes))
+/// BLAKE3 hex of a file's current content, `None` only when the file does
+/// not exist. Any other read failure is an error: an unreadable file must
+/// never be mistaken for an absent one, or a `base_hash: None` create spec
+/// would sail through the preimage check over a file it is about to clobber.
+pub fn file_hash(path: &std::path::Path) -> Result<Option<String>, MutationError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(blake3_hex(&bytes))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(MutationError::InvalidPath(format!(
+            "{}: {e}",
+            path.display()
+        ))),
+    }
 }
 
 /// Normalizes a workspace-relative path to journal-key form: `/`-separated,

@@ -177,7 +177,20 @@ impl MutationEngine {
                 return Err(MutationError::InvalidPath(format!("duplicate path: {rel}")));
             }
             let target = self.resolve(&rel)?;
-            let current = std::fs::read(&target).ok();
+            // One read per file feeds the hash check AND the preimage spool.
+            // It mirrors `file_hash`'s NotFound-vs-error split (that helper
+            // cannot be called here without rereading, which would reopen the
+            // verify-then-reread window this loop is written to avoid).
+            let current = match std::fs::read(&target) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(MutationError::InvalidPath(format!(
+                        "{}: {error}",
+                        target.display()
+                    )));
+                }
+            };
             let actual = current.as_deref().map(blake3_hex);
             if spec.base_hash != actual {
                 return Err(MutationError::StalePreimage {
@@ -285,7 +298,7 @@ impl MutationEngine {
                 continue;
             }
             let target = self.resolve(&file.path)?;
-            let actual = file_hash(&target);
+            let actual = file_hash(&target)?;
             if actual != file.pre_hash {
                 self.journal.append(&JournalRecord::BatchAborted {
                     batch_id: prepared.id,
@@ -315,7 +328,7 @@ impl MutationEngine {
             // Post-rename verification: an interleaving write between the
             // check and the rename (or just after it) must surface as
             // divergence, never as a silent clobber journaled committed.
-            if file_hash(&target) != Some(file.post_hash.clone()) {
+            if file_hash(&target)? != Some(file.post_hash.clone()) {
                 self.journal.append(&JournalRecord::BatchAborted {
                     batch_id: prepared.id,
                     reason: format!("diverged during commit for {}", file.path),
@@ -401,7 +414,7 @@ impl MutationEngine {
         let mut states: Vec<(FileMutation, FileState)> = Vec::new();
         for file in &replayed.files {
             let target = self.resolve(&file.path)?;
-            let actual = file_hash(&target);
+            let actual = file_hash(&target)?;
             let observed = if file.state == FileState::RolledBack && actual == file.pre_hash {
                 FileState::RolledBack
             } else if actual == Some(file.post_hash.clone()) {
@@ -582,7 +595,7 @@ impl MutationEngine {
                 };
                 if canonical != expected
                     || !std::fs::symlink_metadata(&temp).is_ok_and(|meta| meta.is_file())
-                    || file_hash(&temp) != Some(file.post_hash.clone())
+                    || !file_hash(&temp).is_ok_and(|hash| hash == Some(file.post_hash.clone()))
                 {
                     continue;
                 }

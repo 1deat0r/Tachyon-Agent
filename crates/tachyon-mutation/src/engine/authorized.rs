@@ -219,17 +219,17 @@ impl MutationEngine {
             for op in &repeat {
                 scope.authorize(op)?;
             }
-            if file_hash(&item.target) != item.observed {
+            if file_hash(&item.target)? != item.observed {
                 return Err(blocked("source changed after the boundary preflight"));
             }
-            if file_hash(&item.temp) != item.temp_hash {
+            if file_hash(&item.temp)? != item.temp_hash {
                 return Err(blocked("owned temp changed after the boundary preflight"));
             }
             if item.temp_hash.is_none() {
                 let bytes = scope.postimage_bytes(prepared.id, limit, &item.file)?;
                 write_new_synced(&item.temp, &bytes)?;
             }
-            if file_hash(&item.temp) != Some(item.file.post_hash.clone()) {
+            if file_hash(&item.temp)? != Some(item.file.post_hash.clone()) {
                 return Err(blocked(
                     "owned temp content does not match the journaled postimage",
                 ));
@@ -238,7 +238,7 @@ impl MutationEngine {
             sync_parent(&item.target);
             // Post-rename verification: an interleaving writer must surface as
             // divergence, never as a silent clobber journaled committed.
-            if file_hash(&item.target) != Some(item.file.post_hash.clone()) {
+            if file_hash(&item.target)? != Some(item.file.post_hash.clone()) {
                 self.journal.append(&JournalRecord::BatchAborted {
                     batch_id: prepared.id,
                     reason: format!("diverged during authorized commit for {}", item.file.path),
@@ -434,7 +434,7 @@ impl<'a> AuthorizedScope<'a> {
                 "derived temp path already exists and is never adopted: {temp_rel}"
             )));
         }
-        let actual = file_hash(&target);
+        let actual = file_hash(&target)?;
         if actual != spec.base_hash {
             return Err(MutationError::StalePreimage {
                 path: rel,
@@ -474,7 +474,7 @@ impl<'a> AuthorizedScope<'a> {
             return Err(blocked("derived temp path escapes its target directory"));
         }
         plain_path(&self.workspace, &temp, true)?;
-        let observed = file_hash(&target);
+        let observed = file_hash(&target)?;
         if observed != file.pre_hash {
             return Err(MutationError::StalePreimage {
                 path: file.path.clone(),
@@ -482,7 +482,7 @@ impl<'a> AuthorizedScope<'a> {
                 actual: observed,
             });
         }
-        let temp_hash = file_hash(&temp);
+        let temp_hash = file_hash(&temp)?;
         if let Some(hash) = &temp_hash
             && *hash != file.post_hash
         {

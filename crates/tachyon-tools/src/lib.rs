@@ -127,6 +127,16 @@ impl ToolsContext {
         self
     }
 
+    /// Attaches a credential broker. Registered provider keys must be
+    /// scrubbed before any process output this context produces is
+    /// recorded, so hosts pass their runtime redactor instead of leaving
+    /// the empty default broker the constructors install.
+    #[must_use]
+    pub fn with_credentials(mut self, broker: credential::CredentialBroker) -> Self {
+        self.credentials = broker;
+        self
+    }
+
     /// The lease this context carries, if any. Inner workspace stages
     /// (verification capture/plan, the verify runner) must clone this
     /// guard instead of acquiring: the registry lock is per-canonical-root

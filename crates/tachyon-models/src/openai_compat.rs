@@ -42,6 +42,10 @@ pub struct OpenAiCompatConfig {
     pub request_timeout_ms: u64,
     /// Advertised context window, tokens.
     pub context_window_tokens: u32,
+    /// Operator escape hatch: permit plaintext `http://` to non-loopback
+    /// hosts (SECURITY.md §2.3). Refused at config/startup and per request
+    /// when false.
+    pub allow_insecure_remote: bool,
 }
 
 impl Default for OpenAiCompatConfig {
@@ -52,9 +56,26 @@ impl Default for OpenAiCompatConfig {
             api_key_env: None,
             request_timeout_ms: 120_000,
             context_window_tokens: 32_768,
+            allow_insecure_remote: false,
         }
     }
 }
+
+impl OpenAiCompatConfig {
+    /// Fail-closed `base_url` validation for config/startup: the same
+    /// loopback guard the transport applies per request, raised to load
+    /// time so a remote plaintext config is refused before any socket.
+    pub fn validate_base_url(
+        base_url: &str,
+        allow_insecure_remote: bool,
+    ) -> Result<(), ModelError> {
+        parse_http_url(base_url, allow_insecure_remote).map(|_| ())
+    }
+}
+
+/// Upper bound on one HTTP response read, mirroring the judgment transport's
+/// bounded read: a hostile or broken server must not OOM the process.
+const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// Pluggable HTTP layer. Production uses [`TcpHttpTransport`]; tests inject
 /// canned responses without sockets.
@@ -86,7 +107,11 @@ struct WireMessage {
 /// Sends `Connection: close` and reads to EOF — sufficient for local
 /// OpenAI-compatible servers. Anything else (TLS, chunked upgrades, proxies)
 /// is out of scope for M6 and fails loudly instead of half-working.
-pub struct TcpHttpTransport;
+pub struct TcpHttpTransport {
+    /// Mirrors [`OpenAiCompatConfig::allow_insecure_remote`] so the
+    /// per-request guard in `post_json` matches the startup guard.
+    allow_insecure_remote: bool,
+}
 
 #[async_trait]
 impl HttpTransport for TcpHttpTransport {
@@ -97,8 +122,8 @@ impl HttpTransport for TcpHttpTransport {
         body: &str,
         timeout_ms: u64,
     ) -> Result<String, ModelError> {
-        let (host, port, path) = parse_http_url(url)?;
-        let request = build_http_request(&host, &path, api_key, body);
+        let (host, port, path) = parse_http_url(url, self.allow_insecure_remote)?;
+        let request = build_http_request(&host, port, &path, api_key, body);
         let address = format!("{host}:{port}");
         let raw = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
@@ -123,7 +148,10 @@ async fn round_trip(address: &str, request: &str) -> Result<String, String> {
         .await
         .map_err(|error| format!("write: {error}"))?;
     let mut raw = Vec::new();
-    stream
+    // Bounded read: a hostile or broken server must not OOM the process.
+    let mut capped =
+        stream.take(u64::try_from(MAX_RESPONSE_BYTES).expect("usize constant fits u64"));
+    capped
         .read_to_end(&mut raw)
         .await
         .map_err(|error| format!("read: {error}"))?;
@@ -132,8 +160,12 @@ async fn round_trip(address: &str, request: &str) -> Result<String, String> {
 
 /// Accepts only plain `http://` URLs. Anything else is configuration error.
 /// Control characters in host or path are rejected: config values reach the
-/// wire verbatim, so CRLF injection fails closed here.
-fn parse_http_url(url: &str) -> Result<(String, u16, String), ModelError> {
+/// wire verbatim, so CRLF injection fails closed here. Non-loopback hosts
+/// are refused unless `allow_insecure_remote` (SECURITY.md §2.3).
+fn parse_http_url(
+    url: &str,
+    allow_insecure_remote: bool,
+) -> Result<(String, u16, String), ModelError> {
     let rest = url.strip_prefix("http://").ok_or_else(|| {
         ModelError::InvalidRequest(format!("M6 adapter supports http:// URLs only: {url}"))
     })?;
@@ -160,13 +192,38 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String), ModelError> {
             "empty host in base URL: {url}"
         )));
     }
+    if !allow_insecure_remote && !is_loopback_host(&host) {
+        return Err(ModelError::InvalidRequest(
+            "refusing plaintext http:// to a non-loopback host; set \
+             allow_insecure_remote=true to override (see SECURITY.md)"
+                .into(),
+        ));
+    }
     Ok((host, port, path))
 }
 
-/// Renders a minimal HTTP/1.1 POST.
-fn build_http_request(host: &str, path: &str, api_key: Option<&str>, body: &str) -> String {
+/// Loopback means `localhost` (any case) or an IP literal in `127.0.0.0/8`,
+/// `::1`, etc. No DNS resolution: config validation must stay I/O-free and
+/// fail closed on anything it cannot prove local.
+fn is_loopback_host(host: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// Renders a minimal HTTP/1.1 POST. The port rides the `Host` header so
+/// name-based local servers on non-default ports route correctly.
+fn build_http_request(
+    host: &str,
+    port: u16,
+    path: &str,
+    api_key: Option<&str>,
+    body: &str,
+) -> String {
     let mut request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
     );
     if let Some(key) = api_key {
@@ -237,9 +294,13 @@ fn status_to_result(status: u16, headers: &Headers, body: &str) -> Result<String
         413 => Err(ModelError::ContextOverflow {
             detail: snippet(body),
         }),
-        400..=499 => Err(ModelError::InvalidRequest(format!("HTTP {status}: {body}"))),
+        400..=499 => Err(ModelError::InvalidRequest(format!(
+            "HTTP {status}: {}",
+            snippet(body)
+        ))),
         _ => Err(ModelError::ProviderUnavailable(format!(
-            "HTTP {status}: {body}"
+            "HTTP {status}: {}",
+            snippet(body)
         ))),
     }
 }
@@ -371,7 +432,14 @@ impl OpenAiCompatProvider<TcpHttpTransport> {
     /// Creates the production adapter speaking plain HTTP.
     #[must_use]
     pub fn local(id: ProviderId, config: OpenAiCompatConfig) -> Self {
-        Self::new(id, config, TcpHttpTransport)
+        let allow_insecure_remote = config.allow_insecure_remote;
+        Self::new(
+            id,
+            config,
+            TcpHttpTransport {
+                allow_insecure_remote,
+            },
+        )
     }
 }
 
@@ -410,7 +478,7 @@ impl<T: HttpTransport> ModelProvider for OpenAiCompatProvider<T> {
         let url = format!("{}/v1/chat/completions", self.config.base_url);
         // Validate scheme and host before touching the transport: stub
         // transports in tests must see the same rejection a real socket would.
-        parse_http_url(&url).map(|_| ())?;
+        parse_http_url(&url, self.config.allow_insecure_remote).map(|_| ())?;
         let body = self.request_body(&request);
         let raw = self
             .transport
@@ -555,8 +623,8 @@ mod tests {
 
     #[test]
     fn plain_http_only_never_downgrades() {
-        assert!(parse_http_url("https://example.com/v1").is_err());
-        let (host, port, path) = parse_http_url("http://localhost:11434/v1").expect("http");
+        assert!(parse_http_url("https://example.com/v1", false).is_err());
+        let (host, port, path) = parse_http_url("http://localhost:11434/v1", false).expect("http");
         assert_eq!(
             (host.as_str(), port, path.as_str()),
             ("localhost", 11434, "/v1")
@@ -622,7 +690,8 @@ mod tests {
 
     #[test]
     fn wire_request_carries_api_key_and_length() {
-        let wire = build_http_request("local", "/v1", Some("probe-key"), "{}");
+        let wire = build_http_request("local", 8080, "/v1", Some("probe-key"), "{}");
+        assert!(wire.contains("Host: local:8080\r\n"));
         assert!(wire.contains("Authorization: Bearer probe-key"));
         assert!(wire.contains("Content-Length: 2\r\n"));
         assert!(wire.ends_with("\r\n\r\n{}"));
@@ -630,7 +699,48 @@ mod tests {
 
     #[test]
     fn control_characters_in_base_url_fail_closed() {
-        assert!(parse_http_url("http://host/x\r\nInjected: yes").is_err());
+        assert!(parse_http_url("http://host/x\r\nInjected: yes", false).is_err());
+    }
+
+    #[tokio::test]
+    async fn huge_response_read_is_bounded() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _peer) = listener.accept().await.expect("accept");
+            // Drain the request head so the eventual close is a clean FIN;
+            // otherwise the kernel resets the connection and the test would
+            // measure reset handling instead of the read bound.
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let head = "HTTP/1.1 200 OK\r\nContent-Length: 2097152\r\nConnection: close\r\n\r\n";
+            let oversized_body = "x".repeat(2 * 1024 * 1024);
+            // The client may stop reading at the bound and hang up; a
+            // failed late write is exactly the scenario under test.
+            let _ignored = socket.write_all(head.as_bytes()).await;
+            let _ignored = socket.write_all(oversized_body.as_bytes()).await;
+        });
+        let request =
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let raw = round_trip(&address.to_string(), request)
+            .await
+            .expect("bounded read must not error on an oversized response");
+        assert!(
+            raw.len() <= MAX_RESPONSE_BYTES,
+            "buffered {} bytes, bound is {MAX_RESPONSE_BYTES}",
+            raw.len()
+        );
+        let _ignored = server.await;
     }
 
     #[tokio::test]

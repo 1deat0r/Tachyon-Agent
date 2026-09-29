@@ -88,8 +88,16 @@ pub async fn run_cancellable(
         &context.workspace_root,
         spec.cwd.as_deref().unwrap_or(Path::new(".")),
     )?;
-    // Bind the inherited environment too, and execute this exact snapshot.
-    let mut env: BTreeMap<std::ffi::OsString, std::ffi::OsString> = std::env::vars_os().collect();
+    // Only a fixed allowlist is inherited; everything else must arrive
+    // explicitly through `spec.env`. Binding the whole parent environment
+    // would hand every caller's secrets to the child *and* record them in
+    // the spawn envelope below.
+    let mut env: BTreeMap<std::ffi::OsString, std::ffi::OsString> = BTreeMap::new();
+    for key in ["PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "PATHEXT"] {
+        if let Some(value) = std::env::var_os(key) {
+            env.insert(key.into(), value);
+        }
+    }
     env.extend(
         spec.env
             .iter()
