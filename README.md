@@ -47,7 +47,7 @@ tachyon task list
 
 Repository intelligence, predictive routing, and judgment (M4/M5/M7) are
 built and measured, but the run path does not call them yet; their
-wire-vs-delete disposition is an open ADR.
+wire-vs-delete disposition stays open until an ADR decides it.
 
 Start with [`AGENTS.md`](AGENTS.md), then read the domain and architecture
 references relevant to your task. The frozen architecture and implementation

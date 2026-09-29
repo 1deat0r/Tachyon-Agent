@@ -15,8 +15,9 @@
   the descriptor-driven `bench_matrix` example; 150/150 verified success
   at equal full/reference rates — pinned scripted provider, so this is
   harness/path correctness, not live-model performance; median TTFR full
-  p50 1/1/1 ms (below the 1 ms clock's resolution; the superseded
-  2026-09-25 artifact read 32/108/115 ms on warmer-cache samples);
+  p50 1/1/1 ms (at the 1 ms clock's granularity, so cross-mode reads are
+  ties; the superseded 2026-09-25 artifact read 32/108/115 ms on warmer
+  page cache);
   explicit §42 security + recovery suite gate with a structural no-TCP
   exposure check; new Class D (`multi-file-migration`) and Class E
   (`architecture-plan`) fixtures with broken-first self-check gates;

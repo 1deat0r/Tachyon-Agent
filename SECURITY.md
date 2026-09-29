@@ -21,7 +21,7 @@ should be off.
 Out of scope: vulnerabilities in upstream dependencies (report those
 upstream, though a heads-up is welcome), social engineering, physical access.
 
-`TACHYON_FAULT_POINT` parks the process at a named seam when set. Never set
+`TACHYON_FAULT_POINT` parks the process at a named hold when set. Never set
 it in a service unit, container, or CI runner that isn't a fault-injection
 test.
 

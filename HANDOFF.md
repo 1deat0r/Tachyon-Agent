@@ -1,4 +1,4 @@
-# Handoff — 2026-09-29 session: roast playbook execution (T0 in flight)
+# Handoff — 2026-09-29 session: roast playbook execution (T0 landed)
 
 Current session state for a fresh agent. The 2026-09-26 session snapshot is archived at
 [`docs/archive/HANDOFF-2026-09-26.md`](docs/archive/HANDOFF-2026-09-26.md). Current
@@ -14,9 +14,14 @@ god-file splits). The playbook text lives in this session's conversation; the co
 below. Verification discipline after every batch: `cargo verify` green, then `cargo verify full`
 for gate/script changes, plus one targeted mutation per new check (break it on purpose, confirm red).
 
-## T0 state — IN FLIGHT, UNCOMMITTED
+## T0 state — DONE, COMMITTED AND PUSHED
 
-Working tree holds these completed changes (verify with `git status`):
+T0 landed as `ee1953c` on `feat/supervisor-evidence-ir` (pushed to
+`1deat0r/Tachyon-Agent`). Verification evidence: `cargo verify` green and
+`cargo verify full` green (EXIT=0) — the FULL run regenerated
+`target/m14/M14_MATRIX.json` at 150/150 verified success, and the new G11
+check plus its mutation (break a report figure → red, restore → green)
+were confirmed. The commit contains:
 
 1. `PACKAGE_MANIFEST_SHA256.txt` deleted (zero references).
 2. `HANDOFF.md` (2026-09-26 snapshot) archived → `docs/archive/HANDOFF-2026-09-26.md`.
@@ -37,24 +42,21 @@ Working tree holds these completed changes (verify with `git status`):
    fault-injection intent). Optional `tracing::warn!` at arm time is deferred to T1 §2.7.
 8. `.gitignore` — added `.unlazy/`.
 
-**Remaining T0 (do next, in order):**
+Also in the same commit — the five "Remaining T0" items, all done:
 
-1. `CHANGELOG.md`: M14 entry carries **stale figures** — "median TTFR full p50 32/108/115 ms"
-   is the 2026-09-25 artifact; the final `docs/milestones/M14_MATRIX.json` reads 1/1/1.
-   Correct it, qualify "150/150" as pinned-scripted-provider harness overhead, add an
-   Unreleased entry covering this batch.
-2. `README.md` honesty: benchmark headline = harness overhead w/ scripted provider (no
-   live-model leg); routing/repo-intelligence/judgment crates (M4/M5/M7) are built and measured
-   but not wired into the run path (disposition → ADR-0008).
-3. `AGENTS.md` honesty: mark the "Every scheduled operation is represented by validated
-   Execution IR" invariant as **Target** (Execution graph not yet dispatched through
-   `tachyon-scheduler`; flip Target → Enforced when the ADR-0006 slice lands).
-4. Dead deps: 12 declared-but-unused deps confirmed by `\b` grep across 10 crates —
-   core/tracing, mutation/tokio, repo/{serde_json,tachyon-types}, router/{serde,thiserror},
-   scheduler/serde, store/{serde_json,tracing}, telemetry/serde_json, tools/walkdir,
-   tui/tachyon-store. Remove, then `cargo check --workspace` (no `--locked` — lock must
-   refresh) before `cargo verify`.
-5. `cargo verify` green → commit T0 as one atomic commit (user pre-authorized).
+- `CHANGELOG.md`: M14 TTFR corrected 32/108/115 → 1/1/1 ms, "150/150"
+  qualified as scripted-provider harness overhead, Unreleased entry added.
+- `README.md`: benchmark numbers framed as harness overhead; M4/M5/M7
+  noted as built but not on the run path.
+- `AGENTS.md`: Execution IR invariant marked **Target**, flip to Enforced
+  when the ADR-0006 slice lands.
+- 12 dead deps removed across 9 crates (core/tracing, mutation/tokio,
+  repo/{serde_json,tachyon-types}, router/{serde,thiserror}, scheduler/serde,
+  store/{serde_json,tracing}, telemetry/serde_json, tools/walkdir,
+  tui/tachyon-store); `cargo check --workspace --all-targets` clean.
+- Two-axis review of the commit ran; wording findings (CHANGELOG clock
+  granularity, README ADR phrasing, SECURITY.md "seam" → CONTEXT.md "hold")
+  were fixed in the follow-up below.
 
 ## After T0 (queue, from the playbook)
 
