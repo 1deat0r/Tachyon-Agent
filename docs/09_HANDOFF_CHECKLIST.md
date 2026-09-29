@@ -1,4 +1,11 @@
-# 09 — Hermes Handoff Checklist
+# 09 — Initial Hermes Handoff Checklist (Historical)
+
+This checklist records the original project scaffold handoff. It is not a
+current agent startup or delivery gate. For current work, follow
+[`AGENTS.md`](../AGENTS.md) and the [development workflow](DEVELOPMENT_WORKFLOW.md),
+consulting only the architecture, specification, and domain references relevant
+to the task. The Milestone 0 setup steps below are retained for historical
+context and do not apply to routine development.
 
 Before implementation starts:
 
