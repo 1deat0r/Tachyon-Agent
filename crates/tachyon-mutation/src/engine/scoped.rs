@@ -293,7 +293,7 @@ impl RecoveryScope<'_> {
         plain_file(&self.state, &path)?;
         self.authorize("fs.read", &path, None, None)?;
         let bytes = ArtifactSpool::new(self.state.join("artifacts"))
-            .fetch(id)
+            .fetch_legacy_unbounded(id)
             .map_err(|error| blocked(&error.to_string()))?;
         if blake3_hex(&bytes) != expected {
             return Err(blocked("retained artifact content changed"));

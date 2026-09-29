@@ -530,7 +530,7 @@ impl<'a> AuthorizedScope<'a> {
         }
         plain_path(&self.state, &path, true)?;
         let bytes = ArtifactSpool::new(self.state.join("artifacts"))
-            .fetch(&file.post_artifact)
+            .fetch_legacy_unbounded(&file.post_artifact)
             .map_err(|error| blocked(&error.to_string()))?;
         if blake3_hex(&bytes) != expected {
             return Err(blocked("retained postimage content changed"));

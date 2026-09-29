@@ -302,9 +302,12 @@ impl MutationEngine {
             if !temp.exists() {
                 // Temp lost (crash cleanup, concurrent sweep, fs rollback):
                 // re-stage from the retained postimage and proceed.
-                let bytes = self.spool.fetch(&file.post_artifact).map_err(|error| {
-                    MutationError::Io(format!("temp lost for {}: {error}", file.path))
-                })?;
+                let bytes = self
+                    .spool
+                    .fetch_legacy_unbounded(&file.post_artifact)
+                    .map_err(|error| {
+                        MutationError::Io(format!("temp lost for {}: {error}", file.path))
+                    })?;
                 write_synced(&temp, &bytes)?;
             }
             std::fs::rename(&temp, &target)?;
@@ -510,7 +513,7 @@ impl MutationEngine {
             Some(artifact) => {
                 let bytes = self
                     .spool
-                    .fetch(artifact)
+                    .fetch_legacy_unbounded(artifact)
                     .map_err(|error| io_error(&error))?;
                 let file_name = target.file_name().map_or_else(
                     || "file".to_owned(),
