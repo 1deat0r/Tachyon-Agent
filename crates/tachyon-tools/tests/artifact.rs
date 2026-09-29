@@ -328,27 +328,31 @@ fn assert_owner_only_dacl(path: &std::path::Path) {
         },
         0
     );
-    assert_eq!(size_info.AceCount, 1, "DACL must contain one allow ACE");
-
-    let mut raw_ace = std::ptr::null_mut();
-    // SAFETY: the DACL has one ACE and raw_ace is a valid out-pointer.
-    assert_ne!(unsafe { GetAce(dacl, 0, &raw mut raw_ace) }, 0);
-    let ace = raw_ace.cast::<ACCESS_ALLOWED_ACE>();
-    // SAFETY: the sole DACL entry is represented by an ACCESS_ALLOWED_ACE.
-    assert_eq!(
-        u32::from(unsafe { (*ace).Header.AceType }),
-        ACCESS_ALLOWED_ACE_TYPE
-    );
     assert!(!owner.is_null(), "object owner SID must be present");
-    // SAFETY: SidStart is the first aligned byte of the SID embedded after
-    // ACCESS_ALLOWED_ACE's fixed fields.
-    let ace_sid = unsafe { std::ptr::addr_of!((*ace).SidStart).cast_mut().cast() };
-    // SAFETY: owner and ace_sid are valid SIDs owned by descriptor/DACL.
-    assert_ne!(
-        unsafe { EqualSid(owner, ace_sid) },
-        0,
-        "ACE must match object owner"
-    );
+    assert_ne!(size_info.AceCount, 0, "DACL must grant the owner access");
+    for index in 0..size_info.AceCount {
+        let mut raw_ace = std::ptr::null_mut();
+        // SAFETY: index is below AceCount and raw_ace is a valid out-pointer.
+        assert_ne!(unsafe { GetAce(dacl, index, &raw mut raw_ace) }, 0);
+        let ace = raw_ace.cast::<ACCESS_ALLOWED_ACE>();
+        // SAFETY: every allowed ACE has the ACCESS_ALLOWED_ACE layout.
+        assert_eq!(
+            u32::from(unsafe { (*ace).Header.AceType }),
+            ACCESS_ALLOWED_ACE_TYPE,
+            "DACL contains a non-allow ACE for {}",
+            path.display()
+        );
+        // SAFETY: SidStart is the first aligned byte of the SID embedded after
+        // ACCESS_ALLOWED_ACE's fixed fields.
+        let ace_sid = unsafe { std::ptr::addr_of!((*ace).SidStart).cast_mut().cast() };
+        // SAFETY: owner and ace_sid are valid SIDs owned by descriptor/DACL.
+        assert_ne!(
+            unsafe { EqualSid(owner, ace_sid) },
+            0,
+            "ACE {index} grants access to a non-owner trustee on {}",
+            path.display()
+        );
+    }
 }
 
 #[test]
