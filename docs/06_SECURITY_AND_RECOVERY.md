@@ -101,7 +101,10 @@ barriers before minting the graph token. The live path must also require a
 one-shot authorization permit bound to the exact operation and effect, and
 run effects as Supervisor-owned workers whose cancellation and drain have
 completed before pause/cancel is acknowledged. The runtime driver is not yet
-wired to this protocol.
+wired to this protocol. The first read-only evidence-stage contract, including
+generation fences, durable output receipts, capability-version recovery, and
+path-bound authorization, is recorded in
+[ADR 0006](adr/0006-supervisor-owned-evidence-execution.md).
 
 ## Crash uncertainty
 
