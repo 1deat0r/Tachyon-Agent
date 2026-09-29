@@ -203,8 +203,10 @@ Numeric stop/pivot gates adopted at freeze (docs/11 #1; owner review before publ
 2. **Post-release regression, 90 days.** After any major lab model release, re-run the
    pinned matrix within 90 days. If `tachyon-full` verified success falls below the serial
    reference on any representative task, freeze feature work until it is fixed.
-3. **Red CI is stop-the-line.** Any red CI without a fix PR within 24 h halts feature work
-   (AGENTS.md rule, reaffirmed at freeze).
+3. **Red CI at the M14 freeze (historical).** At that time, a red CI result without a
+   fix PR within 24 h halted feature work. Current post-MVP practice follows
+   [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md); required checks still
+   gate protected merges and releases.
 4. **Performance budget.** A > 20 % p95 regression against `M14_MATRIX.json` or any §43
    target MISS on the ledger re-run reverts the causing change before merge.
 
