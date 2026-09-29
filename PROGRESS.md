@@ -4,8 +4,9 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 15 — none planned; MVP frozen at Milestone 14 (post-MVP work
-is tracked by issues and the docs/04/§46 deferrals, see `MVP_REPORT.md`).
+Milestone 15 — none planned; MVP frozen at Milestone 14. Post-MVP scope is
+defined by the docs/04/§46 deferrals; use GitHub Issues when durable shared
+tracking materially helps. See `MVP_REPORT.md`.
 
 ## Completed gates
 

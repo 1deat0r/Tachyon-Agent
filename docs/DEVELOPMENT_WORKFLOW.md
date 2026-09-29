@@ -14,7 +14,7 @@ GitHub backs up and synchronizes the work, hosts long-lived tracking when useful
 - Keep routine work in the current working tree. Create a branch when isolation, parallel work, or repository protection calls for one.
 - GitHub Issues are optional. Use one when it materially helps with deferred backlog, multi-session work, dependencies, coordination, architectural decisions, or an externally reported problem. A small task that can be completed now needs no Issue.
 - Pull requests are optional. Use one for risky or substantial changes that benefit from remote review, public contributions, parallel work, or a repository rule that requires one. Do not create a PR solely to satisfy convention.
-- Skills are tools for planning, implementation, tests, debugging, and review. This repository policy overrides a skill's default request to publish an Issue, create a branch, or open a PR when that step adds no value.
+- Skills are tools for planning, implementation, tests, debugging, and review. This repository policy overrides a skill's default request to publish an Issue, create a branch, or open a PR when that step adds no value. Apply the task and relevant spec to choose routine ticket breakdowns and test seams; proceed without approval checkpoints for those choices. Ask only when a material requirement, safety/security boundary, architecture decision, or external authorization is unresolved.
 
 ## Skills and hooks
 
