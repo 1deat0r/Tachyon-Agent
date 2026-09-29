@@ -223,7 +223,7 @@ fn fetch_rejects_symlinked_spool_objects() {
 
 #[cfg(windows)]
 #[test]
-fn windows_spool_entries_have_protected_owner_only_dacls() {
+fn windows_spool_entries_have_protected_current_user_only_dacls() {
     let root = scratch();
     let spool_root = root.join("artifacts");
     let spool = ArtifactSpool::new(spool_root.clone());
@@ -234,9 +234,22 @@ fn windows_spool_entries_have_protected_owner_only_dacls() {
     let blob = shard.join(&id.0);
 
     for path in [&spool_root, &shard, &blob] {
-        assert_owner_only_dacl(path);
+        assert_current_user_only_dacl(path);
     }
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(windows)]
+struct TokenHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+impl Drop for TokenHandle {
+    fn drop(&mut self) {
+        // SAFETY: this handle was returned by OpenProcessToken and is owned by
+        // this guard until Drop.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
 }
 
 #[cfg(windows)]
@@ -255,28 +268,85 @@ impl Drop for SecurityDescriptor {
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn assert_owner_only_dacl(path: &std::path::Path) {
+fn assert_current_user_only_dacl(path: &std::path::Path) {
     use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError};
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION,
         EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-        GetSecurityDescriptorDacl, OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+        GetSecurityDescriptorDacl, SE_DACL_PROTECTED,
     };
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut raw_token = std::ptr::null_mut();
+    // SAFETY: GetCurrentProcess returns a pseudo-handle; OpenProcessToken
+    // writes a new owned token handle to raw_token.
+    assert_ne!(
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) },
+        0,
+        "open current process token"
+    );
+    let token = TokenHandle(raw_token);
+
+    let mut token_bytes = 0u32;
+    // SAFETY: this sizing call intentionally supplies no output buffer.
+    assert_eq!(
+        unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                std::ptr::null_mut(),
+                0,
+                &raw mut token_bytes,
+            )
+        },
+        0,
+        "size current token user information"
+    );
+    // SAFETY: GetLastError reports the sizing call's documented buffer error.
+    assert_eq!(unsafe { GetLastError() }, ERROR_INSUFFICIENT_BUFFER);
+    let word_count = usize::try_from(token_bytes)
+        .expect("token user size fits usize")
+        .div_ceil(std::mem::size_of::<usize>());
+    let mut token_buffer = vec![0usize; word_count];
+    // SAFETY: token_buffer is word-aligned and at least token_bytes long.
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                token_buffer.as_mut_ptr().cast(),
+                token_bytes,
+                &raw mut token_bytes,
+            )
+        },
+        0,
+        "read current token user information"
+    );
+    // SAFETY: GetTokenInformation populated token_buffer with a TOKEN_USER.
+    let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
+    let user_sid = token_user.User.Sid;
+    assert!(
+        !user_sid.is_null(),
+        "current process token user SID is present"
+    );
 
     let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-    let mut owner = std::ptr::null_mut();
     let mut dacl = std::ptr::null_mut();
     let mut raw_descriptor = std::ptr::null_mut();
     // SAFETY: all out-pointers are valid for the call and the path is
-    // NUL-terminated UTF-16 for the duration of the call.
+    // NUL-terminated UTF-16 for the duration of the call. The security
+    // descriptor owner can differ from TOKEN_USER for elevated processes, so
+    // validate the DACL against the user SID that the spool grants access to.
     let status = unsafe {
         GetNamedSecurityInfoW(
             wide_path.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
-            &raw mut owner,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
             std::ptr::null_mut(),
             &raw mut dacl,
             std::ptr::null_mut(),
@@ -328,8 +398,10 @@ fn assert_owner_only_dacl(path: &std::path::Path) {
         },
         0
     );
-    assert!(!owner.is_null(), "object owner SID must be present");
-    assert_ne!(size_info.AceCount, 0, "DACL must grant the owner access");
+    assert_ne!(
+        size_info.AceCount, 0,
+        "DACL must grant the current user access"
+    );
     for index in 0..size_info.AceCount {
         let mut raw_ace = std::ptr::null_mut();
         // SAFETY: index is below AceCount and raw_ace is a valid out-pointer.
@@ -345,11 +417,11 @@ fn assert_owner_only_dacl(path: &std::path::Path) {
         // SAFETY: SidStart is the first aligned byte of the SID embedded after
         // ACCESS_ALLOWED_ACE's fixed fields.
         let ace_sid = unsafe { std::ptr::addr_of!((*ace).SidStart).cast_mut().cast() };
-        // SAFETY: owner and ace_sid are valid SIDs owned by descriptor/DACL.
+        // SAFETY: user_sid is owned by token_buffer and ace_sid is in the DACL.
         assert_ne!(
-            unsafe { EqualSid(owner, ace_sid) },
+            unsafe { EqualSid(user_sid, ace_sid) },
             0,
-            "ACE {index} grants access to a non-owner trustee on {}",
+            "ACE {index} grants access to a different user on {}",
             path.display()
         );
     }
