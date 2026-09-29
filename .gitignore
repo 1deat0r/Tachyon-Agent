@@ -19,6 +19,9 @@
 .claude/*
 !.claude/settings.json
 
+# unlazy gate ledgers/approvals written by local tooling; never committed
+.unlazy/
+
 # Skill installer alternate path
 agent/
 

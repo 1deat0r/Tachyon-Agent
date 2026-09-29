@@ -1,6 +1,6 @@
 //! G4(ii) — the live attach gate: an in-process gateway (test harness
-//! only; `tachyon-gateway`/`tachyon-store` are harness deps of this
-//! crate's tests, never display logic) drives the **real** tachyon-tui
+//! only; `tachyon-gateway` is the harness dep of this crate's tests,
+//! never display logic) drives the **real** tachyon-tui
 //! reader → decoder → state stack: receive events, drop the client,
 //! prove the task is untouched (no cancel), respawn from the client's
 //! own last-parsed seq, and assert the exact gapless suffix replay.

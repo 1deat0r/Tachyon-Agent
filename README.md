@@ -14,6 +14,10 @@ see [`PROGRESS.md`](PROGRESS.md) and
 [`MVP_REPORT.md`](MVP_REPORT.md). Not yet a daily
 driver — watch this repo if the architecture interests you.
 
+Read the matrix numbers as **harness overhead**: every cell runs a pinned
+scripted provider (no live-model leg), so they show path and verification
+cost, not end-to-end model latency.
+
 ## Quickstart
 
 Requires Rust 1.98.1 (`rustup` installs it from `rust-toolchain.toml`).
@@ -40,6 +44,10 @@ tachyon task list
 - **Execution IR** — every scheduled operation is validated before it runs.
 - **Predictive routing** — cheapest sufficient path first, not a model loop.
 - **Verification-gated completion** — done means proven, not self-reported.
+
+Repository intelligence, predictive routing, and judgment (M4/M5/M7) are
+built and measured, but the run path does not call them yet; their
+wire-vs-delete disposition is an open ADR.
 
 Start with [`AGENTS.md`](AGENTS.md), then read the domain and architecture
 references relevant to your task. The frozen architecture and implementation

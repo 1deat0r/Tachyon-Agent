@@ -31,14 +31,32 @@ run cargo test --locked -p tachyon-app --test kill_restart
 run cargo test --locked -p tachyon-mutation --test mutation_gate --test recovery_scoped
 
 echo "== remote gateway exposure (structural) =="
-# No TCP listener may exist in shipped code. The pattern covers std and
-# tokio constructors; a server framework (axum/warp/actix/hyper-server)
-# would additionally show up in Cargo.lock — checked below.
-if grep -rlE "TcpListener|TcpSocket" crates/*/src >/dev/null 2>&1; then
+# No TCP listener may exist in shipped code. The source pattern covers
+# std and tokio constructors; listener-capable server frameworks would
+# additionally show up in Cargo.lock — checked against Cargo.lock's real
+# `name = "..."` line format (the previous quoted-key `"name" = "..."`
+# pattern could never match, so the check passed vacuously). socket2 is
+# deliberately not listed: tokio legitimately depends on it and it cannot
+# bind without a listener type in source. Exact package names only, no
+# suffix matching — false positives here would train people to skip the
+# gate.
+SRC_RE='TcpListener|TcpSocket'
+LOCK_RE='^name = "(axum|axum-server|warp|actix-web|actix-server|hyper|hyper-util|tiny-http|tokio-tungstenite|tungstenite|websocket)"$'
+# Controls: each pattern must be able to match a representative line, so
+# a silently-broken regex fails here instead of passing forever.
+printf 'let _l = TcpListener::bind("127.0.0.1:0");\n' | grep -qE "$SRC_RE" || {
+    echo "control failed: source regex cannot match a listener line" >&2
+    exit 1
+}
+printf 'name = "axum"\n' | grep -qE "$LOCK_RE" || {
+    echo "control failed: lock regex cannot match a known framework" >&2
+    exit 1
+}
+if grep -rlE "$SRC_RE" crates/*/src >/dev/null 2>&1; then
     echo "production source binds TCP: remote exposure" >&2
     exit 1
 fi
-if grep -iE '"name" *= *"[^"]*(axum|warp|actix-web|hyper-util|socket2|tokio-tungstenite)"' Cargo.lock >/dev/null 2>&1; then
+if grep -qE "$LOCK_RE" Cargo.lock; then
     echo "server-capable listener crate in the dependency closure" >&2
     exit 1
 fi

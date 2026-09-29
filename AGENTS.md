@@ -27,7 +27,7 @@ Do not optimize raw token use at the cost of wall-clock latency or correctness.
 
 - Deterministic truth must not be delegated to an LLM unnecessarily.
 - Models propose; Tachyon validates and executes.
-- Every scheduled operation is represented by validated Execution IR.
+- Every scheduled operation is represented by validated Execution IR. *(Target, not yet enforced: the execution graph is not dispatched through `tachyon-scheduler`; flip to Enforced when the ADR-0006 slice lands.)*
 - No running nodes may hold conflicting access sets.
 - Task state has one logical writer: the Task Supervisor.
 - Every consequential effect declares effect class and idempotency.

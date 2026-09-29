@@ -14,7 +14,6 @@ tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
 tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
 tachyon-retrieval = { version = "0.0.1", path = "../tachyon-retrieval" }

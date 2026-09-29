@@ -11,7 +11,20 @@
 set -e
 cd "$(dirname "$0")/.."
 
-SAMPLES="${M14_SAMPLES:-10}"
+# Unset defaults to 10; explicitly-empty or malformed is an error.
+SAMPLES="${M14_SAMPLES-10}"
+# Validate before touching any output, so a bad override fails fast
+# instead of truncating the previous run's raw transcript first.
+case "$SAMPLES" in
+    ''|*[!0-9]*)
+        echo "M14_SAMPLES must be a positive integer, got: $SAMPLES" >&2
+        exit 1
+        ;;
+esac
+if [ "$SAMPLES" -lt 1 ]; then
+    echo "M14_SAMPLES must be >= 1, got: $SAMPLES" >&2
+    exit 1
+fi
 mkdir -p target/m14
 RAW=target/m14/raw.jsonl
 LEGS=target/m14/legs.jsonl

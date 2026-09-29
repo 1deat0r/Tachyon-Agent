@@ -6,12 +6,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-serde = { workspace = true }
 serde_json = { workspace = true }
 tachyon-ir = { workspace = true }
 tachyon-telemetry = { version = "0.0.1", path = "../tachyon-telemetry" }
 tachyon-types = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 tachyon-models = { version = "0.0.1", path = "../tachyon-models" }

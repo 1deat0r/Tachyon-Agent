@@ -25,7 +25,6 @@ tachyon-verify = { version = "0.0.1", path = "../tachyon-verify" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

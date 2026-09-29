@@ -1,7 +1,7 @@
 //! D2 client resync E2E — the reader's overflow → re-`Subscribe` path
 //! driven through the **real** tachyon-tui reader against an in-process
-//! gateway (test harness only; `tachyon-gateway`/`tachyon-store` are
-//! harness deps of this crate's tests, never display logic).
+//! gateway (test harness only; `tachyon-gateway` is the harness dep of
+//! this crate's tests, never display logic).
 //!
 //! The consumer deliberately stops draining: the client's 256-slot
 //! event channel and the socket back up behind it, the server's own

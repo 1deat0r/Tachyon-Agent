@@ -2,10 +2,21 @@
 
 ## Unreleased
 
+- Repo-roast honesty/gates batch: `GATES.md` → `GATES.json` (structured
+  ledger, bytes verified against the original, host paths scrubbed) with
+  G11 gaining a real check (`scripts/m14_reconcile_check.mjs`, which
+  reconciles report figures the G8 checker misses); fixed a vacuous
+  no-TCP gate whose Cargo.lock regex matched a key that never occurs
+  there, plus `M14_SAMPLES` input validation in `scripts/m14_matrix.sh`;
+  README/CHANGELOG/invariant wording aligned with what is actually
+  measured; 12 declared-but-unused crate dependencies removed.
 - Milestone 14: MVP freeze — full spec §44 benchmark matrix (3 fixtures ×
   5 modes × n=10 = 150 driver runs plus Class A/B composed legs) through
   the descriptor-driven `bench_matrix` example; 150/150 verified success
-  at equal full/reference rates, median TTFR full p50 32/108/115 ms;
+  at equal full/reference rates — pinned scripted provider, so this is
+  harness/path correctness, not live-model performance; median TTFR full
+  p50 1/1/1 ms (below the 1 ms clock's resolution; the superseded
+  2026-09-25 artifact read 32/108/115 ms on warmer-cache samples);
   explicit §42 security + recovery suite gate with a structural no-TCP
   exposure check; new Class D (`multi-file-migration`) and Class E
   (`architecture-plan`) fixtures with broken-first self-check gates;

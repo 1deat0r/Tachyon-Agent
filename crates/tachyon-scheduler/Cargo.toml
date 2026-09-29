@@ -7,7 +7,6 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tachyon-ir = { workspace = true }
 tachyon-types = { workspace = true }

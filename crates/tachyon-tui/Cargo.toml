@@ -15,8 +15,5 @@ tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-[dev-dependencies]
-tachyon-store = { workspace = true }
-
 [lints]
 workspace = true
