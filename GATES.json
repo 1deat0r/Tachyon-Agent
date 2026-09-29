@@ -1,6 +1,6 @@
 {
   "title": "Gates: M14 MVP freeze",
-  "note": "For current development, use `cargo verify` (docs/DEVELOPMENT_WORKFLOW.md). This file remains the historical M14 acceptance ledger and evidence record.",
+  "note": "For current development, use `cargo verify` (docs/DEVELOPMENT_WORKFLOW.md). `cargo verify full` executes every `check` below (G1-G2 through the VERIFY tier, G3-G11 through FULL, each G3-G11 also required to print its `expect` string). This file remains the M14 acceptance ledger and evidence record.",
   "owns": [
     "GATES.json",
     "PROGRESS.md",

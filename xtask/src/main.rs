@@ -1,5 +1,6 @@
 use std::env;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
@@ -41,7 +42,8 @@ fn usage() -> &'static str {
      fast: formatting and workspace compile checks\n\
      verify (default): fast checks, workspace tests, and strict Clippy\n\
      platform: workspace tests for supported-platform CI runners\n\
-     full: verify plus M14 security/recovery, fixture, benchmark-matrix, and perf gates"
+     full: verify plus every GATES.json gate (security/recovery, fixture, benchmark\n\
+     matrix, projection, report/progress/changelog reconciliation) and the perf gate"
 }
 
 fn fast_checks() -> Result<(), String> {
@@ -84,6 +86,7 @@ fn platform_checks() -> Result<(), String> {
 }
 
 fn full_checks() -> Result<(), String> {
+    // G6, G3, G4, G5
     run_shell_script("scripts/m14_suites.sh", None)?;
     run_shell_script("scripts/m14_fixture_gate.sh", None)?;
     run_shell_script(
@@ -98,8 +101,48 @@ fn full_checks() -> Result<(), String> {
         matrix_check,
         "node scripts/m14_matrix_check.mjs (target/m14/M14_MATRIX.json)".to_owned(),
     )?;
+    // G7–G11: report gates that assert their own success string, so a
+    // checker that exits 0 without checking anything still fails here.
+    run_gate(
+        cargo(&[
+            "test",
+            "-p",
+            "tachyon-repo",
+            "--test",
+            "projection",
+            "--release",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ]),
+        "cargo test -p tachyon-repo --test projection --release (--ignored)  # G7",
+        "projection ok",
+    )?;
+    run_gate(
+        node(&["scripts/m14_report_check.mjs"]),
+        "node scripts/m14_report_check.mjs  # G8",
+        "m14 report ok",
+    )?;
+    run_gate(
+        node(&["scripts/m14_progress_check.mjs"]),
+        "node scripts/m14_progress_check.mjs  # G9",
+        "progress ok",
+    )?;
+    run_gate(
+        node(&["-e", G10_CHANGELOG]),
+        "node -e <CHANGELOG.md has an M14 entry>  # G10",
+        "changelog ok",
+    )?;
+    run_gate(
+        node(&["scripts/m14_reconcile_check.mjs"]),
+        "node scripts/m14_reconcile_check.mjs  # G11",
+        "m14 reconcile ok",
+    )?;
     run_shell_script("scripts/perf_gate.sh", None)
 }
+
+/// G10's check, kept byte-identical to the `check` field in `GATES.json`.
+const G10_CHANGELOG: &str = r#"const t=require("fs").readFileSync("CHANGELOG.md","utf8");if(!/- Milestone 14:/.test(t)){process.exit(1)};console.log("changelog ok")"#;
 
 fn ensure_full_tools() -> Result<(), String> {
     if cfg!(windows) {
@@ -131,6 +174,18 @@ fn run_cargo(args: &[&str]) -> Result<(), String> {
     run_command("cargo", args)
 }
 
+fn cargo(args: &[&str]) -> Command {
+    let mut command = Command::new("cargo");
+    command.args(args);
+    command
+}
+
+fn node(args: &[&str]) -> Command {
+    let mut command = Command::new("node");
+    command.args(args);
+    command
+}
+
 fn run_shell_script(script: &str, samples: Option<&std::ffi::OsStr>) -> Result<(), String> {
     let mut command = Command::new("sh");
     command.arg(script);
@@ -150,14 +205,17 @@ fn run_command(program: &str, args: &[&str]) -> Result<(), String> {
     run_process(command, display)
 }
 
-fn run_process(mut command: Command, display: String) -> Result<(), String> {
-    println!("\n$ {display}");
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+fn workspace_root() -> Result<PathBuf, String> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| "could not locate the workspace root".to_owned())?;
+        .ok_or_else(|| "could not locate the workspace root".to_owned())
+}
+
+fn run_process(mut command: Command, display: String) -> Result<(), String> {
+    println!("\n$ {display}");
     let status = command
-        .current_dir(root)
+        .current_dir(workspace_root()?)
         .status()
         .map_err(|error| format!("could not start `{display}`: {error}"))?;
     if status.success() {
@@ -165,4 +223,25 @@ fn run_process(mut command: Command, display: String) -> Result<(), String> {
     } else {
         Err(format!("`{display}` exited with {status}"))
     }
+}
+
+/// Run a gate, then require the success marker `GATES.json` records as its
+/// `expect`. A checker that exits 0 without checking anything fails here.
+fn run_gate(mut command: Command, display: &str, expect: &str) -> Result<(), String> {
+    println!("\n$ {display}");
+    let output = command
+        .current_dir(workspace_root()?)
+        .output()
+        .map_err(|error| format!("could not start `{display}`: {error}"))?;
+    let _ = std::io::stdout().write_all(&output.stdout);
+    let _ = std::io::stderr().write_all(&output.stderr);
+    if !output.status.success() {
+        return Err(format!("`{display}` exited with {}", output.status));
+    }
+    if !String::from_utf8_lossy(&output.stdout).contains(expect) {
+        return Err(format!(
+            "`{display}` exited 0 without reporting `{expect}`; the gate did not confirm its own result"
+        ));
+    }
+    Ok(())
 }
