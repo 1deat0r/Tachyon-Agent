@@ -7,12 +7,20 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
+# Provider transport. `ring` only, never the default `aws-lc-rs`: no C
+# toolchain or cmake on the build host, and both crates' licenses are
+# already on deny.toml's allow list. Roots come from the platform store
+# rather than a bundled list, so a private CA is an operator setting and
+# not a rebuild (docs/06, "Provider transport").
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tachyon-retrieval = { version = "0.0.1", path = "../tachyon-retrieval" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [lints]
 workspace = true

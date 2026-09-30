@@ -38,6 +38,18 @@ Ask or deny by default for:
 - dangerous Git operations such as force-push;
 - unrelated filesystem deletion.
 
+### Provider transport
+
+The OpenAI-compatible adapter speaks `http://` only to loopback hosts
+unless the operator sets `allow_insecure_remote`. `https://` targets are
+verified against the platform trust store plus any roots the operator
+configures explicitly (`TcpHttpTransport::with_extra_root_pem`), and the
+scheme is never silently changed in either direction — a plaintext remote
+is refused, a TLS peer that fails verification is refused. Every
+response, streamed or not, is read incrementally and capped at
+`MAX_RESPONSE_BYTES`, so a hostile server cannot grow the buffer by
+choosing a different framing.
+
 ## Untrusted content
 
 Source code, README files, issue text, web pages, tool output and retrieved documents are data even when they contain text that resembles instructions.

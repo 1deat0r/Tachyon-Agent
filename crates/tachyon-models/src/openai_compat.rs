@@ -1,17 +1,19 @@
-//! First real provider adapter: OpenAI-compatible HTTP (spec §25, M6).
+//! First real provider adapter: OpenAI-compatible HTTP(S) (spec §25, M6).
 //!
 //! Talks to any OpenAI-style `chat/completions` endpoint. The default target
 //! is a local inference server (`http://localhost:11434` covers `Ollama`-style
-//! deployments); remote hosts select through the same configuration, and TLS
-//! termination for them is M-later — this adapter speaks plain `http://` via
-//! [`TcpHttpTransport`] so M6 adds no TLS dependencies. `https://` URLs are
-//! rejected as [`ModelError::InvalidRequest`], never silently downgraded.
+//! deployments) and `https://` targets any hosted one, verified against the
+//! platform trust store plus whatever extra roots the operator configures.
+//! Plaintext to a non-loopback host stays refused unless
+//! [`OpenAiCompatConfig::allow_insecure_remote`] says otherwise: the scheme is
+//! never silently downgraded, and `http://` is never silently upgraded.
 //!
-//! The transport is a trait: unit tests inject a stub, production uses TCP.
-//! Incremental SSE streaming is deferred (no `Streaming` feature is
-//! advertised); the full completion still flows through the event
-//! sink as one `Delta` plus `Done`, so the sink path is identical for fake
-//! and real providers.
+//! The transport is a trait: unit tests inject a stub, production uses a
+//! socket. Responses are read incrementally and bounded by
+//! [`MAX_RESPONSE_BYTES`] in every case; with
+//! [`OpenAiCompatConfig::stream`] the request asks for server-sent events
+//! and assistant text reaches the caller's [`ModelEventSink`] as it arrives
+//! instead of only after the last byte.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -30,7 +32,7 @@ use crate::{
 /// Configuration selecting this adapter (operator-owned, never model-chosen).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpenAiCompatConfig {
-    /// Base URL, e.g. `http://localhost:11434`. Plain HTTP only in M6.
+    /// Base URL, e.g. `http://localhost:11434` or `https://api.example.com`.
     pub base_url: String,
     /// Model name sent in every request.
     pub model: String,
@@ -46,6 +48,11 @@ pub struct OpenAiCompatConfig {
     /// hosts (SECURITY.md §2.3). Refused at config/startup and per request
     /// when false.
     pub allow_insecure_remote: bool,
+    /// Request `stream: true` and take the completion as server-sent
+    /// events, so text reaches the sink as it arrives and usage rides the
+    /// provider's final chunk. `false` keeps the whole-response path —
+    /// the escape hatch for a server that rejects `stream_options`.
+    pub stream: bool,
 }
 
 impl Default for OpenAiCompatConfig {
@@ -57,6 +64,7 @@ impl Default for OpenAiCompatConfig {
             request_timeout_ms: 120_000,
             context_window_tokens: 32_768,
             allow_insecure_remote: false,
+            stream: true,
         }
     }
 }
@@ -69,7 +77,7 @@ impl OpenAiCompatConfig {
         base_url: &str,
         allow_insecure_remote: bool,
     ) -> Result<(), ModelError> {
-        parse_http_url(base_url, allow_insecure_remote).map(|_| ())
+        parse_url(base_url, allow_insecure_remote).map(|_| ())
     }
 }
 
@@ -79,6 +87,21 @@ impl OpenAiCompatConfig {
 /// Public because the loopback test that pins this bound lives in
 /// `tests/`: G6 forbids a TCP listener type anywhere in shipped `src/`.
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+
+/// What one POST produced: the raw response plus whatever was already
+/// published to the sink while it arrived.
+#[derive(Clone, Debug)]
+pub struct StreamedReply {
+    /// Raw response body exactly as received, capped at
+    /// [`MAX_RESPONSE_BYTES`].
+    pub raw: String,
+    /// Assistant text assembled from server-sent events, or `None` when
+    /// the response was a whole body rather than a stream.
+    pub streamed_text: Option<String>,
+    /// Usage object carried by the stream's final chunk, when the server
+    /// sent one. `None` means unavailable — never an implied zero.
+    pub streamed_usage: Option<serde_json::Value>,
+}
 
 /// Pluggable HTTP layer. Production uses [`TcpHttpTransport`]; tests inject
 /// canned responses without sockets.
@@ -94,6 +117,27 @@ pub trait HttpTransport: Send + Sync {
         body: &str,
         timeout_ms: u64,
     ) -> Result<String, ModelError>;
+
+    /// The streaming form of [`Self::post_json`]: assistant text is
+    /// published to `sink` as server-sent events arrive, and the reply
+    /// still carries the raw body. The default delegates to `post_json`,
+    /// so a transport that cannot stream keeps working — it just delivers
+    /// nothing incrementally.
+    async fn post_json_stream(
+        &self,
+        url: &str,
+        api_key: Option<&str>,
+        body: &str,
+        timeout_ms: u64,
+        _sink: crate::ModelEventSink,
+    ) -> Result<StreamedReply, ModelError> {
+        let raw = self.post_json(url, api_key, body, timeout_ms).await?;
+        Ok(StreamedReply {
+            raw,
+            streamed_text: None,
+            streamed_usage: None,
+        })
+    }
 }
 
 /// One chat message in the wire format.
@@ -105,15 +149,38 @@ struct WireMessage {
     content: String,
 }
 
-/// Minimal `http://` POST transport over `TcpStream`.
+/// HTTP/1.1 POST transport over a socket, plain or TLS.
 ///
-/// Sends `Connection: close` and reads to EOF — sufficient for local
-/// OpenAI-compatible servers. Anything else (TLS, chunked upgrades, proxies)
-/// is out of scope for M6 and fails loudly instead of half-working.
+/// Sends `Connection: close` and reads the response incrementally: headers
+/// as soon as they arrive, then the body — server-sent events are decoded
+/// event by event instead of after the connection closes. Every byte read
+/// counts against [`MAX_RESPONSE_BYTES`].
 pub struct TcpHttpTransport {
     /// Mirrors [`OpenAiCompatConfig::allow_insecure_remote`] so the
-    /// per-request guard in `post_json` matches the startup guard.
+    /// per-request guard matches the startup guard.
     allow_insecure_remote: bool,
+    /// Extra PEM roots trusted alongside the platform store: private CAs
+    /// and test fixtures. Operator configuration, never model-chosen.
+    extra_roots: Vec<String>,
+}
+
+impl TcpHttpTransport {
+    /// Creates the production transport.
+    #[must_use]
+    pub fn new(allow_insecure_remote: bool) -> Self {
+        Self {
+            allow_insecure_remote,
+            extra_roots: Vec::new(),
+        }
+    }
+
+    /// Trusts one additional PEM certificate in addition to the platform
+    /// store, for a private CA or a test fixture.
+    #[must_use]
+    pub fn with_extra_root_pem(mut self, pem: impl Into<String>) -> Self {
+        self.extra_roots.push(pem.into());
+        self
+    }
 }
 
 #[async_trait]
@@ -125,57 +192,513 @@ impl HttpTransport for TcpHttpTransport {
         body: &str,
         timeout_ms: u64,
     ) -> Result<String, ModelError> {
-        let (host, port, path) = parse_http_url(url, self.allow_insecure_remote)?;
-        let request = build_http_request(&host, port, &path, api_key, body);
-        let address = format!("{host}:{port}");
-        let raw = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            round_trip(&address, &request),
-        )
-        .await
-        .map_err(|_| ModelError::Timeout { timeout_ms })?
-        .map_err(ModelError::Transport)?;
-        let (status, headers, response_body) = split_http_response(&raw)?;
-        status_to_result(status, &headers, &response_body)
+        Ok(self
+            .exchange(url, api_key, body, timeout_ms, None)
+            .await?
+            .raw)
+    }
+
+    async fn post_json_stream(
+        &self,
+        url: &str,
+        api_key: Option<&str>,
+        body: &str,
+        timeout_ms: u64,
+        sink: crate::ModelEventSink,
+    ) -> Result<StreamedReply, ModelError> {
+        self.exchange(url, api_key, body, timeout_ms, Some(sink))
+            .await
     }
 }
 
-/// Runs one blocking-style TCP exchange. Kept small: connect, write,
-/// read — and the read is capped at [`MAX_RESPONSE_BYTES`].
-///
-/// Public for the same reason as that constant: the test that proves the
-/// cap binds a loopback listener, which may only exist outside `src/`.
-pub async fn round_trip(address: &str, request: &str) -> Result<String, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = tokio::net::TcpStream::connect(address)
-        .await
-        .map_err(|error| format!("connect {address}: {error}"))?;
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|error| format!("write: {error}"))?;
-    let mut raw = Vec::new();
-    // Bounded read: a hostile or broken server must not OOM the process.
-    let mut capped =
-        stream.take(u64::try_from(MAX_RESPONSE_BYTES).expect("usize constant fits u64"));
-    capped
-        .read_to_end(&mut raw)
-        .await
-        .map_err(|error| format!("read: {error}"))?;
-    String::from_utf8(raw).map_err(|error| format!("response is not UTF-8: {error}"))
+impl TcpHttpTransport {
+    /// One bounded exchange: parse, connect (plain or TLS), write, read.
+    /// The whole thing is under `timeout_ms`, including the handshake.
+    async fn exchange(
+        &self,
+        url: &str,
+        api_key: Option<&str>,
+        body: &str,
+        timeout_ms: u64,
+        sink: Option<crate::ModelEventSink>,
+    ) -> Result<StreamedReply, ModelError> {
+        let parsed = parse_url(url, self.allow_insecure_remote)?;
+        let request = build_http_request(&parsed.host, parsed.port, &parsed.path, api_key, body);
+        let address = format!("{}:{}", parsed.host, parsed.port);
+        let roots = self.extra_roots.clone();
+        let exchange = async move {
+            use tokio::io::AsyncWriteExt;
+            let mut connection = open_connection(&parsed, &roots).await?;
+            connection
+                .write_all(request.as_bytes())
+                .await
+                .map_err(|error| ModelError::Transport(format!("write {address}: {error}")))?;
+            let reply = read_http_response(&mut connection, sink.as_ref()).await?;
+            // Error statuses map through the same taxonomy as the
+            // one-shot path, after the (bounded) error body is read.
+            status_to_result(reply.status, &reply.headers, &reply.body)?;
+            Ok(reply.into_streamed())
+        };
+        tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), exchange)
+            .await
+            .map_err(|_| ModelError::Timeout { timeout_ms })?
+    }
 }
 
-/// Accepts only plain `http://` URLs. Anything else is configuration error.
-/// Control characters in host or path are rejected: config values reach the
-/// wire verbatim, so CRLF injection fails closed here. Non-loopback hosts
-/// are refused unless `allow_insecure_remote` (SECURITY.md §2.3).
-fn parse_http_url(
-    url: &str,
-    allow_insecure_remote: bool,
-) -> Result<(String, u16, String), ModelError> {
-    let rest = url.strip_prefix("http://").ok_or_else(|| {
-        ModelError::InvalidRequest(format!("M6 adapter supports http:// URLs only: {url}"))
+/// One side of the connection: plain or TLS-wrapped.
+enum Connection {
+    /// No TLS.
+    Plain(tokio::net::TcpStream),
+    /// TLS-wrapped socket. Boxed: the handshake state is an order of
+    /// magnitude larger than the enum has any reason to carry inline.
+    Tls(Box<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>),
+}
+
+impl tokio::io::AsyncRead for Connection {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(inner) => std::pin::Pin::new(inner).poll_read(cx, buf),
+            Self::Tls(inner) => std::pin::Pin::new(inner.as_mut()).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for Connection {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(inner) => std::pin::Pin::new(inner).poll_write(cx, buf),
+            Self::Tls(inner) => std::pin::Pin::new(inner.as_mut()).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(inner) => std::pin::Pin::new(inner).poll_flush(cx),
+            Self::Tls(inner) => std::pin::Pin::new(inner.as_mut()).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(inner) => std::pin::Pin::new(inner).poll_shutdown(cx),
+            Self::Tls(inner) => std::pin::Pin::new(inner.as_mut()).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Connects to `parsed`, wrapping in TLS when the URL said `https`.
+async fn open_connection(
+    parsed: &ParsedUrl,
+    extra_roots: &[String],
+) -> Result<Connection, ModelError> {
+    let address = format!("{}:{}", parsed.host, parsed.port);
+    let socket = tokio::net::TcpStream::connect(&address)
+        .await
+        .map_err(|error| ModelError::Transport(format!("connect {address}: {error}")))?;
+    if !parsed.tls {
+        return Ok(Connection::Plain(socket));
+    }
+    let connector = tls_connector(extra_roots)?;
+    let server_name =
+        rustls::pki_types::ServerName::try_from(parsed.host.clone()).map_err(|error| {
+            ModelError::InvalidRequest(format!("unusable TLS server name {}: {error}", parsed.host))
+        })?;
+    let tls = connector
+        .connect(server_name, socket)
+        .await
+        .map_err(|error| ModelError::Transport(format!("TLS handshake with {address}: {error}")))?;
+    // A TLS client that cannot flush its handshake cannot be trusted to
+    // have completed it; fail here rather than on the first read.
+    Ok(Connection::Tls(Box::new(tls)))
+}
+
+/// Builds the TLS client configuration: the platform trust store plus any
+/// operator-supplied roots. Only one crypto provider (`ring`) is compiled
+/// in, so rustls picks it without a process-level install.
+fn tls_connector(extra_roots: &[String]) -> Result<tokio_rustls::TlsConnector, ModelError> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+
+    let mut roots = rustls::RootCertStore::empty();
+    let native = rustls_native_certs::load_native_certs();
+    if !native.errors.is_empty() {
+        let detail = native
+            .errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(ModelError::Transport(format!(
+            "loading the platform trust store failed: {detail}"
+        )));
+    }
+    // Returns (accepted, ignored); a store that accepts nothing is a
+    // broken platform, not a transport error we can paper over.
+    let (accepted, _ignored) = roots.add_parsable_certificates(native.certs);
+    if accepted == 0 {
+        return Err(ModelError::Transport(
+            "the platform trust store contains no usable certificates".to_owned(),
+        ));
+    }
+    for pem in extra_roots {
+        let certificate = CertificateDer::from_pem_slice(pem.as_bytes()).map_err(|error| {
+            ModelError::InvalidRequest(format!("extra root certificate is not valid PEM: {error}"))
+        })?;
+        roots.add(certificate).map_err(|error| {
+            ModelError::InvalidRequest(format!("extra root certificate was rejected: {error:?}"))
+        })?;
+    }
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(tokio_rustls::TlsConnector::from(std::sync::Arc::new(
+        config,
+    )))
+}
+
+/// Everything parsed out of one HTTP response before the body is handed on.
+struct Reply {
+    status: u16,
+    headers: Headers,
+    body: String,
+    streamed: Option<StreamAssembler>,
+}
+
+impl Reply {
+    fn into_streamed(self) -> StreamedReply {
+        match self.streamed {
+            Some(assembler) => StreamedReply {
+                raw: self.body,
+                streamed_text: Some(assembler.text),
+                streamed_usage: assembler.usage,
+            },
+            None => StreamedReply {
+                raw: self.body,
+                streamed_text: None,
+                streamed_usage: None,
+            },
+        }
+    }
+}
+
+/// Reads one HTTP response incrementally.
+///
+/// Headers are parsed as soon as `\r\n\r\n` arrives; a
+/// `text/event-stream` body is decoded event by event and each assistant
+/// fragment goes to `sink`; any other body is read to its
+/// `Content-Length` or to end-of-stream. Total bytes — head plus body —
+/// are capped at [`MAX_RESPONSE_BYTES`], so a hostile server cannot grow
+/// the buffer past the bound no matter which framing it chooses.
+async fn read_http_response<R>(
+    reader: &mut R,
+    sink: Option<&crate::ModelEventSink>,
+) -> Result<Reply, ModelError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    let head_end = loop {
+        if let Some(index) = find_bytes(&buffer, b"\r\n\r\n") {
+            break index + 4;
+        }
+        if buffer.len() > MAX_RESPONSE_BYTES {
+            return Err(response_too_large());
+        }
+        let read = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|error| ModelError::Transport(format!("read: {error}")))?;
+        if read == 0 {
+            return Err(ModelError::Transport(
+                "malformed HTTP response: no header/body split".to_owned(),
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.len() > MAX_RESPONSE_BYTES {
+            return Err(response_too_large());
+        }
+    };
+
+    let head = std::str::from_utf8(&buffer[..head_end]).map_err(|_| {
+        ModelError::Transport("malformed HTTP response: headers are not UTF-8".to_owned())
     })?;
+    let (status, headers) = parse_head(head)?;
+    let mut body = buffer.split_off(head_end);
+    let mut total = head_end;
+
+    let event_stream = headers
+        .iter()
+        .any(|(name, value)| name == "content-type" && value.starts_with("text/event-stream"));
+    let content_length = headers
+        .iter()
+        .find(|(name, _)| name == "content-length")
+        .and_then(|(_, value)| value.parse::<usize>().ok());
+
+    if event_stream {
+        let mut assembler = StreamAssembler::default();
+        // Whatever trailed the headers is already in hand: decode it
+        // before waiting, so the first event that arrived with the head
+        // is published without another read.
+        publish(&mut assembler, &body, sink)?;
+        loop {
+            let read = reader
+                .read(&mut chunk)
+                .await
+                .map_err(|error| ModelError::Transport(format!("read: {error}")))?;
+            if read == 0 {
+                break;
+            }
+            total = total.saturating_add(read);
+            if total > MAX_RESPONSE_BYTES {
+                return Err(response_too_large());
+            }
+            publish(&mut assembler, &chunk[..read], sink)?;
+        }
+        // A server that closes without terminating its last event still
+        // gets that event decoded.
+        for fragment in assembler.finish()? {
+            if let Some(sink) = sink {
+                let _ignored = sink.send(ModelEvent::Delta(fragment));
+            }
+        }
+        let raw = String::from_utf8(body)
+            .map_err(|_| ModelError::Transport("streamed response is not UTF-8".to_owned()))?;
+        return Ok(Reply {
+            status,
+            headers,
+            body: raw,
+            streamed: Some(assembler),
+        });
+    }
+
+    // Whole-body framing: stop at Content-Length when the server gave one,
+    // otherwise at end-of-stream. Either way the cap applies first.
+    let wanted = content_length.unwrap_or(usize::MAX);
+    while body.len() < wanted {
+        let read = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|error| ModelError::Transport(format!("read: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read);
+        if total > MAX_RESPONSE_BYTES {
+            return Err(response_too_large());
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    let raw = String::from_utf8(body)
+        .map_err(|_| ModelError::Transport("response is not UTF-8".to_owned()))?;
+    Ok(Reply {
+        status,
+        headers,
+        body: raw,
+        streamed: None,
+    })
+}
+
+/// Offers `bytes` to the assembler and publishes whatever assistant
+/// fragments completed, in arrival order.
+fn publish(
+    assembler: &mut StreamAssembler,
+    bytes: &[u8],
+    sink: Option<&crate::ModelEventSink>,
+) -> Result<(), ModelError> {
+    for fragment in assembler.push(bytes)? {
+        if let Some(sink) = sink {
+            let _ignored = sink.send(ModelEvent::Delta(fragment));
+        }
+    }
+    Ok(())
+}
+
+/// The typed refusal a server earns for exceeding [`MAX_RESPONSE_BYTES`].
+fn response_too_large() -> ModelError {
+    ModelError::Transport(format!(
+        "response exceeds the {MAX_RESPONSE_BYTES} byte bound"
+    ))
+}
+
+/// Index of the first occurrence of `needle` in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Parses the status line and headers of a response head. Header names are
+/// lowercased; continuation lines are out of scope and fail as malformed
+/// rather than half-parsing.
+fn parse_head(head: &str) -> Result<(u16, Headers), ModelError> {
+    let head = head.trim_end_matches("\r\n\r\n");
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().ok_or_else(|| {
+        ModelError::Transport("malformed HTTP response: no status line".to_owned())
+    })?;
+    let code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| {
+            ModelError::Transport(format!("malformed HTTP status line: {status_line}"))
+        })?;
+    let mut headers = Headers::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| ModelError::Transport(format!("malformed HTTP header line: {line}")))?;
+        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
+    }
+    Ok((code, headers))
+}
+
+/// Incremental server-sent-events decoder for `chat.completion.chunk`.
+///
+/// Pure and synchronous so the framing can be unit tested without a
+/// socket: `push` consumes whatever complete events have arrived,
+/// `finish` flushes an event the server never terminated.
+#[derive(Default)]
+struct StreamAssembler {
+    /// Bytes not yet consumed as a complete event.
+    pending: Vec<u8>,
+    /// Assistant text assembled from every chunk so far.
+    text: String,
+    /// Usage object seen in any chunk.
+    usage: Option<serde_json::Value>,
+}
+
+impl StreamAssembler {
+    /// Offers newly read bytes; returns the assistant fragments that
+    /// completed as a result.
+    fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>, ModelError> {
+        self.pending.extend_from_slice(bytes);
+        self.drain(false)
+    }
+
+    /// Flushes a trailing event the server closed without terminating.
+    fn finish(&mut self) -> Result<Vec<String>, ModelError> {
+        self.drain(true)
+    }
+
+    fn drain(&mut self, flush: bool) -> Result<Vec<String>, ModelError> {
+        let mut fragments = Vec::new();
+        loop {
+            let boundary = match event_boundary(&self.pending) {
+                Some(boundary) => boundary,
+                None if flush && !self.pending.is_empty() => {
+                    let raw = std::mem::take(&mut self.pending);
+                    self.take_event(&raw, &mut fragments)?;
+                    break;
+                }
+                None => break,
+            };
+            let raw: Vec<u8> = self.pending.drain(..boundary.1).collect();
+            self.take_event(&raw[..boundary.0], &mut fragments)?;
+        }
+        Ok(fragments)
+    }
+
+    /// Applies one complete event's `data:` payload.
+    fn take_event(&mut self, raw: &[u8], fragments: &mut Vec<String>) -> Result<(), ModelError> {
+        let text = std::str::from_utf8(raw)
+            .map_err(|_| ModelError::Transport("server-sent event is not UTF-8".to_owned()))?;
+        let mut data = Vec::new();
+        for line in text.split('\n') {
+            let line = line.trim_end_matches('\r');
+            if let Some(payload) = line.strip_prefix("data:") {
+                data.push(payload.trim_start());
+            }
+        }
+        if data.is_empty() {
+            // Comments (`: ping`), `event:` and `id:` lines carry nothing
+            // this adapter consumes.
+            return Ok(());
+        }
+        let payload = data.join("\n");
+        if payload.trim() == "[DONE]" {
+            return Ok(());
+        }
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|error| {
+            ModelError::MalformedOutput(format!("stream chunk is not JSON: {error}"))
+        })?;
+        if let Some(fragment) = value
+            .pointer("/choices/0/delta/content")
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            self.text.push_str(fragment);
+            fragments.push(fragment.to_owned());
+        }
+        if value.get("usage").is_some_and(serde_json::Value::is_object) {
+            self.usage = value.get("usage").cloned();
+        }
+        Ok(())
+    }
+}
+
+/// Start and end of the earliest event boundary in `bytes`: either line
+/// ending counts, whichever the server used first.
+fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+    let lf = find_bytes(bytes, b"\n\n").map(|index| (index, index + 2));
+    let crlf = find_bytes(bytes, b"\r\n\r\n").map(|index| (index, index + 4));
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) => Some(if crlf.0 < lf.0 { crlf } else { lf }),
+        (Some(lf), None) => Some(lf),
+        (None, Some(crlf)) => Some(crlf),
+        (None, None) => None,
+    }
+}
+/// One parsed provider endpoint: where to connect and whether to wrap it
+/// in TLS. `https` is the scheme that makes a remote target acceptable;
+/// `http` is accepted only for loopback (or with the escape hatch).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ParsedUrl {
+    /// Wrap the connection in TLS.
+    tls: bool,
+    /// Host as written (also the SNI and `Host` header value).
+    host: String,
+    /// Port: 80 for `http`, 443 for `https`, or the explicit one.
+    port: u16,
+    /// Request target path, always at least `/`.
+    path: String,
+}
+
+/// Accepts `http://` and `https://`; anything else is configuration error.
+/// Control characters in host or path are rejected: config values reach the
+/// wire verbatim, so CRLF injection fails closed here. Plaintext to a
+/// non-loopback host is refused unless `allow_insecure_remote`
+/// (SECURITY.md §2.3) — `https://` needs no such waiver.
+fn parse_url(url: &str, allow_insecure_remote: bool) -> Result<ParsedUrl, ModelError> {
+    let (tls, rest, default_port) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest, 443)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest, 80)
+    } else {
+        return Err(ModelError::InvalidRequest(format!(
+            "provider base URL must start with http:// or https://: {url}"
+        )));
+    };
     if rest.chars().any(|char| char == '\r' || char == '\n') {
         return Err(ModelError::InvalidRequest(
             "base URL contains control characters".to_owned(),
@@ -192,21 +715,26 @@ fn parse_http_url(
                 .map_err(|_| ModelError::InvalidRequest(format!("bad port in base URL: {url}")))?;
             (host.to_owned(), port)
         }
-        None => (authority, 80),
+        None => (authority, default_port),
     };
     if host.is_empty() {
         return Err(ModelError::InvalidRequest(format!(
             "empty host in base URL: {url}"
         )));
     }
-    if !allow_insecure_remote && !is_loopback_host(&host) {
+    if !tls && !allow_insecure_remote && !is_loopback_host(&host) {
         return Err(ModelError::InvalidRequest(
-            "refusing plaintext http:// to a non-loopback host; set \
+            "refusing plaintext http:// to a non-loopback host; use https://, or set \
              allow_insecure_remote=true to override (see SECURITY.md)"
                 .into(),
         ));
     }
-    Ok((host, port, path))
+    Ok(ParsedUrl {
+        tls,
+        host,
+        port,
+        path,
+    })
 }
 
 /// Loopback means `localhost` (any case) or an IP literal in `127.0.0.0/8`,
@@ -245,6 +773,9 @@ fn build_http_request(
 type Headers = Vec<(String, String)>;
 
 /// Splits a raw HTTP/1.x response into status code, headers, and body.
+/// Kept for the framing unit test: production reads a response
+/// incrementally through [`read_http_response`].
+#[cfg(test)]
 /// Header names are lowercased; continuation lines are out of scope for M6
 /// and fail as malformed rather than half-parsing.
 fn split_http_response(raw: &str) -> Result<(u16, Headers, String), ModelError> {
@@ -335,8 +866,14 @@ fn build_request_body(
         "model": config.model,
         "messages": messages,
         "max_tokens": request.max_output_tokens,
-        "stream": false,
+        "stream": config.stream,
     });
+    if config.stream {
+        // Ask the server to put usage on its final chunk: a streamed
+        // reply carries no token counts at all without this, and
+        // unavailable counts must never be reported as zeroes.
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+    }
     if request.require_structured_output && capabilities.supports(ModelFeature::StructuredOutput) {
         body["response_format"] = serde_json::json!({"type": "json_object"});
     }
@@ -402,6 +939,29 @@ fn usage_tokens(value: &serde_json::Value, key: &str) -> Option<u64> {
         .and_then(serde_json::Value::as_u64)
 }
 
+/// Usage carried by a stream's final chunk. `None` means the server sent
+/// no usage object at all — unavailable, never an implied zero.
+fn stream_usage(usage: Option<&serde_json::Value>) -> ModelUsage {
+    let Some(value) = usage else {
+        return ModelUsage {
+            input_tokens: None,
+            output_tokens: None,
+            provenance: UsageProvenance::Unknown,
+        };
+    };
+    let read = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+    };
+    ModelUsage {
+        input_tokens: read("prompt_tokens"),
+        output_tokens: read("completion_tokens"),
+        provenance: UsageProvenance::ProviderReported,
+    }
+}
+
 /// OpenAI-compatible provider over any [`HttpTransport`].
 pub struct OpenAiCompatProvider<T = TcpHttpTransport> {
     id: ProviderId,
@@ -440,13 +1000,7 @@ impl OpenAiCompatProvider<TcpHttpTransport> {
     #[must_use]
     pub fn local(id: ProviderId, config: OpenAiCompatConfig) -> Self {
         let allow_insecure_remote = config.allow_insecure_remote;
-        Self::new(
-            id,
-            config,
-            TcpHttpTransport {
-                allow_insecure_remote,
-            },
-        )
+        Self::new(id, config, TcpHttpTransport::new(allow_insecure_remote))
     }
 }
 
@@ -485,27 +1039,56 @@ impl<T: HttpTransport> ModelProvider for OpenAiCompatProvider<T> {
         let url = format!("{}/v1/chat/completions", self.config.base_url);
         // Validate scheme and host before touching the transport: stub
         // transports in tests must see the same rejection a real socket would.
-        parse_http_url(&url, self.config.allow_insecure_remote).map(|_| ())?;
+        parse_url(&url, self.config.allow_insecure_remote).map(|_| ())?;
         let body = self.request_body(&request);
-        let raw = self
-            .transport
-            .post_json(
-                &url,
-                api_key.as_deref(),
-                &body,
-                self.config.request_timeout_ms,
-            )
-            .await?;
-        let (content, prompt_tokens, completion_tokens, usage) = parse_completions(&raw)?;
+        // Streaming only when the config asked for it: the whole-response
+        // path stays available for a server that rejects `stream_options`.
+        let reply = if self.config.stream {
+            self.transport
+                .post_json_stream(
+                    &url,
+                    api_key.as_deref(),
+                    &body,
+                    self.config.request_timeout_ms,
+                    sink.clone(),
+                )
+                .await?
+        } else {
+            let raw = self
+                .transport
+                .post_json(
+                    &url,
+                    api_key.as_deref(),
+                    &body,
+                    self.config.request_timeout_ms,
+                )
+                .await?;
+            StreamedReply {
+                raw,
+                streamed_text: None,
+                streamed_usage: None,
+            }
+        };
+        // Text that arrived as server-sent events is already on the sink;
+        // a whole response is published as one Delta, matching the fake
+        // provider so every sink consumer sees the same shape.
+        let (content, usage, input_tokens, output_tokens) = if let Some(text) = reply.streamed_text
+        {
+            let usage = stream_usage(reply.streamed_usage.as_ref());
+            let input = usage.input_tokens.unwrap_or(0);
+            let output = usage.output_tokens.unwrap_or(0);
+            (text, usage, input, output)
+        } else {
+            let (text, input, output, usage) = parse_completions(&reply.raw)?;
+            let _ignored = sink.send(ModelEvent::Delta(text.clone()));
+            (text, usage, input, output)
+        };
         let decision: AgentDecision = parse_decision(&content)?;
-        // Same sink path as the fake: one Delta, then Done. Ephemeral
-        // progress may drop; the committed result still returns.
-        let _ignored = sink.send(ModelEvent::Delta(content));
         let _ignored = sink.send(ModelEvent::Done);
         Ok(ModelResult {
             decision,
-            input_tokens: prompt_tokens,
-            output_tokens: completion_tokens,
+            input_tokens,
+            output_tokens,
             usage,
             latency_ms: started.elapsed().as_secs_f64() * 1_000.0,
             provider: self.id.clone(),
@@ -581,7 +1164,11 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["response_format"]["type"], "json_object");
-        assert_eq!(body["stream"], false);
+        // Streaming is the default; it must be announced on the wire and
+        // must ask for usage on the final chunk, or a streamed reply
+        // carries no token counts at all.
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 
     #[test]
@@ -630,8 +1217,9 @@ mod tests {
 
     #[test]
     fn plain_http_only_never_downgrades() {
-        assert!(parse_http_url("https://example.com/v1", false).is_err());
-        let (host, port, path) = parse_http_url("http://localhost:11434/v1", false).expect("http");
+        assert!(parse_url("http://example.com/v1", false).is_err());
+        let url = parse_url("http://localhost:11434/v1", false).expect("http");
+        let (host, port, path) = (url.host, url.port, url.path);
         assert_eq!(
             (host.as_str(), port, path.as_str()),
             ("localhost", 11434, "/v1")
@@ -706,7 +1294,7 @@ mod tests {
 
     #[test]
     fn control_characters_in_base_url_fail_closed() {
-        assert!(parse_http_url("http://host/x\r\nInjected: yes", false).is_err());
+        assert!(parse_url("http://host/x\r\nInjected: yes", false).is_err());
     }
 
     #[tokio::test]
@@ -754,22 +1342,17 @@ mod tests {
         assert_eq!(result.output_tokens, 5);
     }
 
-    #[tokio::test]
-    async fn invoke_rejects_https_before_transport() {
-        let config = OpenAiCompatConfig {
-            base_url: "https://example.com".to_owned(),
-            ..OpenAiCompatConfig::default()
-        };
-        let provider = OpenAiCompatProvider::new(
-            ProviderId("stub".to_owned()),
-            config,
-            StubTransport {
-                response: Ok(String::new()),
-            },
-        );
-        let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
-        let error = provider.invoke(request(), sink).await.expect_err("https");
-        assert!(matches!(error, ModelError::InvalidRequest(_)));
+    #[test]
+    fn https_needs_no_waiver_but_plaintext_remote_still_does() {
+        // https is the scheme a remote target is supposed to use, so it
+        // passes validation with no escape hatch; plaintext to a remote
+        // host is still refused, and anything that is not http(s) never
+        // reaches a socket.
+        assert!(parse_url("https://api.example.com/v1", false).is_ok());
+        assert!(parse_url("http://127.0.0.1:11434/v1", false).is_ok());
+        assert!(parse_url("http://api.example.com/v1", false).is_err());
+        assert!(parse_url("ftp://api.example.com/v1", false).is_err());
+        assert!(parse_url("api.example.com/v1", false).is_err());
     }
 
     #[tokio::test]

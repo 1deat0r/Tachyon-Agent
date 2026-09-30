@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Provider adapter: HTTPS and incremental streaming behind the existing
+  `HttpTransport` boundary (handoff priority 3). `https://` targets are
+  now accepted and verified against the platform trust store plus any
+  operator-supplied roots (`TcpHttpTransport::with_extra_root_pem`, for a
+  private CA), while plaintext to a non-loopback host stays refused — the
+  scheme is never changed in either direction. Responses are read
+  incrementally: headers as soon as they arrive, server-sent events
+  decoded event by event with each assistant fragment published to the
+  `ModelEventSink` as it arrives (the first token no longer waits for the
+  connection to close), and a whole-response reply still lands as one
+  Delta so every sink consumer sees the same shape. Requests ask for
+  `stream: true` with `stream_options.include_usage`, so usage rides the
+  provider's final chunk and unavailable counts stay `Unknown` rather
+  than being reported as zeroes; `provider.stream = false` in the config
+  is the escape hatch for a server that rejects `stream_options`. Framing
+  covers Content-Length, close-delimited and SSE bodies under one bound —
+  a response past `MAX_RESPONSE_BYTES` is now a typed `Transport`
+  refusal naming the bound instead of a silent truncation. New deps:
+  `rustls` (ring only), `tokio-rustls`, `rustls-native-certs` — no
+  server-framework crate enters the lock, so G6 stays green, and every
+  license is already on `deny.toml`'s allow list. Real-socket tests in
+  `crates/tachyon-models/tests/http_bounds.rs` cover the round trip, the
+  bound, a first Delta arriving before the stream ends, `https://`
+  routing through TLS, and a full handshake against a private CA.
 - ADR-0006 supervisor-owned evidence execution: the production `fs.read`
   stage now runs as a Supervisor-owned generation instead of a driver-side
   pathname read. Typed requests are fenced by run and revision, every

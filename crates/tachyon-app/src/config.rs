@@ -112,6 +112,10 @@ pub struct ProviderConfig {
     /// Permit plaintext `http://` to non-loopback hosts (default false;
     /// SECURITY.md §2.3). Refused at load when absent or false.
     pub allow_insecure_remote: Option<bool>,
+    /// Take the completion as server-sent events (default true), so text
+    /// reaches the sink as it arrives. Set `false` for a server that
+    /// rejects `stream_options`.
+    pub stream: Option<bool>,
 }
 
 /// A secret resolved from the environment. `Debug` always prints
@@ -275,6 +279,7 @@ impl Config {
                         request_timeout_ms: 60_000,
                         context_window_tokens: 128_000,
                         allow_insecure_remote: section.allow_insecure_remote.unwrap_or(false),
+                        stream: section.stream.unwrap_or(true),
                     },
                 );
                 (
@@ -565,6 +570,7 @@ mod provider_tests {
         let file = FileConfig {
             provider: Some(super::ProviderConfig {
                 kind: "openai_compat".to_owned(),
+                stream: None,
                 base_url: Some("http://127.0.0.1:11434".to_owned()),
                 model: Some("llama-3".to_owned()),
                 api_key_env: Some("TEST_KEY_ENV_NAME".to_owned()),
