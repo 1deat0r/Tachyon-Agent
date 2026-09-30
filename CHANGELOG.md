@@ -24,6 +24,19 @@
   `evidence_crash.rs` and the `evidence.rs` unit tests, plus
   `cargo verify full` at 150/150 verified with concurrent cells measuring
   4–6 overlapping evidence nodes on this path.
+- Repository intelligence and deterministic routing on a real user
+  request: new `Command::Query` + `tachyon query "<question>"`. The
+  gateway routes with `tachyon-router`, indexes the workspace fresh with
+  `tachyon-repo` (inventory scan → `SymbolIndex::build`, content hashes
+  authoritative), and returns definitions and references as source
+  locations with `model_calls: 0`. Zero model calls is structural: the
+  handler never touches a provider, and a route that would need one (or a
+  judge) is refused with `requires_model` instead of being degraded into a
+  lookup — proven by running it on a gateway configured with no provider
+  at all. Adds `requested_symbol` to the router so a plain-word question
+  ("where is serve defined") binds a symbol through the question's cue
+  when the classifier finds no `CamelCase`/`snake_case` candidate. CLI
+  renders a readable answer (bounded); `--json` keeps the raw payload.
 - Moved the bounded HTTP read test out of `openai_compat`'s inline test
   module into `crates/tachyon-models/tests/http_bounds.rs`, exposing
   `MAX_RESPONSE_BYTES` and `round_trip` for it: G6 forbids a TCP listener

@@ -197,12 +197,40 @@ const STOPWORDS: &[&str] = &[
     "who", "the", "this", "that", "these", "those", "with",
 ];
 
+/// Lookup cues: phrases that name the symbol they ask about. Used only
+/// when the classifier found no `CamelCase`/`snake_case` candidate, so a
+/// plain-word question like "where is foo defined" still binds a symbol.
+const CUES: &[&str] = &[
+    "where is",
+    "where are",
+    "where s",
+    "where do",
+    "definition of",
+    "references to",
+    "who calls",
+    "callers of",
+    "usages of",
+    "uses of",
+    "used by",
+    "look up",
+    "search for",
+    "find",
+];
+
+/// Identifier-ish word boundaries, shared by candidate extraction and
+/// symbol binding so both see exactly the same tokens.
+fn tokens(request: &str) -> Vec<&str> {
+    request
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '/'))
+        .map(|token| token.trim_matches(|c| c == '.' || c == '/'))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
 /// Extracts `CamelCase`/`snake_case` tokens as evidence candidates.
 fn extract_candidates(request: &str) -> Vec<String> {
     let mut candidates = Vec::new();
-    for token in request.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '/'))
-    {
-        let token = token.trim_matches(|c| c == '.' || c == '/');
+    for token in tokens(request) {
         if token.len() < 3 || STOPWORDS.contains(&token.to_lowercase().as_str()) {
             continue;
         }
@@ -224,4 +252,48 @@ fn extract_candidates(request: &str) -> Vec<String> {
     }
     candidates.truncate(5);
     candidates
+}
+
+/// The symbol a lookup question is asking about.
+///
+/// Deterministic and pure: the classifier's first candidate when it found
+/// one (`CamelCase`/`snake_case`), otherwise the first substantive token
+/// after the question's lookup cue, otherwise nothing. The caller decides
+/// whether a missing symbol fails closed — this function never guesses
+/// beyond what the text supports.
+#[must_use]
+pub fn requested_symbol(request: &str) -> Option<String> {
+    let candidates = extract_candidates(request);
+    if let Some(first) = candidates.into_iter().next() {
+        return Some(first);
+    }
+    cue_symbol(request)
+}
+
+/// First non-stopword token following a lookup cue.
+fn cue_symbol(request: &str) -> Option<String> {
+    let tokens = tokens(request);
+    let lowered: Vec<String> = tokens.iter().map(|token| token.to_lowercase()).collect();
+    for cue in CUES {
+        let cue_tokens: Vec<&str> = cue.split_whitespace().collect();
+        for start in 0..lowered.len() {
+            let end = start + cue_tokens.len();
+            if end > lowered.len() {
+                break;
+            }
+            let matches = lowered[start..end]
+                .iter()
+                .zip(&cue_tokens)
+                .all(|(token, cue_token)| token == *cue_token);
+            if !matches {
+                continue;
+            }
+            for token in &tokens[end..] {
+                if token.len() >= 3 && !STOPWORDS.contains(&token.to_lowercase().as_str()) {
+                    return Some((*token).to_owned());
+                }
+            }
+        }
+    }
+    None
 }

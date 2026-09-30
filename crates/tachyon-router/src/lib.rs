@@ -10,7 +10,7 @@
 pub mod classifier;
 pub mod plan;
 
-pub use classifier::{Classification, classify};
+pub use classifier::{Classification, classify, requested_symbol};
 pub use plan::{EvidenceOp, RoutePlan};
 use tachyon_telemetry::{Ewma, Recorder, RouteRecord};
 

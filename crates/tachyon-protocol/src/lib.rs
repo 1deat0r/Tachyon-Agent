@@ -195,6 +195,18 @@ pub enum Command {
         /// Artifact to fetch.
         artifact_id: ArtifactId,
     },
+    /// Answer a repository question deterministically: route it, index
+    /// `workspace_root` fresh, and return source locations. Deliberately
+    /// stateless — no task, no journal, and no model provider is ever
+    /// consulted, so a route that would need one is refused rather than
+    /// silently degraded.
+    Query {
+        /// Workspace to search, as given by the operator; the gateway
+        /// rejects roots that do not exist or do not canonicalize.
+        workspace_root: String,
+        /// The user's question in plain text.
+        question: String,
+    },
 }
 
 /// Durable gateway-to-client events. Ephemeral progress (streaming tokens,
@@ -542,6 +554,29 @@ mod tests {
         // StartRun is additive inside protocol v2: no version bump.
         assert_eq!(super::PROTOCOL_VERSION, 2);
         assert_eq!(check_version(super::PROTOCOL_VERSION), Ok(()));
+    }
+
+    #[test]
+    fn query_round_trips_and_is_additive_inside_protocol_v2() {
+        let query = Command::Query {
+            workspace_root: "/srv/scratch/ws".to_owned(),
+            question: "Where is complete_refresh defined and used?".to_owned(),
+        };
+        let bytes = encode_frame(&query).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, query);
+
+        let json: serde_json::Value = serde_json::from_slice(&bytes[FRAME_PREFIX_LEN..]).unwrap();
+        assert_eq!(json["Query"]["workspace_root"], "/srv/scratch/ws");
+        assert_eq!(
+            json["Query"]["question"],
+            "Where is complete_refresh defined and used?"
+        );
+
+        // Query is additive inside protocol v2, like StartRun: a new
+        // stateless command is not a breaking change.
+        assert_eq!(super::PROTOCOL_VERSION, 2);
     }
 
     #[test]

@@ -32,8 +32,14 @@ In one shell, start the runtime; in another, drive it:
 ```bash
 tachyon gateway
 tachyon                # bare invocation opens the TUI (attach)
+
+# Deterministic lookup: routed, indexed fresh, answered with source
+# locations and ZERO model calls. A question that would need a model or
+# a judge is refused with `requires_model`, never degraded into a lookup.
+tachyon query "Where is refreshToken defined and used?"
+
 tachyon session create
-tachyon task create --session <SESSION_ID> "Where is refreshToken defined and used?"
+tachyon task create --session <SESSION_ID> "Fix the refresh race"
 tachyon task list
 ```
 
@@ -45,8 +51,11 @@ tachyon task list
 - **Predictive routing** — cheapest sufficient path first, not a model loop.
 - **Verification-gated completion** — done means proven, not self-reported.
 
-Repository intelligence, predictive routing, and judgment (M4/M5/M7) are
-built and measured, but the run path does not call them yet; their
+Repository intelligence (M4) and predictive routing (M5) now sit on a
+user-facing path: `tachyon query` routes a question with the classifier,
+indexes the workspace fresh (content hashes are authoritative), and
+returns definitions and references with `model_calls: 0`. The `StartRun`
+run path still does not call them, and judgment (M7) is unused, so its
 wire-vs-delete disposition stays open until an ADR decides it.
 
 Start with [`AGENTS.md`](AGENTS.md), then read the domain and architecture

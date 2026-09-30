@@ -1,7 +1,7 @@
 //! Milestone 5 gate: simple routes never plan a model call; complex routes
 //! still launch evidence first; telemetry records everything.
 
-use tachyon_router::{GRACE_MS, RouteClass, Router, plan};
+use tachyon_router::{GRACE_MS, RouteClass, Router, plan, requested_symbol};
 
 #[test]
 fn simple_lookup_never_plans_a_model() {
@@ -95,4 +95,53 @@ fn telemetry_records_every_route() {
     let audit = Router::audit(&plan, &["show-status".to_owned()]);
     assert_eq!(audit.class, "direct_native");
     assert_eq!(audit.model_calls_planned, 0);
+}
+
+#[test]
+fn symbol_binding_prefers_a_classifier_candidate() {
+    assert_eq!(
+        requested_symbol("Where is complete_refresh defined and used?").as_deref(),
+        Some("complete_refresh")
+    );
+    assert_eq!(
+        requested_symbol("Where is SessionStore defined?").as_deref(),
+        Some("SessionStore")
+    );
+    // The first candidate wins: candidates are already ordered by the
+    // text, so binding never jumps ahead of what the user named first.
+    assert_eq!(
+        requested_symbol("compare SessionStore and TokenStore").as_deref(),
+        Some("SessionStore")
+    );
+}
+
+#[test]
+fn symbol_binding_falls_back_to_the_question_cue() {
+    // No CamelCase, no snake_case: the classifier finds nothing, so the
+    // cue after "where is" has to carry the symbol.
+    assert_eq!(
+        requested_symbol("where is serve defined").as_deref(),
+        Some("serve")
+    );
+    assert_eq!(
+        requested_symbol("Who calls flush?").as_deref(),
+        Some("flush")
+    );
+    // Stopwords between the cue and the symbol are skipped.
+    assert_eq!(
+        requested_symbol("where is the parse function defined").as_deref(),
+        Some("parse")
+    );
+}
+
+#[test]
+fn symbol_binding_refuses_to_invent_a_symbol() {
+    assert_eq!(requested_symbol("where is it"), None);
+    assert_eq!(requested_symbol(""), None);
+    assert_eq!(requested_symbol("redesign the scheduler"), None);
+    // Deterministic and pure: same text, same answer, every time.
+    assert_eq!(
+        requested_symbol("Where is serve defined"),
+        requested_symbol("Where is serve defined")
+    );
 }

@@ -101,9 +101,15 @@ fn help_text_documents_the_new_surface_and_keeps_task() {
     };
 
     let root = help(&["--help"]);
-    for word in ["run", "ps", "attach", "pause", "resume", "cancel", "task"] {
+    for word in [
+        "run", "ps", "query", "attach", "pause", "resume", "cancel", "task",
+    ] {
         assert!(root.contains(word), "`--help` missing {word:?}:\n{root}");
     }
+
+    let query = help(&["query", "--help"]);
+    assert!(query.contains("--workspace"), "query help:\n{query}");
+    assert!(query.contains("QUESTION"), "query help:\n{query}");
 
     let run = help(&["run", "--help"]);
     assert!(run.contains("--workspace"), "run help:\n{run}");
@@ -240,6 +246,67 @@ fn run_refuses_honestly_when_no_provider_is_configured() {
     assert!(
         stderr.contains("provider_not_configured"),
         "honest typed refusal expected on stderr: {stderr}"
+    );
+
+    kill_gateway(&mut gateway);
+}
+
+#[test]
+fn query_answers_a_lookup_without_any_provider_configured() {
+    let dir = scratch("query");
+    // No provider at all: `tachyon run` refuses on this gateway (see the
+    // test above), so a lookup that succeeds here structurally never
+    // consulted one.
+    let config = write_config(&dir, false);
+    let data = dir.join("data");
+
+    let mut gateway = tachyon()
+        .args(["--config", &config.display().to_string(), "gateway"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("gateway spawns");
+    wait_for_gateway(&config, &data, &mut gateway);
+
+    let ws = dir.join("workspace");
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(
+        ws.join("src/lib.rs"),
+        "pub fn refresh_session(token: &str) -> String {\n    token.to_owned()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join("src/use.rs"),
+        "fn boot() {\n    let _ = refresh_session(\"x\");\n}\n",
+    )
+    .unwrap();
+
+    let (ok, stdout, stderr) = run_cli(
+        &config,
+        &[
+            "query",
+            "--workspace",
+            &ws.display().to_string(),
+            "Where",
+            "is",
+            "refresh_session",
+            "defined",
+            "and",
+            "used?",
+        ],
+    );
+    assert!(ok, "query must succeed without a provider: {stderr}");
+    assert!(
+        stdout.contains("model calls: 0"),
+        "the answer must state its zero-model contract:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("refresh_session"),
+        "the symbol must be named:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("src/lib.rs"),
+        "fresh definition location expected:\n{stdout}"
     );
 
     kill_gateway(&mut gateway);

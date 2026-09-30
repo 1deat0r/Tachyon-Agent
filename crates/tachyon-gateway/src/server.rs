@@ -961,6 +961,23 @@ fn ok(payload: Value) -> CommandResult {
     CommandResult::Ok { payload }
 }
 
+/// Answers one `Query` (handoff priority 2): containment first, then the
+/// deterministic lookup on a blocking worker. No provider, task or
+/// journal is touched — a route that would need a model is refused with
+/// `requires_model` rather than degraded into a lookup.
+async fn handle_query(workspace_root: &str, question: &str) -> CommandResult {
+    let root = match canonical_workspace_root(workspace_root) {
+        Ok(root) => root,
+        Err(result) => return result,
+    };
+    let question = question.to_owned();
+    match tokio::task::spawn_blocking(move || crate::query::answer(&root, &question)).await {
+        Ok(Ok(payload)) => ok(payload),
+        Ok(Err(refusal)) => fail(refusal.code, refusal.message),
+        Err(error) => fail("internal", format!("query worker failed: {error}")),
+    }
+}
+
 fn fail(code: &str, message: String) -> CommandResult {
     CommandResult::Err {
         code: code.to_owned(),
@@ -1073,6 +1090,10 @@ async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> Command
             "artifact retrieval has no gateway API yet; use the local artifact spool path"
                 .to_owned(),
         ),
+        Command::Query {
+            workspace_root,
+            question,
+        } => handle_query(workspace_root, question).await,
     }
 }
 

@@ -2442,6 +2442,8 @@ dependencies = [
  "tachyon-mutation",
  "tachyon-policy",
  "tachyon-protocol",
+ "tachyon-repo",
+ "tachyon-router",
  "tachyon-store",
  "tachyon-tools",
  "tachyon-types",

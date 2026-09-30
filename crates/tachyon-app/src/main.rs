@@ -82,6 +82,17 @@ enum Commands {
         /// User's objective; the remaining words are joined.
         objective: Vec<String>,
     },
+    /// Answers a repository question deterministically: routes it, indexes
+    /// the workspace fresh, and prints source locations. Zero model calls
+    /// by construction — a question that would need one is refused.
+    Query {
+        /// Workspace to search (canonicalized by the gateway); defaults to
+        /// the current directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// The question; the remaining words are joined.
+        question: Vec<String>,
+    },
     /// Lists tasks as a human-readable table (`--json` keeps JSON).
     Ps,
     /// Opens the TUI against the running gateway, optionally on a task.
@@ -206,6 +217,10 @@ fn run() -> Result<bool> {
             acceptance,
             objective,
         } => run_run(&config, workspace, acceptance, objective.join(" "), json),
+        Commands::Query {
+            workspace,
+            question,
+        } => run_query(&config, workspace, question.join(" "), json),
         Commands::Ps => run_ps(&config, json),
         Commands::Attach { task } => run_attach(&config, task),
         // Top-level aliases: same TaskAction machinery, same commands.
@@ -348,6 +363,134 @@ fn run_run(
         .await?;
         render(&result, json)
     })
+}
+
+/// `tachyon query`: one deterministic lookup over a workspace.
+///
+/// Plumbing only: it sends `Command::Query` and renders what the gateway
+/// returns. The routing decision, the index and the "zero model calls"
+/// guarantee all live on the gateway side; this function adds no agent
+/// logic of its own.
+fn run_query(
+    config: &Config,
+    workspace: Option<PathBuf>,
+    question: String,
+    json: bool,
+) -> Result<bool> {
+    if question.trim().is_empty() {
+        anyhow::bail!("QUESTION is required, e.g. 'Where is complete_refresh defined and used?'");
+    }
+    let address = socket_path(config)?;
+    let workspace = match workspace {
+        Some(path) => path,
+        None => std::env::current_dir().context("resolving current directory")?,
+    };
+    runtime()?.block_on(async move {
+        let result = send(
+            &address,
+            Command::Query {
+                workspace_root: workspace.display().to_string(),
+                question,
+            },
+        )
+        .await?;
+        if json {
+            return render(&result, json);
+        }
+        match &result {
+            CommandResult::Ok { payload } => {
+                print_lookup(payload);
+                Ok(true)
+            }
+            CommandResult::Err { .. } => render(&result, json),
+        }
+    })
+}
+
+/// Renders one lookup payload as a readable answer. Output is bounded so
+/// a dense symbol cannot flood the terminal.
+fn print_lookup(payload: &serde_json::Value) {
+    const MAX_DEFINITIONS: usize = 20;
+    const MAX_REFERENCES: usize = 40;
+
+    let symbol = payload["symbol"].as_str().unwrap_or("?");
+    let route = payload["route_class"].as_str().unwrap_or("?");
+    let confidence = payload["route_confidence"].as_f64().unwrap_or(0.0);
+    let model_calls = payload["model_calls"].as_u64().unwrap_or(1);
+    let files = payload["files_indexed"].as_u64().unwrap_or(0);
+    println!(
+        "{} — {symbol} ({route}, confidence {confidence:.2})",
+        payload["question"].as_str().unwrap_or("")
+    );
+    println!(
+        "model calls: {model_calls} · files indexed: {files} · generation {}",
+        payload["index_generation"].as_u64().unwrap_or(0)
+    );
+    if payload["found"] != serde_json::Value::Bool(true) {
+        println!(
+            "
+no definition or reference; {} lexical match(es) below",
+            { payload["lexical_hits"].as_u64().unwrap_or(0) }
+        );
+    }
+
+    let definitions = payload["definitions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    println!(
+        "
+definitions ({})",
+        definitions.len()
+    );
+    for location in definitions.iter().take(MAX_DEFINITIONS) {
+        println!("  {}", format_location(location));
+    }
+    if definitions.len() > MAX_DEFINITIONS {
+        println!("  … {} more", definitions.len() - MAX_DEFINITIONS);
+    }
+
+    let references = payload["references"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    println!(
+        "
+references ({})",
+        references.len()
+    );
+    for location in references.iter().take(MAX_REFERENCES) {
+        println!("  {}", format_location(location));
+    }
+    if references.len() > MAX_REFERENCES {
+        println!("  … {} more", references.len() - MAX_REFERENCES);
+    }
+    let lexical = payload["lexical_hits"].as_u64().unwrap_or(0);
+    if lexical > 0 {
+        println!(
+            "
+lexical matches: {lexical}"
+        );
+    }
+}
+
+/// One `file:line` location with its excerpt, trimmed to one line.
+fn format_location(location: &serde_json::Value) -> String {
+    let file = location["file"].as_str().unwrap_or("?");
+    let line = location["line"].as_u64().unwrap_or(0);
+    let end = location["end_line"].as_u64().unwrap_or(line);
+    let excerpt = location["excerpt"].as_str().unwrap_or("").trim();
+    let excerpt: String = excerpt.chars().take(110).collect();
+    let range = if end > line {
+        format!("{line}-{end}")
+    } else {
+        line.to_string()
+    };
+    if excerpt.is_empty() {
+        format!("{file}:{range}")
+    } else {
+        format!("{file}:{range}  {excerpt}")
+    }
 }
 
 /// `tachyon ps`: `ListTasks` rendered as a human table.

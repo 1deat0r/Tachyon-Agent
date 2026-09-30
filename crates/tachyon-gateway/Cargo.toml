@@ -16,6 +16,10 @@ tachyon-core = { workspace = true }
 tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
 tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
 tachyon-protocol = { workspace = true }
+# Deterministic `Query` (handoff priority 2): classify with the router,
+# answer from a fresh repository index — never a provider.
+tachyon-repo = { version = "0.0.1", path = "../tachyon-repo" }
+tachyon-router = { version = "0.0.1", path = "../tachyon-router" }
 tachyon-store = { workspace = true }
 tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
 tachyon-types = { workspace = true }
