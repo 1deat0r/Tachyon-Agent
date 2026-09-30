@@ -1,6 +1,8 @@
 # 0002 — Driver re-entry is user-triggered
 
-**Status:** accepted · 2026-09-24
+## Status
+
+accepted · 2026-09-24
 
 ## Context
 

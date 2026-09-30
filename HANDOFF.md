@@ -13,7 +13,7 @@ development rules: [`AGENTS.md`](AGENTS.md) + [`docs/DEVELOPMENT_WORKFLOW.md`](d
 Execute the fix playbook from the full-coverage repo roast, in queue order:
 **T0** honesty/gates batch (this session) → **T1** security (§2.1–§2.7, failing test first each)
 → **T2** correctness (§3.1–§3.9, one failing test per row) → **T3** architecture
-(capability-enum unification → dead-crate ADR-0008 → ADR-0006 slice → benchmark instrumentation →
+(capability-enum unification → dead-crate ADR → ADR-0006 slice → benchmark instrumentation →
 god-file splits). The playbook text lives in this session's conversation; the condensed queue is
 below. Verification discipline after every batch: `cargo verify` green, then `cargo verify full`
 for gate/script changes, plus one targeted mutation per new check (break it on purpose, confirm red).
@@ -140,9 +140,9 @@ Remaining queue:
   model deadline timeout, release_parked Result, shutdown ordering, approval id compare,
   fault-kill marker handshake, shared token budget, spawn_blocking in accept loop,
   scheduler Reconcile + proptest budgets).
-- [This week] ADR-0007 (§45 PARTIAL disposition) + ADR-0008 (dead-crate wire-vs-delete:
-  router/repo/judgment/telemetry form a dead subgraph rooted at `tachyon-judgment` — only
-  consumers are each other's tests).
+- [This week] two planned ADRs — §45 PARTIAL disposition, and dead-crate
+  wire-vs-delete (router/repo/judgment/telemetry form a dead subgraph rooted at
+  `tachyon-judgment` — only consumers are each other's tests); assign numbers when written.
 - [Next] T3 Step 1 capability enum in `tachyon-ir` + conformance test → Step 2 → ADR-0006
   slice → benchmark instrumentation → god-file splits.
 

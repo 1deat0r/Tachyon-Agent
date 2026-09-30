@@ -1,6 +1,8 @@
 # 0004 — Intent substrate as an extension of the verification gate
 
-**Status:** proposed · 2026-09-27
+## Status
+
+proposed · 2026-09-27
 
 ## Context
 

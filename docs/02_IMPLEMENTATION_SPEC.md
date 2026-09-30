@@ -13,9 +13,11 @@ Use one Cargo workspace. Crate responsibilities:
 - `tachyon-types`: identifiers, timestamps, shared low-level value types. No networking/database/runtime ownership.
 - `tachyon-protocol`: versioned gateway commands/events and serialization envelopes.
 - `tachyon-ir`: ExecutionGraph, ExecutionNode, dependencies, access/effect/resource/cancellation/retry semantics, IR validation.
+- `tachyon-intent`: IntentSpec belief records, provenance, correction/clarification data, durable knowledge gating (ADR-0004).
 - `tachyon-store`: SQLite state journal, snapshots, effect/approval records, migrations, artifact metadata.
 - `tachyon-policy`: capability matching, project trust, approvals, path/resource containment decisions.
 - `tachyon-tools`: native capability registry and built-in filesystem/process/git/mutation primitives.
+- `tachyon-mutation`: recoverable multi-file mutation plans, preimage verification, journaled commits, compensation and recovery (§20).
 - `tachyon-repo`: workspace file inventory, hashes, lexical search, AST/symbol/reference indexing, freshness.
 - `tachyon-retrieval`: evidence structures, result merger/ranker, provenance, future external/document retrieval adapters.
 - `tachyon-models`: provider-neutral model requests/results/capability negotiation and provider registry.

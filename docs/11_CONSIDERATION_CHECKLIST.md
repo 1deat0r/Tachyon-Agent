@@ -5,7 +5,7 @@
 **Evidence window:** Prefer **18–24 Sep 2026**. Older best-available sources are labeled with their real date. Local repo facts verified **24 Sep 2026**.
 
 **Status update (2026-09-28):** M14 is frozen. Item #2 is resolved for post-MVP in
-[`docs/adr/0005-acp-v1-gateway-distribution.md`](docs/adr/0005-acp-v1-gateway-distribution.md):
+[`docs/adr/0005-acp-v1-gateway-distribution.md`](adr/0005-acp-v1-gateway-distribution.md):
 TUI-first remains the MVP choice; ACP v1 through the local gateway is the first
 post-MVP editor-client target. The rankings and proposed sequence below preserve
 the checklist’s 24 September decision state.

@@ -1,6 +1,8 @@
 # 0003 — Skeleton v2: committed permission layer, nightly acceptance gates
 
-**Status:** accepted · 2026-09-26
+## Status
+
+accepted · 2026-09-26
 
 ## Context
 

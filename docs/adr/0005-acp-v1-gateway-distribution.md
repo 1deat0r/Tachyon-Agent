@@ -1,6 +1,8 @@
 # 0005 — ACP v1 through the local gateway
 
-**Status:** accepted · 2026-09-28
+## Status
+
+accepted · 2026-09-28
 
 **Decision revision:** 2
 

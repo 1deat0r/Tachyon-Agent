@@ -1,6 +1,8 @@
 # 0001 — Env-gated fault points in production code
 
-**Status:** accepted · 2026-09-24
+## Status
+
+accepted · 2026-09-24
 
 ## Context
 

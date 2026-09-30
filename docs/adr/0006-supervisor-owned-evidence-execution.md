@@ -1,6 +1,8 @@
 # 0006 — Supervisor-owned evidence execution
 
-**Status:** implemented · accepted 2026-09-29, landed 2026-09-30
+## Status
+
+implemented · accepted 2026-09-29, landed 2026-09-30
 
 **Decision revision:** 2
 
