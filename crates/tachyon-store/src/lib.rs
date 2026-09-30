@@ -180,6 +180,32 @@ pub struct TaskRow {
     pub updated_at: i64,
 }
 
+/// One row of `sessions`, including the optional durable Session root.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct SessionRow {
+    /// Session id (hyphenated UUID).
+    pub id: String,
+    /// Creation time (micros since epoch).
+    pub created_at: i64,
+    /// Canonical Session root, or `None` for a legacy session created
+    /// without one.
+    pub workspace_root: Option<String>,
+}
+
+/// One entry of a session's ordered turn skeleton: the turn's sequence
+/// number, the task that occupies it, and that task's canonical status
+/// name. Derived read-only from the `tasks` row (ADR-0005 Session
+/// history).
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct SessionTurn {
+    /// Per-session monotonic turn sequence (dense, starts at 1).
+    pub turn_seq: i64,
+    /// Task occupying this turn.
+    pub task_id: String,
+    /// Task's canonical status name.
+    pub status: String,
+}
+
 /// One row of `task_events`.
 #[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
 pub struct JournalEvent {
@@ -281,13 +307,27 @@ impl StoreWriter {
         &self.database_path
     }
 
-    /// Inserts a session row.
+    /// Inserts a session row without a Session root (legacy behavior).
     pub async fn create_session(&self, session_id: &str) -> Result<(), StoreError> {
+        self.create_session_with_root(session_id, None).await
+    }
+
+    /// Inserts a session row, optionally binding a canonical Session
+    /// root in the same statement. `workspace_root` must already be
+    /// canonicalized and authorized by the caller (the gateway reuses
+    /// its existing workspace validation for that); the store only
+    /// persists what it is given.
+    pub async fn create_session_with_root(
+        &self,
+        session_id: &str,
+        workspace_root: Option<&str>,
+    ) -> Result<(), StoreError> {
         let _guard = self.write.lock().await;
         let now = Timestamp::now().as_micros();
-        sqlx::query("INSERT INTO sessions (id, created_at) VALUES (?, ?)")
+        sqlx::query("INSERT INTO sessions (id, created_at, workspace_root) VALUES (?, ?, ?)")
             .bind(session_id)
             .bind(now)
+            .bind(workspace_root)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -297,6 +337,12 @@ impl StoreWriter {
     /// `snapshot_json` is the initial full-state document; `created_payload`
     /// is the journal payload for seq 0 (a `Created` transition document
     /// owned by `tachyon-core`, opaque here).
+    ///
+    /// The per-session turn sequence is assigned inside the INSERT itself
+    /// (`MAX(turn_seq) + 1` for the session) and enforced by the
+    /// `UNIQUE (session_id, turn_seq)` index, so racing creators can never
+    /// double-assign a turn; the stamp is durable with the row, before any
+    /// run can start, and no later write ever touches it.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_task(
         &self,
@@ -313,8 +359,10 @@ impl StoreWriter {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO tasks (id, session_id, workspace_id, objective, status,
-             revision, snapshot_json, snapshot_seq, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?)",
+             revision, snapshot_json, snapshot_seq, created_at, updated_at, turn_seq)
+             VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?,
+                (SELECT COALESCE(MAX(t.turn_seq), 0) + 1
+                 FROM tasks AS t WHERE t.session_id = ?))",
         )
         .bind(task_id)
         .bind(session_id)
@@ -324,6 +372,7 @@ impl StoreWriter {
         .bind(snapshot_json)
         .bind(now)
         .bind(now)
+        .bind(session_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -547,6 +596,36 @@ impl StoreWriter {
             .await
             .map(|count| count > 0)
             .map_err(StoreError::from)
+    }
+
+    /// Loads a session row (identity plus optional Session root), or
+    /// `None` when absent. Read-only: the gateway's `GetSession` path
+    /// observes through this query and never writes.
+    pub async fn load_session(&self, session_id: &str) -> Result<Option<SessionRow>, StoreError> {
+        sqlx::query_as::<_, SessionRow>(
+            "SELECT id, created_at, workspace_root FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)
+    }
+
+    /// Lists one session's turns in stable ascending sequence order
+    /// (Session history skeleton). Strictly read-only: observes the
+    /// `turn_seq` stamped at creation and never writes.
+    pub async fn load_session_turns(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionTurn>, StoreError> {
+        sqlx::query_as::<_, SessionTurn>(
+            "SELECT turn_seq, id AS task_id, status
+             FROM tasks WHERE session_id = ? ORDER BY turn_seq ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)
     }
 
     /// Ids of tasks that did not reach a terminal state.
@@ -953,7 +1032,7 @@ async fn effect_transition_error_in_tx(
 
 #[cfg(test)]
 mod tests {
-    use super::{EffectMutation, StoreWriter, TransitionState};
+    use super::{EffectMutation, SessionTurn, StoreWriter, TransitionState};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -1334,6 +1413,281 @@ mod tests {
         assert_eq!(store.incomplete_tasks().await.unwrap(), vec!["t"]);
         store.close().await;
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Session-root persistence (ACP slice a): the bound root round-trips
+    /// through a close/reopen of the same store dir, legacy sessions
+    /// report an absent root, and an unknown id is `None`.
+    #[tokio::test]
+    async fn session_root_persists_across_reopen() {
+        let (store, dir) = open_test_store().await;
+        store
+            .create_session_with_root("s-root", Some("/canonical/ws"))
+            .await
+            .unwrap();
+        store.create_session("s-legacy").await.unwrap();
+
+        let with_root = store.load_session("s-root").await.unwrap().unwrap();
+        assert_eq!(with_root.id, "s-root");
+        assert_eq!(with_root.workspace_root.as_deref(), Some("/canonical/ws"));
+        assert!(with_root.created_at > 0);
+        let legacy = store.load_session("s-legacy").await.unwrap().unwrap();
+        assert_eq!(legacy.workspace_root, None, "legacy sessions have no root");
+        assert!(store.load_session("missing").await.unwrap().is_none());
+
+        // Durability: reopen the same store dir — the bound root must
+        // come back byte-identical (the migration upgraded additively).
+        store.close().await;
+        let reopened = StoreWriter::open(&dir).await.unwrap();
+        let after = reopened.load_session("s-root").await.unwrap().unwrap();
+        assert_eq!(
+            after, with_root,
+            "the Session root survives a store restart unchanged"
+        );
+        assert_eq!(
+            reopened.load_session("s-legacy").await.unwrap().unwrap(),
+            legacy
+        );
+        reopened.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---- ACP slice a ticket 02: per-session monotonic turn sequence ----
+
+    /// Sequential creation stamps dense, strictly increasing sequences,
+    /// each starting at 1 within its own session.
+    #[tokio::test]
+    async fn create_task_stamps_strictly_increasing_turn_seq_per_session() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s-a").await.unwrap();
+        store.create_session("s-b").await.unwrap();
+
+        for i in 0..3 {
+            store
+                .create_task(&format!("t-a{i}"), "s-a", "w", "obj", "Created", "{}", "{}")
+                .await
+                .unwrap();
+        }
+        store
+            .create_task("t-b0", "s-b", "w", "obj", "Created", "{}", "{}")
+            .await
+            .unwrap();
+
+        let turn = |seq: i64, id: &str| SessionTurn {
+            turn_seq: seq,
+            task_id: id.to_owned(),
+            status: "Created".to_owned(),
+        };
+        assert_eq!(
+            store.load_session_turns("s-a").await.unwrap(),
+            vec![turn(1, "t-a0"), turn(2, "t-a1"), turn(3, "t-a2")],
+            "per-session sequence is dense and strictly increasing"
+        );
+        assert_eq!(
+            store.load_session_turns("s-b").await.unwrap(),
+            vec![turn(1, "t-b0")],
+            "each session starts its own sequence at 1"
+        );
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Racing creates cannot double-assign: the atomic `MAX+1` INSERT
+    /// under `UNIQUE (session_id, turn_seq)` yields one dense sequence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_create_task_never_double_assigns_a_turn_seq() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        let store = std::sync::Arc::new(store);
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let store = std::sync::Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                store
+                    .create_task(&format!("t{i}"), "s", "w", "obj", "Created", "{}", "{}")
+                    .await
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .unwrap()
+                .expect("every racing create must succeed");
+        }
+
+        let turns = store.load_session_turns("s").await.unwrap();
+        let seqs: Vec<i64> = turns.iter().map(|turn| turn.turn_seq).collect();
+        assert_eq!(
+            seqs,
+            (1..=8).collect::<Vec<i64>>(),
+            "eight racing creates own eight distinct consecutive turns: {turns:?}"
+        );
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A terminal task keeps its stamp; the next create lands strictly
+    /// above it, and the association survives a store reopen.
+    #[tokio::test]
+    async fn terminal_tasks_are_never_restamped_or_reused() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .create_task("t1", "s", "w", "obj", "Created", "{}", "{}")
+            .await
+            .unwrap();
+        store
+            .append_transition(
+                "t1",
+                "status",
+                "{}",
+                TransitionState {
+                    status: "Completed",
+                    revision: 1,
+                    snapshot_json: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_task("t2", "s", "w", "obj", "Created", "{}", "{}")
+            .await
+            .unwrap();
+
+        let turns = store.load_session_turns("s").await.unwrap();
+        assert_eq!(
+            turns,
+            vec![
+                SessionTurn {
+                    turn_seq: 1,
+                    task_id: "t1".to_owned(),
+                    status: "Completed".to_owned(),
+                },
+                SessionTurn {
+                    turn_seq: 2,
+                    task_id: "t2".to_owned(),
+                    status: "Created".to_owned(),
+                },
+            ],
+            "terminal task keeps its stamp; the next turn is strictly above it"
+        );
+
+        store.close().await;
+        let reopened = StoreWriter::open(&dir).await.unwrap();
+        assert_eq!(
+            reopened.load_session_turns("s").await.unwrap(),
+            turns,
+            "turn association and statuses survive a store reopen"
+        );
+        reopened.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Migration 0004 seeds legacy tasks deterministically: ordered by
+    /// `created_at` with the task id breaking same-instant ties, scoped
+    /// per session, then the unique index rejects any double assign.
+    #[tokio::test]
+    async fn migration_seeds_legacy_turn_seq_by_creation_order() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let options = SqliteConnectOptions::new().in_memory(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        // Rebuild the pre-0004 schema exactly as it ships on disk.
+        let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        for file in [
+            "0001_kernel.sql",
+            "0002_effect_node_binding.sql",
+            "0003_session_root.sql",
+        ] {
+            let sql = std::fs::read_to_string(migrations.join(file)).unwrap();
+            // Audited: file text from this crate's own checked-in migrations.
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO sessions (id, created_at) VALUES ('s1', 1), ('s2', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Legacy rows carry no turn_seq; s1 holds a same-instant tie.
+        for (id, session, created_at) in [
+            ("a", "s1", 100_i64),
+            ("b", "s1", 100),
+            ("c", "s1", 50),
+            ("d", "s1", 200),
+            ("z", "s2", 10),
+        ] {
+            sqlx::query(
+                "INSERT INTO tasks (id, session_id, workspace_id, objective, status,
+                 revision, created_at, updated_at)
+                 VALUES (?, ?, 'w', 'obj', 'Created', 0, ?, ?)",
+            )
+            .bind(id)
+            .bind(session)
+            .bind(created_at)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let upgrade = std::fs::read_to_string(migrations.join("0004_turn_seq.sql")).unwrap();
+        // Audited: file text from this crate's own checked-in migrations.
+        sqlx::query(sqlx::AssertSqlSafe(upgrade))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let ranked: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT id, turn_seq FROM tasks WHERE session_id = 's1' ORDER BY turn_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ranked,
+            vec![
+                ("c".to_owned(), 1),
+                ("a".to_owned(), 2),
+                ("b".to_owned(), 3),
+                ("d".to_owned(), 4),
+            ],
+            "legacy rows seed by creation order; id breaks the same-instant tie"
+        );
+        let other: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, turn_seq FROM tasks WHERE session_id = 's2'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            other,
+            vec![("z".to_owned(), 1)],
+            "turn sequences are scoped per session"
+        );
+
+        // The UNIQUE index now forbids claiming an occupied turn.
+        let conflict = sqlx::query(
+            "INSERT INTO tasks (id, session_id, workspace_id, objective, status,
+             revision, created_at, updated_at, turn_seq)
+             VALUES ('dup', 's1', 'w', 'obj', 'Created', 0, 300, 300, 2)",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            conflict.is_err(),
+            "UNIQUE (session_id, turn_seq) rejects a duplicate turn"
+        );
+
+        pool.close().await;
     }
 
     // ---- M11 D4: approval row machine (5-column schema, no migration) ----

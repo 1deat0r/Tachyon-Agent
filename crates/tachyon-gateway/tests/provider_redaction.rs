@@ -88,7 +88,13 @@ async fn registered_key_is_scrubbed_before_any_client_can_read_it() {
     let socket = gateway.address().to_owned();
 
     let ws = cargo_workspace();
-    let session = common::ok(&socket, Command::CreateSession).await;
+    let session = common::ok(
+        &socket,
+        Command::CreateSession {
+            workspace_root: None,
+        },
+    )
+    .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = common::ok(
         &socket,

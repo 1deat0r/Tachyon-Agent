@@ -170,7 +170,13 @@ async fn g5_run_reaches_durable_completed_with_live_events_and_untouched_fixture
     let gateway = start_with(&dir, runtime).await.expect("gateway starts");
     let socket = gateway.address().to_owned();
 
-    let session = ok(&socket, Command::CreateSession).await;
+    let session = ok(
+        &socket,
+        Command::CreateSession {
+            workspace_root: None,
+        },
+    )
+    .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = ok(
         &socket,

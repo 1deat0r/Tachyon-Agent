@@ -93,7 +93,9 @@ async fn drain(
 /// returns the parsed task id and its wire string form.
 async fn seed(client: &CommandClient) -> (TaskId, String) {
     let session = client
-        .call(Command::CreateSession)
+        .call(Command::CreateSession {
+            workspace_root: None,
+        })
         .await
         .expect("CreateSession");
     let session_id: SessionId = session["session_id"]

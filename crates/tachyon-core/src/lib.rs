@@ -1345,6 +1345,41 @@ pub async fn recover_task(
     ))
 }
 
+/// Read-only projection of canonical task state for Session history
+/// replay (ADR-0005): rebuilds the [`TaskState`] from the durable
+/// snapshot and the append-only journal tail — the same rebuild
+/// [`recover_task`] performs — WITHOUT acquiring task ownership,
+/// spawning a supervisor, expiring approvals, or writing anything.
+/// A missing task is [`CoreError::UnknownTask`].
+pub async fn project_task_state(
+    store: &StoreWriter,
+    task_id: TaskId,
+) -> Result<TaskState, CoreError> {
+    let raw = task_id.to_string();
+    let row = store
+        .load_task(&raw)
+        .await?
+        .ok_or(CoreError::UnknownTask(task_id))?;
+    let (mut state, covered, legacy_conversation_snapshot) = starting_state(&row)?;
+    if legacy_conversation_snapshot {
+        // Same legacy-conversation reconstruction as `recover_task`,
+        // read-only: rebuild the conversation the snapshot does not
+        // fully cover from the journal prefix, then seed best-effort.
+        state.conversation.clear();
+        for event in store.load_events_since(&raw, -1).await? {
+            if event.seq > covered {
+                break;
+            }
+            append_legacy_conversation(&mut state, &event)?;
+        }
+        seed_legacy_conversation(&mut state);
+    }
+    for event in store.load_events_since(&raw, covered).await? {
+        apply_journal(&mut state, &event)?;
+    }
+    Ok(state)
+}
+
 /// Snapshot state plus the sequence it covers.
 fn starting_state(row: &TaskRow) -> Result<(TaskState, i64, bool), CoreError> {
     if let (Some(json), Some(seq)) = (&row.snapshot_json, row.snapshot_seq) {
@@ -3260,6 +3295,82 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = Arc::new(StoreWriter::open(&dir).await.unwrap());
         (store, dir)
+    }
+
+    /// `project_task_state` is the read-only Session history projection
+    /// (ADR-0005): deterministic, journal-identical to a from-scratch
+    /// replay, and it never appends a journal row of its own.
+    #[tokio::test]
+    async fn project_task_state_is_deterministic_and_writes_nothing() {
+        let (store, dir) = open_test_store().await;
+        let session = SessionId::generate();
+        store.create_session(&session.to_string()).await.unwrap();
+        let handle = create_task(
+            session,
+            WorkspaceId::generate(),
+            "projection probe".to_owned(),
+            store.clone(),
+        )
+        .await
+        .unwrap();
+        let task_id = handle.task_id();
+        handle.add_message("steering one".to_owned()).await.unwrap();
+        handle.add_message("steering two".to_owned()).await.unwrap();
+        handle.shutdown().await.unwrap();
+
+        let rows_before = store
+            .load_events_since(&task_id.to_string(), -1)
+            .await
+            .unwrap();
+        let first = super::project_task_state(&store, task_id).await.unwrap();
+        let second = super::project_task_state(&store, task_id).await.unwrap();
+        let rows_after = store
+            .load_events_since(&task_id.to_string(), -1)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first.conversation,
+            vec![
+                super::TaskConversationMessage {
+                    speaker: super::TaskConversationSpeaker::User,
+                    content: "steering one".to_owned(),
+                },
+                super::TaskConversationMessage {
+                    speaker: super::TaskConversationSpeaker::User,
+                    content: "steering two".to_owned(),
+                },
+            ],
+            "the projection rebuilds the canonical conversation"
+        );
+        assert_eq!(first, second, "projection must be deterministic");
+        assert_eq!(
+            rows_before.len(),
+            rows_after.len(),
+            "projecting state must append no journal rows"
+        );
+
+        // Deterministic replay of the same journal yields the same state.
+        let row = store
+            .load_task(&task_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let (mut replay, covered, _) = super::starting_state(&row).unwrap();
+        for event in store
+            .load_events_since(&task_id.to_string(), covered)
+            .await
+            .unwrap()
+        {
+            super::apply_journal(&mut replay, &event).unwrap();
+        }
+        assert_eq!(
+            first, replay,
+            "projection must equal a from-scratch replay of the same durable records"
+        );
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

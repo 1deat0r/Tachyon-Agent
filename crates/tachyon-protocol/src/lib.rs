@@ -110,8 +110,25 @@ pub enum Command {
     Ping,
     /// Gateway build, protocol version, and active task counts.
     GetStatus,
-    /// Open a new persistent interaction context.
-    CreateSession,
+    /// Open a new persistent interaction context, optionally binding an
+    /// absolute workspace root as the durable Session root (ADR-0005).
+    /// When supplied, the gateway canonicalizes and authorizes the root
+    /// through the existing workspace validation before persisting it;
+    /// when absent, legacy rootless behavior is kept unchanged.
+    CreateSession {
+        /// Requested workspace root, as given by the operator; must be
+        /// an absolute path (relative input is rejected as
+        /// `workspace_not_absolute`), and is rejected when it does not
+        /// exist or does not canonicalize. `None` binds no root
+        /// (legacy behavior).
+        workspace_root: Option<String>,
+    },
+    /// Fetch a session's durable identity and optional Session root.
+    /// Strictly read-only: nothing is created, mutated, or replayed.
+    GetSession {
+        /// Session to fetch.
+        session_id: SessionId,
+    },
     /// Open a new executable task inside a session.
     CreateTask {
         /// Session that will own the task.
@@ -577,6 +594,41 @@ mod tests {
         // Query is additive inside protocol v2, like StartRun: a new
         // stateless command is not a breaking change.
         assert_eq!(super::PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn session_root_and_get_session_round_trip_and_stay_v2() {
+        let with_root = Command::CreateSession {
+            workspace_root: Some("/srv/scratch/ws".to_owned()),
+        };
+        let bytes = encode_frame(&with_root).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, with_root);
+
+        let without_root = Command::CreateSession {
+            workspace_root: None,
+        };
+        let bytes = encode_frame(&without_root).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, without_root);
+
+        let get = Command::GetSession {
+            session_id: SessionId::generate(),
+        };
+        let bytes = encode_frame(&get).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, get);
+
+        let json: serde_json::Value = serde_json::from_slice(&bytes[FRAME_PREFIX_LEN..]).unwrap();
+        assert!(json["GetSession"]["session_id"].is_string());
+
+        // Both variants are additive inside protocol v2, like StartRun
+        // and Query: no version bump.
+        assert_eq!(super::PROTOCOL_VERSION, 2);
+        assert_eq!(check_version(super::PROTOCOL_VERSION), Ok(()));
     }
 
     #[test]

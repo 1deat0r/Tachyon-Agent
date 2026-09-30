@@ -151,7 +151,12 @@ fn kill_restart_gateway_bin_gates_recovers_task_and_continues() {
     let endpoint = wait_endpoint(&data, &mut child);
     let socket = socket_of(&endpoint);
 
-    let (s_status, s_payload) = send_command(&socket, ProtoCommand::CreateSession);
+    let (s_status, s_payload) = send_command(
+        &socket,
+        ProtoCommand::CreateSession {
+            workspace_root: None,
+        },
+    );
     assert_eq!(s_status, 200, "CreateSession: {s_payload}");
     let session_id: SessionId = s_payload["session_id"]
         .as_str()

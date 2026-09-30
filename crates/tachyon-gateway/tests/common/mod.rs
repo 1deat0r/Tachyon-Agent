@@ -84,7 +84,13 @@ pub fn code_of(err: &str) -> &str {
 
 /// Creates a session and a task through the protocol; returns task id.
 pub async fn new_task(socket: &Path) -> String {
-    let session = ok(socket, Command::CreateSession).await;
+    let session = ok(
+        socket,
+        Command::CreateSession {
+            workspace_root: None,
+        },
+    )
+    .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = ok(
         socket,

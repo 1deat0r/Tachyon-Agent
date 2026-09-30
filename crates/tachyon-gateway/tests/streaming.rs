@@ -164,7 +164,11 @@ impl Client {
 /// Creates a session and a task with `messages` steering messages journalled
 /// after creation (seq 0 = created, seq 1..=messages = messages).
 async fn seeded_task(client: &mut Client, messages: u32) -> (String, String) {
-    let session = client.call(Command::CreateSession).await;
+    let session = client
+        .call(Command::CreateSession {
+            workspace_root: None,
+        })
+        .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = client
         .call(Command::CreateTask {

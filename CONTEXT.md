@@ -11,6 +11,8 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | **Gateway** | Local IPC (and optional remote) boundary. CLI/TUI are MVP clients; the ACP v1 Agent is a post-MVP client target (ADR-0005). Clients talk only to the gateway; no client owns agent decisions. |
 | **Task Supervisor** | Single logical writer of canonical task state for one task. Owns routing, planning, steering, recovery, completion coordination. |
 | **Session** | Persistent user interaction context. Owns zero or more tasks. |
+| **Session root** | One durable canonical workspace identity bound to a Session at creation. Session load requires the same identity; no implicit workspace switches (ADR-0005). |
+| **Session history** | Monotonic, durable record of a Session's turns in stable session order, derived read-only from canonical task state. Replay never creates work or repeats effects (ADR-0005). |
 | **Task** | Executable unit of work with a durable status machine. |
 | **CLI** | `tachyon` binary (`tachyon-app`). Argument parsing, config, output. No decision logic. |
 | **TUI** | Ratatui client (`tachyon-tui`). Pure gateway client (AD-014): display + input only. |

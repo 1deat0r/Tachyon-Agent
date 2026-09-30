@@ -290,7 +290,13 @@ fn run_gateway(config: &Config) -> Result<bool> {
 fn run_session(config: &Config, json: bool) -> Result<bool> {
     let address = socket_path(config)?;
     runtime()?.block_on(async {
-        let result = send(&address, Command::CreateSession).await?;
+        let result = send(
+            &address,
+            Command::CreateSession {
+                workspace_root: None,
+            },
+        )
+        .await?;
         render(&result, json)
     })
 }
@@ -330,7 +336,13 @@ fn run_run(
     }
     runtime()?.block_on(async move {
         let session = expect_ok(
-            send(&address, Command::CreateSession).await,
+            send(
+                &address,
+                Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
             "creating a session",
         )?;
         let session_id = session["session_id"]

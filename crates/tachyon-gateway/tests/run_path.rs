@@ -82,7 +82,13 @@ async fn err(socket: &Path, command: Command) -> String {
 }
 
 async fn new_task(socket: &Path) -> String {
-    let session = ok(socket, Command::CreateSession).await;
+    let session = ok(
+        socket,
+        Command::CreateSession {
+            workspace_root: None,
+        },
+    )
+    .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = ok(
         socket,

@@ -121,7 +121,11 @@ fn percentiles(mut samples: Vec<Duration>) -> (Duration, Duration) {
 
 /// Creates a session and a task through the protocol; returns task id.
 async fn seeded_task(client: &mut Client) -> String {
-    let session = client.call(Command::CreateSession).await;
+    let session = client
+        .call(Command::CreateSession {
+            workspace_root: None,
+        })
+        .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = client
         .call(Command::CreateTask {
@@ -262,7 +266,11 @@ async fn e2e_create_task_to_first_replayed_entry() {
     let address = gateway.address().to_owned();
 
     let mut command = Client::open(&address).await;
-    let session = command.call(Command::CreateSession).await;
+    let session = command
+        .call(Command::CreateSession {
+            workspace_root: None,
+        })
+        .await;
     let session_id: tachyon_types::SessionId =
         session["session_id"].as_str().unwrap().parse().unwrap();
 

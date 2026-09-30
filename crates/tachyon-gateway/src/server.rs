@@ -16,7 +16,9 @@ use tachyon_core::driver::{
     validate_hard_constraint_bindings,
 };
 use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds};
-use tachyon_core::{CoreError, SupervisorHandle, TaskStatus, create_task, recover_task};
+use tachyon_core::{
+    CoreError, SupervisorHandle, TaskStatus, create_task, project_task_state, recover_task,
+};
 use tachyon_models::ModelProvider;
 use tachyon_policy::Policy;
 use tachyon_protocol::{
@@ -985,6 +987,88 @@ fn fail(code: &str, message: String) -> CommandResult {
     }
 }
 
+/// Creates a Session, optionally binding a canonical Session root
+/// (ADR-0005 gateway/store session identity). A supplied root must be
+/// an absolute path (typed `workspace_not_absolute` otherwise — a
+/// relative input would silently resolve against the gateway's cwd)
+/// and is then validated through the SAME workspace validation
+/// `StartRun` and `Query` use BEFORE any row is inserted, so a refused
+/// root never mints a session; an absent root keeps legacy behavior.
+async fn create_session(state: &Arc<GatewayState>, workspace_root: Option<&str>) -> CommandResult {
+    let root = match workspace_root {
+        Some(raw) => {
+            if !Path::new(raw).is_absolute() {
+                return fail(
+                    "workspace_not_absolute",
+                    format!("workspace root {raw} is not an absolute path"),
+                );
+            }
+            match canonical_workspace_root(raw) {
+                Ok(canonical) => Some(canonical.display().to_string()),
+                Err(result) => return result,
+            }
+        }
+        None => None,
+    };
+    let id = tachyon_types::SessionId::generate();
+    match state
+        .store
+        .create_session_with_root(&id.to_string(), root.as_deref())
+        .await
+    {
+        Ok(()) => ok(json!({"session_id": id.to_string()})),
+        Err(err) => fail("internal", err.to_string()),
+    }
+}
+
+/// Answers `GetSession`: strictly read-only — SELECTs over the durable
+/// session row (identity + optional Session root) and the session's
+/// ordered turn history (sequence, task id, canonical status), with each
+/// turn's conversation derived read-only from canonical task state
+/// (snapshot + journal via [`project_task_state`]). Nothing is created,
+/// mutated, or replayed; an unknown id is a typed `unknown_session`.
+async fn get_session(state: &Arc<GatewayState>, session_id: SessionId) -> CommandResult {
+    let id = session_id.to_string();
+    let session = match state.store.load_session(&id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return fail("unknown_session", format!("no session {session_id}")),
+        Err(err) => return fail("internal", err.to_string()),
+    };
+    match state.store.load_session_turns(&id).await {
+        Ok(turns) => {
+            let mut history = Vec::with_capacity(turns.len());
+            for turn in &turns {
+                let task_id: TaskId = match turn.task_id.parse() {
+                    Ok(task_id) => task_id,
+                    Err(err) => {
+                        return fail(
+                            "corrupt_state",
+                            format!("invalid task id {} in session: {err}", turn.task_id),
+                        );
+                    }
+                };
+                let task = match project_task_state(&state.store, task_id).await {
+                    Ok(task) => task,
+                    Err(error) => return core_err(&error),
+                };
+                history.push(json!({
+                    "turn_seq": turn.turn_seq,
+                    "task_id": turn.task_id,
+                    "status": turn.status,
+                    "conversation": task.conversation,
+                }));
+            }
+            ok(json!({
+                "session_id": session.id,
+                "created_at": session.created_at,
+                "workspace_root": session.workspace_root,
+                "turns": history,
+            }))
+        }
+        Err(err) => fail("internal", err.to_string()),
+    }
+}
+
 fn core_err(error: &CoreError) -> CommandResult {
     let code = match error {
         CoreError::UnknownTask(_) => "unknown_task",
@@ -1018,13 +1102,10 @@ async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> Command
             let active = state.supervisors.lock().await.len();
             ok(json!({"protocol_version": PROTOCOL_VERSION, "active_tasks": active}))
         }
-        Command::CreateSession => {
-            let id = tachyon_types::SessionId::generate();
-            match state.store.create_session(&id.to_string()).await {
-                Ok(()) => ok(json!({"session_id": id.to_string()})),
-                Err(err) => fail("internal", err.to_string()),
-            }
+        Command::CreateSession { workspace_root } => {
+            create_session(state, workspace_root.as_deref()).await
         }
+        Command::GetSession { session_id } => get_session(state, *session_id).await,
         Command::CreateTask {
             session_id,
             objective,
@@ -2024,7 +2105,15 @@ mod stale_supervisor_tests {
         let (gateway, dir) = started_gateway().await;
         let state = gateway.state.clone();
 
-        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
+        );
         let session_id: SessionId = session["session_id"]
             .as_str()
             .expect("session id")
@@ -2075,7 +2164,15 @@ mod stale_supervisor_tests {
         let (gateway, dir) = started_gateway().await;
         let state = gateway.state.clone();
 
-        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
+        );
         let session_id: SessionId = session["session_id"]
             .as_str()
             .expect("session id")
@@ -2134,7 +2231,15 @@ mod stale_supervisor_tests {
         let (gateway, dir) = started_gateway().await;
         let state = gateway.state.clone();
 
-        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
+        );
         let session_id: SessionId = session["session_id"]
             .as_str()
             .expect("session id")
@@ -2195,7 +2300,15 @@ mod stale_supervisor_tests {
         let (gateway, dir) = started_gateway().await;
         let state = gateway.state.clone();
 
-        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
+        );
         let session_id: SessionId = session["session_id"]
             .as_str()
             .expect("session id")
@@ -2279,7 +2392,15 @@ mod stale_supervisor_tests {
         let gateway = start_with(&dir, runtime).await.expect("gateway starts");
         let state = gateway.state.clone();
 
-        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
+        );
         let session_id: SessionId = session["session_id"]
             .as_str()
             .expect("session id")
@@ -2384,7 +2505,15 @@ mod stale_supervisor_tests {
         let gateway = start_with(&dir, runtime).await.expect("gateway starts");
         let state = gateway.state.clone();
 
-        let session = ok_payload(handle_command(&state, &Command::CreateSession).await);
+        let session = ok_payload(
+            handle_command(
+                &state,
+                &Command::CreateSession {
+                    workspace_root: None,
+                },
+            )
+            .await,
+        );
         let session_id: SessionId = session["session_id"]
             .as_str()
             .expect("session id")

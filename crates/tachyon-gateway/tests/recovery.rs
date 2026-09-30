@@ -51,7 +51,13 @@ async fn restart_recovers_task_and_continues() {
     let gateway = start(&dir).await.unwrap();
     let socket = gateway.address().to_owned();
 
-    let session = call(&socket, Command::CreateSession).await;
+    let session = call(
+        &socket,
+        Command::CreateSession {
+            workspace_root: None,
+        },
+    )
+    .await;
     let session_id = session["session_id"].as_str().unwrap().to_owned();
     let task = call(
         &socket,
