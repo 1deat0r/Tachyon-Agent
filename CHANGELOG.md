@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Moved the bounded HTTP read test out of `openai_compat`'s inline test
+  module into `crates/tachyon-models/tests/http_bounds.rs`, exposing
+  `MAX_RESPONSE_BYTES` and `round_trip` for it: G6 forbids a TCP listener
+  anywhere in shipped `crates/*/src`, and that gate was red at `9bdf97f`.
 - Repo-roast honesty/gates batch: `GATES.md` → `GATES.json` (structured
   ledger, bytes verified against the original, host paths scrubbed) with
   G11 gaining a real check (`scripts/m14_reconcile_check.mjs`, which

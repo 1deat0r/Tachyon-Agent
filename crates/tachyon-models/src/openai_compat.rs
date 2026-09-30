@@ -75,7 +75,10 @@ impl OpenAiCompatConfig {
 
 /// Upper bound on one HTTP response read, mirroring the judgment transport's
 /// bounded read: a hostile or broken server must not OOM the process.
-const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+///
+/// Public because the loopback test that pins this bound lives in
+/// `tests/`: G6 forbids a TCP listener type anywhere in shipped `src/`.
+pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// Pluggable HTTP layer. Production uses [`TcpHttpTransport`]; tests inject
 /// canned responses without sockets.
@@ -137,8 +140,12 @@ impl HttpTransport for TcpHttpTransport {
     }
 }
 
-/// Runs one blocking-style TCP exchange. Kept small: connect, write, read.
-async fn round_trip(address: &str, request: &str) -> Result<String, String> {
+/// Runs one blocking-style TCP exchange. Kept small: connect, write,
+/// read — and the read is capped at [`MAX_RESPONSE_BYTES`].
+///
+/// Public for the same reason as that constant: the test that proves the
+/// cap binds a loopback listener, which may only exist outside `src/`.
+pub async fn round_trip(address: &str, request: &str) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(address)
         .await
@@ -700,47 +707,6 @@ mod tests {
     #[test]
     fn control_characters_in_base_url_fail_closed() {
         assert!(parse_http_url("http://host/x\r\nInjected: yes", false).is_err());
-    }
-
-    #[tokio::test]
-    async fn huge_response_read_is_bounded() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let address = listener.local_addr().expect("local addr");
-        let server = tokio::spawn(async move {
-            let (mut socket, _peer) = listener.accept().await.expect("accept");
-            // Drain the request head so the eventual close is a clean FIN;
-            // otherwise the kernel resets the connection and the test would
-            // measure reset handling instead of the read bound.
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = socket.read(&mut chunk).await.expect("read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-            }
-            let head = "HTTP/1.1 200 OK\r\nContent-Length: 2097152\r\nConnection: close\r\n\r\n";
-            let oversized_body = "x".repeat(2 * 1024 * 1024);
-            // The client may stop reading at the bound and hang up; a
-            // failed late write is exactly the scenario under test.
-            let _ignored = socket.write_all(head.as_bytes()).await;
-            let _ignored = socket.write_all(oversized_body.as_bytes()).await;
-        });
-        let request =
-            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        let raw = round_trip(&address.to_string(), request)
-            .await
-            .expect("bounded read must not error on an oversized response");
-        assert!(
-            raw.len() <= MAX_RESPONSE_BYTES,
-            "buffered {} bytes, bound is {MAX_RESPONSE_BYTES}",
-            raw.len()
-        );
-        let _ignored = server.await;
     }
 
     #[tokio::test]
