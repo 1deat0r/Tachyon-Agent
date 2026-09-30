@@ -80,7 +80,7 @@ Implement these only after the MVP exit gate or an approved ADR.
 
 ## Local-first development
 
-Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the default local loop, verification tiers, atomic commits, and when GitHub tracking, PRs, and CI add value. For routine work, implement in the current working tree, run `cargo verify`, inspect the diff, and commit. Do not add an Issue, branch, PR, hook, or CI wait solely by convention. Skills may provide planning, implementation, TDD, review, and debugging techniques, but their default process steps do not override this repository policy. Preserve branch protections and other real security/release controls.
+Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the default local loop, verification tiers, atomic commits, and when GitHub tracking, PRs, and CI add value. For routine work, implement in the current working tree, run `cargo verify`, inspect the diff, and commit — **atomically**: one logical change per commit, every commit compiling and `--locked`-clean on its own (the `post-commit` hook pushes each one to `1deat0r/Tachyon-Agent` immediately, so an intermediate commit is a published commit). Never end a session with verified work left uncommitted, and never squash unrelated changes together to save a round trip. Do not add an Issue, branch, PR, hook, or CI wait solely by convention. Skills may provide planning, implementation, TDD, review, and debugging techniques, but their default process steps do not override this repository policy. Preserve branch protections and other real security/release controls.
 
 ### Optional GitHub tracking
 
