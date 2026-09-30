@@ -49,6 +49,13 @@ impl ProcessSpec {
     }
 }
 
+/// The whole of what a child inherits from this process, in addition to
+/// whatever its [`ProcessSpec::env`] declares. Public so callers that need
+/// more (a build toolchain, for instance) can prove their opt-in set is
+/// disjoint from it rather than quietly widening this list.
+pub const INHERITED_ENV_KEYS: &[&str] =
+    &["PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "PATHEXT"];
+
 /// What came back.
 #[derive(Clone, Debug)]
 pub struct ProcessReceipt {
@@ -93,7 +100,7 @@ pub async fn run_cancellable(
     // would hand every caller's secrets to the child *and* record them in
     // the spawn envelope below.
     let mut env: BTreeMap<std::ffi::OsString, std::ffi::OsString> = BTreeMap::new();
-    for key in ["PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "PATHEXT"] {
+    for key in INHERITED_ENV_KEYS {
         if let Some(value) = std::env::var_os(key) {
             env.insert(key.into(), value);
         }

@@ -2,6 +2,70 @@
 #[cfg(all(test, unix))]
 #[path = "runner_tests.rs"]
 mod tests;
+
+/// Locations a build toolchain needs that the process allowlist
+/// deliberately does not inherit. Ordered as documented, not by accident.
+const TOOLCHAIN_ENV_KEYS: &[&str] = &[
+    // Where a Windows child may write: without TEMP/TMP,
+    // `std::env::temp_dir()` falls back to the Windows directory and
+    // rustc's linker response file lands where the runner cannot use it.
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemDrive",
+    // Where the toolchain itself lives.
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+];
+
+/// The toolchain location keys a `program` needs, or `None` for anything
+/// that is not a Rust build tool. Matching is on the file stem, so
+/// `cargo`, `cargo.exe` and `/usr/local/bin/rustc` all count and
+/// `cargo-build` does not.
+fn toolchain_env_keys(program: &str) -> Option<&'static [&'static str]> {
+    let stem = std::path::Path::new(program).file_stem()?.to_str()?;
+    if matches!(stem, "cargo" | "rustc" | "rustup") {
+        return Some(TOOLCHAIN_ENV_KEYS);
+    }
+    None
+}
+
+/// Reads whichever toolchain keys are actually set here. Unset keys are
+/// simply absent — the child then falls back the same way the parent did.
+fn toolchain_env(program: &str) -> std::collections::HashMap<String, String> {
+    toolchain_env_keys(program)
+        .into_iter()
+        .flatten()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_owned(), value))
+        })
+        .collect()
+}
+
+/// Builds a check command's environment: the toolchain locations its
+/// program needs, then whatever the contract declares — a declared value
+/// always wins, because the contract is the caller's explicit decision.
+///
+/// This is an opt-in at this call site, not a wider process allowlist
+/// (see `docs/06_SECURITY_AND_RECOVERY.md`): only a Rust build tool asks,
+/// only non-credential locations are asked for, and build flags such as
+/// `RUSTFLAGS` stay out — those belong in the contract's own `env`.
+fn merge_command_env(
+    program: &str,
+    declared: &BTreeMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut env = toolchain_env(program);
+    for (key, value) in declared {
+        env.insert(key.clone(), value.clone());
+    }
+    env
+}
+
 use crate::{Clause, VerificationPlan, VerifyError, WorkspaceSnapshot, plan::leaf};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -283,11 +347,7 @@ impl CheckRunner {
             program: command.program.clone(),
             args: command.args.clone(),
             cwd: Some(resolved),
-            env: command
-                .env
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
+            env: merge_command_env(&command.program, &command.env),
             timeout: Duration::from_millis(command.timeout_ms),
         };
         // M12 fault point: arm before the child spawns so a kill lands

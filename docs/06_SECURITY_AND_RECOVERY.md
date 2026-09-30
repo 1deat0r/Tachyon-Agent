@@ -118,6 +118,25 @@ model. The gate for this slice is `evidence_generation.rs` (budget, fences,
 retrieval, generation lifecycle) plus `evidence_crash.rs` (kill at the
 `evidence.read` seam, recover, re-enter under a new generation).
 
+### Spawned-process environment
+
+A child process sees only `tachyon_tools::process::INHERITED_ENV_KEYS`
+(`PATH`, `HOME`, `TMPDIR`, `LANG`, `SYSTEMROOT`, `PATHEXT`) plus whatever
+its `ProcessSpec::env` declares. Binding the whole parent environment
+would hand every caller's credentials to the child *and* record them in
+the spawn envelope, so callers opt in per command rather than widening
+the allowlist.
+
+One opt-in is built in: a Rust build tool (`cargo`, `rustc`, `rustup`)
+additionally receives its toolchain *locations* — `TEMP`, `TMP`,
+`USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `SystemDrive`, `CARGO_HOME`,
+`RUSTUP_HOME`, `RUSTUP_TOOLCHAIN`. Without them a nested `cargo` on
+Windows cannot write its linker response file and fails in a way that
+looks like a broken toolchain. Those are locations, not credentials, the
+set is disjoint from the inherited allowlist, and build flags
+(`RUSTFLAGS` and friends) deliberately stay out: they belong in the
+contract's own `env`.
+
 ## Crash uncertainty
 
 If Tachyon cannot establish whether a non-idempotent operation occurred, the correct state is uncertainty, not retry.
