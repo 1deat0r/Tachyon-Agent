@@ -469,6 +469,10 @@ where
             if total > MAX_RESPONSE_BYTES {
                 return Err(response_too_large());
             }
+            // Keep the raw stream as received as well: `StreamedReply::raw`
+            // promises exactly that, and it is what a failed stream gets
+            // diagnosed from. Only the *new* bytes go to the assembler.
+            body.extend_from_slice(&chunk[..read]);
             publish(&mut assembler, &chunk[..read], sink)?;
         }
         // A server that closes without terminating its last event still
@@ -504,6 +508,11 @@ where
             return Err(response_too_large());
         }
         body.extend_from_slice(&chunk[..read]);
+    }
+    // A server may send more than it declared; Content-Length is the
+    // body's length, not a hint.
+    if let Some(len) = content_length {
+        body.truncate(len);
     }
     let raw = String::from_utf8(body)
         .map_err(|_| ModelError::Transport("response is not UTF-8".to_owned()))?;

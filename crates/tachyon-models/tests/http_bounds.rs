@@ -148,6 +148,37 @@ async fn an_oversized_response_is_refused_at_the_bound() {
 }
 
 #[tokio::test]
+async fn content_length_is_the_body_length_not_a_hint() {
+    // A server that sends more than it declared (a proxy that ignores
+    // `Connection: close`) must not have the surplus become our body.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = listener.local_addr().expect("local addr");
+    let server = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        take_request_head(&mut socket).await;
+        let head = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n";
+        let _ignored = socket.write_all(head.as_bytes()).await;
+        let _ignored = socket.write_all(b"1234567890").await;
+    });
+
+    let transport = TcpHttpTransport::new(false);
+    let body = transport
+        .post_json(
+            &format!("http://{address}/v1/chat/completions"),
+            None,
+            "{}",
+            5_000,
+        )
+        .await
+        .expect("the declared body is readable");
+    assert_eq!(body, "12345", "surplus past Content-Length is discarded");
+    server.await.expect("server task");
+}
+
+#[tokio::test]
 async fn server_sent_events_reach_the_sink_before_the_stream_ends() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
