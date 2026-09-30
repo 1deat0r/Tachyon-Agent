@@ -64,6 +64,7 @@ fn chain_node(task: TaskId) -> ExecutionNode {
         invocation: Invocation {
             capability: CapabilityId("test.noop".to_owned()),
             args: serde_json::json!({}),
+            contract_version: tachyon_ir::CAPABILITY_CONTRACT_NONE,
         },
         inputs: vec![],
         expected_outputs: vec![],
