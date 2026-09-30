@@ -1,7 +1,5 @@
 # Tachyon
 
-![CI](https://github.com/1deat0r/Tachyon-Agent/actions/workflows/ci.yml/badge.svg)
-
 A high-performance AI agent harness. Routine work runs through deterministic
 code, repository indexes, and bounded judgment — LLM reasoning pays only for
 genuine unresolved uncertainty.
@@ -66,9 +64,10 @@ contract remain authoritative where applicable.
 
 Use the local-first loop in
 [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md): implement,
-run `cargo verify`, inspect the diff, and make an atomic commit. Issues and PRs
-are optional when they add tracking or review value. Keep tests for core
-invariants; frozen architecture changes need an ADR in `docs/adr/` first.
+run `cargo verify`, inspect the diff, and make an atomic commit directly on
+`main`. Pull requests are not used; Issues are optional for durable tracking.
+Keep tests for core invariants; frozen architecture changes need an ADR in
+`docs/adr/` first.
 
 ## Security
 
