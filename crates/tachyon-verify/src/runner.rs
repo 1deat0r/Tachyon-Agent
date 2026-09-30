@@ -3,23 +3,12 @@
 #[path = "runner_tests.rs"]
 mod tests;
 
-/// Locations a build toolchain needs that the process allowlist
-/// deliberately does not inherit. Ordered as documented, not by accident.
-const TOOLCHAIN_ENV_KEYS: &[&str] = &[
-    // Where a Windows child may write: without TEMP/TMP,
-    // `std::env::temp_dir()` falls back to the Windows directory and
-    // rustc's linker response file lands where the runner cannot use it.
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "SystemDrive",
-    // Where the toolchain itself lives.
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "RUSTUP_TOOLCHAIN",
-];
+/// Where the Rust toolchain lives, for the programs that need to find
+/// it. Platform locations (temp dir, user profile, shell, drive) are
+/// inherited by every child already — see
+/// `tachyon_tools::process::INHERITED_ENV_KEYS` — so only the toolchain
+/// homes are opted in here.
+const TOOLCHAIN_ENV_KEYS: &[&str] = &["CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"];
 
 /// The toolchain location keys a `program` needs, or `None` for anything
 /// that is not a Rust build tool. Matching is on the file stem, so

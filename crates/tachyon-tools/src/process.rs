@@ -53,8 +53,33 @@ impl ProcessSpec {
 /// whatever its [`ProcessSpec::env`] declares. Public so callers that need
 /// more (a build toolchain, for instance) can prove their opt-in set is
 /// disjoint from it rather than quietly widening this list.
-pub const INHERITED_ENV_KEYS: &[&str] =
-    &["PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "PATHEXT"];
+///
+/// Every entry is a *location* — where to look, where to write — never a
+/// credential. The Windows entries are load-bearing rather than
+/// decorative: without `TEMP`/`TMP` a child's `std::env::temp_dir()`
+/// falls back to the Windows directory, and without `USERPROFILE`/
+/// `APPDATA` tooling has nowhere to put per-user state, so the child
+/// fails in a way that looks like a bug in the child instead of in this
+/// runner.
+pub const INHERITED_ENV_KEYS: &[&str] = &[
+    // Search path and locale.
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    // Windows platform basics: shell, drive and system directory.
+    "SYSTEMROOT",
+    "PATHEXT",
+    "ComSpec",
+    "SystemDrive",
+    "windir",
+    // Where a Windows child may write and where its per-user state lives.
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+];
 
 /// What came back.
 #[derive(Clone, Debug)]
@@ -941,6 +966,46 @@ fn split_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression pin: these are the locations a Windows child cannot
+    /// work without, and each one was dropped from the inherited set by
+    /// the first cut of the allowlist — which broke a nested `cargo` (no
+    /// temp dir for its linker response file) and a `powershell` check
+    /// (nowhere to put per-user state) in ways that looked like bugs in
+    /// those children instead of in this runner.
+    #[test]
+    fn the_allowlist_carries_every_platform_location_a_child_needs() {
+        for key in [
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "SystemDrive",
+            "ComSpec",
+            "windir",
+            "SYSTEMROOT",
+            "PATHEXT",
+            "PATH",
+            "HOME",
+        ] {
+            assert!(
+                INHERITED_ENV_KEYS.contains(&key),
+                "{key} must be inherited by every child"
+            );
+        }
+        // Widening must never become credential plumbing: nothing that
+        // reads like a secret may join this list.
+        for key in INHERITED_ENV_KEYS {
+            let upper = key.to_ascii_uppercase();
+            for marker in ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"] {
+                assert!(
+                    !upper.contains(marker),
+                    "{key} looks like a credential and does not belong here"
+                );
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[test]

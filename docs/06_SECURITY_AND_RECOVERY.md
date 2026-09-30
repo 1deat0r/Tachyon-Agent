@@ -133,21 +133,28 @@ retrieval, generation lifecycle) plus `evidence_crash.rs` (kill at the
 ### Spawned-process environment
 
 A child process sees only `tachyon_tools::process::INHERITED_ENV_KEYS`
-(`PATH`, `HOME`, `TMPDIR`, `LANG`, `SYSTEMROOT`, `PATHEXT`) plus whatever
-its `ProcessSpec::env` declares. Binding the whole parent environment
-would hand every caller's credentials to the child *and* record them in
-the spawn envelope, so callers opt in per command rather than widening
-the allowlist.
+plus whatever its `ProcessSpec::env` declares. Binding the whole parent
+environment would hand every caller's credentials to the child *and*
+record them in the spawn envelope, so callers opt in per command rather
+than widening the allowlist with the environment wholesale.
+
+Every inherited key is a *location* — search path, locale, system
+directory, temp directory, per-user state directory — never a
+credential: `PATH`, `HOME`, `TMPDIR`, `LANG`, and on Windows
+`SYSTEMROOT`, `PATHEXT`, `ComSpec`, `SystemDrive`, `windir`, `TEMP`,
+`TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`. The Windows entries are
+load-bearing rather than decorative: without `TEMP`/`TMP` a child's
+`std::env::temp_dir()` falls back to the Windows directory, so a nested
+`cargo` cannot write its linker response file, and without
+`USERPROFILE` tooling has nowhere to put per-user state — both fail in a
+way that looks like a bug in the child rather than in the runner.
 
 One opt-in is built in: a Rust build tool (`cargo`, `rustc`, `rustup`)
-additionally receives its toolchain *locations* — `TEMP`, `TMP`,
-`USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `SystemDrive`, `CARGO_HOME`,
-`RUSTUP_HOME`, `RUSTUP_TOOLCHAIN`. Without them a nested `cargo` on
-Windows cannot write its linker response file and fails in a way that
-looks like a broken toolchain. Those are locations, not credentials, the
-set is disjoint from the inherited allowlist, and build flags
-(`RUSTFLAGS` and friends) deliberately stay out: they belong in the
-contract's own `env`.
+additionally receives `CARGO_HOME`, `RUSTUP_HOME` and
+`RUSTUP_TOOLCHAIN`. Those are toolchain homes rather than platform
+locations and may be set only for the invoking process, so they stay out
+of the inherited set. Build flags (`RUSTFLAGS` and friends) deliberately
+stay out too: they belong in the contract's own `env`.
 
 ## Crash uncertainty
 
