@@ -281,7 +281,11 @@ async fn cancel_acknowledges_after_real_reap_while_the_mailbox_serves() {
             ],
             cwd: ".".into(),
             env: BTreeMap::new(),
-            timeout_ms: 30_000,
+            // The sleeper writes its PID and then sleeps 60 s, so the
+            // command outlives any readiness window we are willing to
+            // wait for; the old 30 s killed a slow cold start before it
+            // could publish anything.
+            timeout_ms: 120_000,
         }
     };
     f.task
@@ -336,7 +340,11 @@ async fn cancel_acknowledges_after_real_reap_while_the_mailbox_serves() {
     #[cfg(windows)]
     let child_pid: u32 = {
         let pidfile = f.root.join("ws/target/pid");
-        tokio::time::timeout(Duration::from_secs(20), async {
+        // A cold PowerShell on a loaded runner can take tens of seconds
+        // to reach `-Command`; this window is bounded by the sleeper's
+        // own 60 s sleep (it publishes the PID before sleeping), not by
+        // a guess at startup cost.
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 if pidfile.exists() {
                     break;
