@@ -298,6 +298,11 @@ impl Loop {
             }));
             return;
         }
+        if target == TaskStatus::Cancelled {
+            // ADR-0006 §7: cancellation signals in-flight evidence
+            // workers; they drain before the acknowledgement below.
+            self.signal_evidence_cancellation();
+        }
         if let Err(error) = self.supersede_operation().await {
             let _ = reply.send(Err(error));
             return;
@@ -324,6 +329,10 @@ impl Loop {
                 to: self.state.status,
             });
         }
+        // ADR-0006 §7: a revision change signals in-flight evidence
+        // workers, so a late result from the old revision can never be
+        // journalled into the new one.
+        self.signal_evidence_cancellation();
         self.supersede_operation().await?;
         self.transition_journalled(event).await
     }
@@ -392,6 +401,14 @@ impl Loop {
             .any(|n| n.executor != ExecutorKind::Verification)
         {
             return Err(blocked("non-verifier work has no terminal/effect evidence"));
+        }
+        // ADR-0006 §15: an evidence node can never complete a task, and
+        // the completion gate checks the active generation's node states.
+        // An unsettled generation therefore blocks completion outright.
+        if self.generation_unsettled() {
+            return Err(blocked(
+                "the active execution generation has unsettled nodes",
+            ));
         }
         Ok(())
     }
@@ -778,6 +795,13 @@ impl Loop {
     /// interruption — so a terminal task is never resurrected, and a control
     /// acknowledgement whose receiver walked away cannot block release.
     pub(super) async fn stop_owned_work(&mut self) {
+        // Evidence workers are signalled first and drained before the
+        // shutdown is acknowledged: no read may outlive its actor
+        // (ADR-0006 §7). The held reply is then dropped unanswered, so
+        // the caller sees the supervisor end, never a stale success.
+        self.signal_evidence_cancellation();
+        while self.evidence_jobs.join_next().await.is_some() {}
+        self.active_evidence.take();
         let active = self.active.take();
         if let Some(active) = &active {
             active.cancel.cancel();

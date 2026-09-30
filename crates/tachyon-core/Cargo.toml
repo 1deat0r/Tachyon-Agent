@@ -6,8 +6,13 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# ADR-0006: the Task Supervisor dispatches validated evidence graphs
+# through the shared scheduler so its grants, cancellation drain and
+# unknown-outcome rules cover production reads too.
+tachyon-scheduler = { version = "0.0.1", path = "../tachyon-scheduler" }
 tachyon-ir = { workspace = true }
 # Plan item 8: the `approval_request` journal event carries the
 # `tachyon_policy::ApprovalRequest` payload verbatim (provider-neutral).
@@ -28,8 +33,8 @@ tokio-util = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-# M14 matrix host: the TimedProvider decorator implements ModelProvider.
-async-trait = { workspace = true }
+# (async-trait is a regular dependency: the ADR-0006 evidence executor
+# implements the scheduler's async Executor trait.)
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = [

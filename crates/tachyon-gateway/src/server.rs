@@ -987,6 +987,8 @@ fn core_err(error: &CoreError) -> CommandResult {
         CoreError::ApprovalMissing { .. } => "approval_missing",
         CoreError::ApprovalNotPending { .. } => "approval_not_pending",
         CoreError::WorkspaceAlreadyPinned { .. } => "workspace_already_pinned",
+        CoreError::UnknownEvidenceReceipt { .. } => "unknown_evidence_receipt",
+        CoreError::EvidenceRetrievalUnavailable => "evidence_retrieval_unavailable",
         CoreError::Store(_) | CoreError::Json(_) => "internal",
     };
     fail(code, error.to_string())

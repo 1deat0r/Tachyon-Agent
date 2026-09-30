@@ -28,8 +28,8 @@ use crate::runtime::{
 };
 use crate::{
     ApprovalResolution, ConstraintSource, ConstraintStrength as TaskConstraintStrength, CoreError,
-    PathHash, RunProposal, RunRecord, SupervisorHandle, TaskConversationSpeaker, TaskState,
-    TaskStatus, recover_task,
+    EvidenceStageError, PathHash, RunProposal, RunRecord, SupervisorHandle,
+    TaskConversationSpeaker, TaskState, TaskStatus, recover_task,
 };
 use tachyon_models::{
     AgentDecision, AssembleInput, ConstraintOrigin, ConstraintStrength, ContextConstraint,
@@ -42,7 +42,7 @@ use tachyon_retrieval::{
     EvidenceItem as RetrievedEvidenceItem, EvidenceKind, EvidencePackage, Provenance,
 };
 use tachyon_store::StoreWriter;
-use tachyon_tools::{ToolError, ToolsContext};
+use tachyon_tools::ToolsContext;
 use tachyon_types::{MutationBatchId, TaskId};
 use tachyon_verify::{AcceptanceContract, HardRequirement, VerificationRisk, VerifyError};
 
@@ -571,6 +571,13 @@ fn resolve_selections(plan: &RunPlan) -> (Vec<String>, bool) {
 
 /// Evidence stage: ack before scheduling, collect behind the approval
 /// wrapper, re-key hashes, journal the summary records.
+///
+/// The supervisor host collects through a Supervisor-owned execution
+/// generation (ADR-0006): typed requests go to the Task Supervisor, which
+/// fences them, opens and proves every target, compiles validated IR,
+/// dispatches Supervisor-owned workers under one shared byte budget and
+/// answers only once every receipt is durable. Reference hosts keep the
+/// direct reader — they hold no supervisor and no journal.
 async fn stage_evidence(
     host: &DriveHost,
     proposer: &mut Proposer,
@@ -595,24 +602,56 @@ async fn stage_evidence(
     let requests = plan.evidence.clone();
     let mode = plan.evidence_mode;
     let bounds = plan.bounds;
-    let (mut items, intervals_us, timings) = with_approval(
+    let run_id = proposer.run_id.clone();
+    let revision = proposer.revision;
+    let supervisor = match host {
+        DriveHost::Supervisor { handle, .. } => Some(handle.clone()),
+        DriveHost::Reference => None,
+    };
+    let collected = with_approval(
         host,
         context,
         &plan.cancel,
-        |err: &RuntimeError| match err {
-            RuntimeError::Tool(ToolError::ApprovalRequired { request, .. }) => {
-                Some(*request.clone())
-            }
-            _ => None,
-        },
-        DriveError::Runtime,
+        |err: &EvidenceStageError| err.approval_request().map(|request| *request),
+        EvidenceStageError::into_drive_error,
         || {
             let context = context.clone();
             let requests = requests.clone();
-            async move { collect_stage(&context, &requests, mode, bounds, origin).await }
+            let cancel = plan.cancel.clone();
+            let handle = supervisor.clone();
+            let run_id = run_id.clone();
+            async move {
+                match handle {
+                    Some(handle) => {
+                        let batch = handle
+                            .collect_evidence(
+                                run_id,
+                                revision,
+                                requests,
+                                bounds,
+                                mode == EvidenceMode::Concurrent,
+                                origin,
+                                cancel,
+                                context,
+                            )
+                            .await?;
+                        Ok((batch.items, batch.intervals_us, batch.timings))
+                    }
+                    None => collect_stage(&context, &requests, mode, bounds, origin)
+                        .await
+                        .map_err(EvidenceStageError::Stage),
+                }
+            }
         },
     )
-    .await?;
+    .await;
+    let (mut items, intervals_us, timings) = match collected {
+        Ok(value) => value,
+        // The stage observed the cancel token while draining its workers;
+        // the run ends as cancelled, never as a stage fault.
+        Err(_) if plan.cancel.is_cancelled() => return Err(DriveError::RunCancelled),
+        Err(error) => return Err(error),
+    };
     // Re-key the runtime hash to the authoritative M8 content hash (same
     // bytes, two hash views) so the gate binds the supplied version.
     for item in &mut items {

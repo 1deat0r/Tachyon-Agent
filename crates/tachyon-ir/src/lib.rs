@@ -106,6 +106,12 @@ pub enum ExecutorKind {
     Barrier,
 }
 
+/// No capability contract recorded: legacy journalled invocations and
+/// nodes whose execution does not depend on a versioned capability
+/// contract. A production dispatcher must never infer a contract from
+/// this value (ADR-0006 §10).
+pub const CAPABILITY_CONTRACT_NONE: u16 = 0;
+
 /// What to run: a capability plus schema-validated JSON args (spec §5).
 /// Provider-native tool calls enter the graph only as proposed
 /// invocations; validation and policy treat them like any other.
@@ -115,6 +121,13 @@ pub struct Invocation {
     pub capability: CapabilityId,
     /// Arguments object.
     pub args: Value,
+    /// Capability contract version this invocation was compiled under,
+    /// persisted independently of [`IR_VERSION`] so recovery never
+    /// reinterprets an invocation under newer semantics (ADR-0006 §10).
+    /// Absent in legacy journalled graphs, which deserialize to
+    /// [`CAPABILITY_CONTRACT_NONE`] and are never executed by inference.
+    #[serde(default)]
+    pub contract_version: u16,
 }
 
 /// One named input fed from an ancestor's structured output (spec §8).
@@ -691,7 +704,8 @@ fn has_cycle(nodes: &BTreeMap<NodeId, ExecutionNode>, edges: &[Dependency]) -> b
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessSet, EffectClass, ExecutionGraph, IR_VERSION, Idempotency, Invocation, IrError,
+        AccessSet, CAPABILITY_CONTRACT_NONE, EffectClass, ExecutionGraph, IR_VERSION, Idempotency,
+        Invocation, IrError,
     };
     use super::{CancellationPolicy, ExecutorKind, TimeoutPolicy};
     use super::{Dependency, DependencyCondition, ExecutionNode};
@@ -707,6 +721,7 @@ mod tests {
             invocation: Invocation {
                 capability: CapabilityId("test.noop".to_owned()),
                 args: serde_json::json!({}),
+                contract_version: CAPABILITY_CONTRACT_NONE,
             },
             inputs: vec![],
             expected_outputs: vec![],

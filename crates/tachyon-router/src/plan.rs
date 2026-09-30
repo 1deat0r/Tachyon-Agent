@@ -63,6 +63,7 @@ impl EvidenceOp {
             invocation: Invocation {
                 capability: self.capability(),
                 args: self.args(),
+                contract_version: tachyon_ir::CAPABILITY_CONTRACT_NONE,
             },
             inputs: vec![],
             expected_outputs: vec![],

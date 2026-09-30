@@ -36,6 +36,9 @@ pub struct RuntimeBounds {
     pub max_evidence_requests: usize,
     /// At most 256 KiB of returned evidence per stage.
     pub max_evidence_bytes_per_stage: u64,
+    /// At most 4096 bytes in any single evidence path (ADR-0006 §4: the
+    /// bound is validated before any path is opened or node allocated).
+    pub max_evidence_path_bytes: usize,
     /// At most 8 patch files per attempt.
     pub max_patch_files: usize,
     /// At most 1 MiB of replacement bytes per attempt.
@@ -49,6 +52,7 @@ impl Default for RuntimeBounds {
         Self {
             max_evidence_requests: 16,
             max_evidence_bytes_per_stage: 256 * 1024,
+            max_evidence_path_bytes: 4096,
             max_patch_files: 8,
             max_replacement_bytes: 1024 * 1024,
             model_deadline_ms: 120_000,
@@ -66,6 +70,10 @@ pub enum RuntimeError {
     /// Evidence stage would exceed its byte budget.
     #[error("evidence stage too large: {0} bytes")]
     EvidenceTooLarge(u64),
+    /// Supervisor-owned evidence execution refused, could not settle, or
+    /// was interrupted before every node produced a durable receipt.
+    #[error("evidence execution: {0}")]
+    Evidence(String),
     /// Too many patch files in one attempt.
     #[error("too many patch files: {0}")]
     TooManyPatchFiles(usize),
@@ -350,9 +358,10 @@ pub fn compile_operation(
         invocation: Invocation {
             capability: tachyon_types::CapabilityId(capability.to_owned()),
             args: args.clone(),
+            contract_version: capability_contract_version(capability),
         },
         inputs: Vec::new(),
-        expected_outputs: Vec::new(),
+        expected_outputs: declared_outputs(capability),
         access,
         resources: ResourceClaim {
             cpu_units: 100,
@@ -375,12 +384,37 @@ pub fn compile_operation(
     })
 }
 
+/// Capability contract version this node is compiled under (ADR-0006
+/// §10): persisted on the invocation so recovery never reinterprets it
+/// under newer semantics. Only `fs.read` has a versioned contract in
+/// this slice; every other capability records "no contract".
+fn capability_contract_version(capability: &str) -> u16 {
+    match capability {
+        "fs.read" => crate::evidence::FS_READ_CONTRACT_VERSION,
+        _ => tachyon_ir::CAPABILITY_CONTRACT_NONE,
+    }
+}
+
+/// Output declarations are part of the trusted compilation, not the
+/// caller's proposal: the evidence capability promises exactly one
+/// structured output, and the dispatcher refuses a node whose declared
+/// outputs are not supplied (ADR-0006 §3).
+fn declared_outputs(capability: &str) -> Vec<tachyon_ir::OutputBinding> {
+    if capability == "fs.read" {
+        vec![tachyon_ir::OutputBinding {
+            name: crate::evidence::EVIDENCE_OUTPUT_NAME.to_owned(),
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
 fn resource_key(path: &str) -> Result<ResourceKey, RuntimeError> {
     let rel = normalize_key(path)?;
     ResourceKey::parse(&format!("file:/{rel}")).map_err(|err| RuntimeError::Ir(err.to_string()))
 }
 
-fn normalize_key(path: &str) -> Result<String, RuntimeError> {
+pub(crate) fn normalize_key(path: &str) -> Result<String, RuntimeError> {
     let cleaned = path.replace('\\', "/");
     let trimmed = cleaned.trim_matches('/').to_owned();
     if trimmed.is_empty() {

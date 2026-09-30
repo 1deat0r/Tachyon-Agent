@@ -38,11 +38,17 @@ pub async fn reach(name: &str) {
 }
 
 /// Blocking variant for synchronous seams (same semantics as [`reach`]).
+/// Writes the same `TACHYON_FAULT_REACHED_FILE` marker first, so a parent
+/// test can wait for a blocking seam (an evidence read) to be reached
+/// before it kills the child.
 ///
 /// # Panics
 /// Never panics; parks the OS thread when armed.
 pub fn reach_blocking(name: &str) {
     if is_armed(name) {
+        if let Some(path) = std::env::var_os("TACHYON_FAULT_REACHED_FILE") {
+            let _ = std::fs::write(path, name);
+        }
         loop {
             std::thread::park();
         }

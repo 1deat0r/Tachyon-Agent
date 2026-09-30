@@ -126,6 +126,11 @@ pub struct TaskRunSnapshot {
     pub finished: bool,
     /// First node whose effect outcome needs reconciliation.
     pub unresolved_node: Option<NodeId>,
+    /// Structured outputs of every succeeded node, keyed by node id.
+    /// Completed output is part of the public run snapshot on purpose: a
+    /// caller that must journal durable receipts (ADR-0006 §11) cannot
+    /// prove which bytes a succeeded node supplied from statuses alone.
+    pub outputs: HashMap<NodeId, serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Commands the scheduler owns.
@@ -542,6 +547,7 @@ impl Loop {
             attempts: run.attempts.clone(),
             finished: run.finished,
             unresolved_node: run.unresolved_node,
+            outputs: run.outputs.clone(),
         })
     }
 
@@ -1060,6 +1066,7 @@ pub mod test_support {
             invocation: Invocation {
                 capability: CapabilityId("test.noop".to_owned()),
                 args: serde_json::json!({}),
+                contract_version: tachyon_ir::CAPABILITY_CONTRACT_NONE,
             },
             inputs: vec![],
             expected_outputs: vec![],

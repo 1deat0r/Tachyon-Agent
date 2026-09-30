@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- ADR-0006 supervisor-owned evidence execution: the production `fs.read`
+  stage now runs as a Supervisor-owned generation instead of a driver-side
+  pathname read. Typed requests are fenced by run and revision, every
+  target is resolved, opened and proven beneath the pinned root *before*
+  the graph is allocated (canonical re-proof after the open, handle/path
+  identity match, regular-file proof), authorization runs against that
+  exact opened object through a non-cloneable one-shot permit, and the
+  trusted compiler mints the validated-graph proof only after structural
+  validation plus the capability contract checks (read-only, pure,
+  immediate cancellation, no retry, declared output, `contract_version`).
+  Execution goes through `tachyon-scheduler` on Supervisor-owned workers
+  bound to a child of the host cancellation token, under one shared
+  linearizable stage byte budget whose exhaustion cancels siblings and
+  returns no partial batch. Success is journalled with a durable
+  content-addressed receipt in the same transaction; retrieval is
+  receipt-scoped and BLAKE3-verified before bytes reach the model. A crash
+  mid-read journals a generation-interrupted event, cancels that
+  generation's unfinished nodes, clears the active pointer and never
+  reuses the generation number. Gates: `evidence_generation.rs`,
+  `evidence_crash.rs` and the `evidence.rs` unit tests, plus
+  `cargo verify full` at 150/150 verified with concurrent cells measuring
+  4–6 overlapping evidence nodes on this path.
 - Moved the bounded HTTP read test out of `openai_compat`'s inline test
   module into `crates/tachyon-models/tests/http_bounds.rs`, exposing
   `MAX_RESPONSE_BYTES` and `round_trip` for it: G6 forbids a TCP listener

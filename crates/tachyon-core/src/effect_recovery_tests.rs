@@ -49,6 +49,7 @@ fn effect_graph(task_id: TaskId, idempotency: Idempotency) -> (ExecutionGraph, N
         invocation: Invocation {
             capability: CapabilityId("test.external_write".to_owned()),
             args: serde_json::json!({"target": "record-1"}),
+            contract_version: tachyon_ir::CAPABILITY_CONTRACT_NONE,
         },
         inputs: vec![],
         expected_outputs: vec![],

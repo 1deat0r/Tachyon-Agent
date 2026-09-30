@@ -310,6 +310,7 @@ fn compile_node(
         invocation: Invocation {
             capability: CapabilityId(capability.into()),
             args,
+            contract_version: tachyon_ir::CAPABILITY_CONTRACT_NONE,
         },
         inputs: vec![],
         expected_outputs: vec![],

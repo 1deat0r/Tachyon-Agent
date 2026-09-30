@@ -92,19 +92,31 @@ prepared non-idempotent or unknown effect and its node `UnknownAfterCrash`.
 Recovery keeps an already-terminal task terminal while journalling these
 node/effect classifications.
 
-This protocol is currently an internal persistence/recovery seam, not a live
-execution path. The private graph wrapper is not yet a validation proof; its
-unchecked constructor is available only in unit-test builds. Before production
-scheduler dispatch is connected, a trusted planner must validate capability
-schemas, hard constraints, access/resource minimums, and required commit
-barriers before minting the graph token. The live path must also require a
-one-shot authorization permit bound to the exact operation and effect, and
-run effects as Supervisor-owned workers whose cancellation and drain have
-completed before pause/cancel is acknowledged. The runtime driver is not yet
-wired to this protocol. The first read-only evidence-stage contract, including
-generation fences, durable output receipts, capability-version recovery, and
-path-bound authorization, is recorded in
-[ADR 0006](adr/0006-supervisor-owned-evidence-execution.md).
+Consequential effects are still not dispatched through this protocol: the
+runtime driver does not install effect graphs, and the graph wrapper's
+unchecked constructor remains available only in unit-test builds.
+
+The first production dispatch through it is the read-only `fs.read`
+evidence slice ([ADR 0006](adr/0006-supervisor-owned-evidence-execution.md),
+implemented): the driver submits typed requests to an internal Supervisor
+command fenced by run and revision; a trusted compiler mints the graph proof
+only after structural validation *and* the capability contract checks
+(read-only effect, pure idempotency, immediate cancellation, no retry, the
+declared output); every target is resolved, opened and proven beneath the
+pinned root *before* the graph is allocated; authorization runs against that
+exact opened object through a one-shot permit and the path is never
+re-resolved after it; reads share one linearizable stage byte budget whose
+exhaustion cancels siblings and returns no partial batch; workers bind to the
+Supervisor's cancellation token and drain before settlement; and success is
+journalled in the same transaction as a durable content-addressed receipt
+that retrieval must present. A crash mid-read journals a
+generation-interrupted event, marks that generation's unfinished nodes
+`Cancelled`, clears the active pointer and never reuses the generation
+number. Retrieval is Supervisor-mediated: an artifact id alone grants no
+access, and bytes are verified against the receipt before they reach the
+model. The gate for this slice is `evidence_generation.rs` (budget, fences,
+retrieval, generation lifecycle) plus `evidence_crash.rs` (kill at the
+`evidence.read` seam, recover, re-enter under a new generation).
 
 ## Crash uncertainty
 

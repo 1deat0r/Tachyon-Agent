@@ -14,17 +14,21 @@
 pub mod driver;
 #[cfg(test)]
 mod effect_recovery_tests;
+pub mod evidence;
 pub mod ownership;
 pub mod runtime;
 mod verification;
 pub use tachyon_verify::AcceptanceContract;
 pub use verification::VerificationState;
 
+pub use evidence::{EvidenceBatch, EvidenceReceipt, EvidenceStageError};
+
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use ownership::{OwnedWorkers, TaskLifecycle, TaskOwnership};
+use runtime::{EvidenceItem, EvidenceRequest, RuntimeBounds};
 use serde::{Deserialize, Serialize};
 use tachyon_ir::{EffectClass, ExecutionGraph, Idempotency, NodeStatus};
 use tachyon_store::{ApprovalOutcome, EffectMutation, JournalEvent, StoreWriter, TaskRow};
@@ -150,6 +154,21 @@ pub enum CoreError {
         /// The root pinned when this task's run first started.
         pinned: String,
     },
+    /// Evidence retrieval was asked for a node with no durable receipt in
+    /// this task. An artifact id alone grants no access (ADR-0006 §13).
+    #[error("no durable evidence receipt for node {node_id}")]
+    UnknownEvidenceReceipt {
+        /// Node whose receipt does not exist.
+        node_id: NodeId,
+    },
+    /// Evidence retrieval is missing one of its two authorizations: the
+    /// durable workspace pin this receipt's provenance is bound to, or
+    /// the spool the stage ran with (a supervisor that has not run the
+    /// stage in this process holds no spool to retrieve from).
+    #[error(
+        "evidence retrieval unavailable: a pinned workspace and a completed evidence stage are required"
+    )]
+    EvidenceRetrievalUnavailable,
 }
 
 /// Task lifecycle status (spec §3).
@@ -319,6 +338,13 @@ pub struct TaskConversationMessage {
     pub content: String,
 }
 
+/// First execution generation for a legacy task that predates the counter
+/// (ADR-0006 §8): the counter starts at 1, so generation 0 can never be
+/// mistaken for "no generation".
+fn default_next_execution_generation() -> u64 {
+    1
+}
+
 /// Canonical task state: the supervisor is its only logical writer (spec §3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskState {
@@ -360,6 +386,23 @@ pub struct TaskState {
     /// Durable scheduler node states, keyed by validated IR node identity.
     #[serde(default)]
     pub node_statuses: BTreeMap<NodeId, NodeStatus>,
+    /// The one active execution generation for this task, or `None` when
+    /// no generation is active (ADR-0006 §8: only one generation for a
+    /// task may be active). Set by `ExecutionGenerationAccepted`, cleared
+    /// by `GenerationInterrupted`.
+    #[serde(default)]
+    pub execution_generation: Option<u64>,
+    /// Monotonic counter the next generation is allocated from
+    /// (ADR-0006 §8). Advanced in the same journal transaction that
+    /// accepts a generation; legacy tasks start at 1.
+    #[serde(default = "default_next_execution_generation")]
+    pub next_execution_generation: u64,
+    /// Durable evidence output receipts keyed by producing node
+    /// (ADR-0006 §11). Kept across generations for audit; a receipt
+    /// belongs to the task, generation and pinned workspace recorded on
+    /// it, never to an id alone (ADR-0006 §13).
+    #[serde(default)]
+    pub evidence_receipts: BTreeMap<NodeId, EvidenceReceipt>,
     /// Durable effect barrier history keyed by stable effect identity.
     #[serde(default)]
     pub effects: BTreeMap<String, EffectRecord>,
@@ -424,14 +467,15 @@ pub struct EffectRecord {
     pub receipt: Option<String>,
 }
 
-/// Reserved internal seam for a future trusted planner result.
+/// The validated-graph proof token (ADR-0006 §3).
 ///
-/// This wrapper is not yet a validation proof: the production planner does
-/// not mint it, and the runtime driver does not install scheduler graphs.
-/// Its field is private to this child module, and its unchecked constructor
-/// exists only in unit-test builds. Do not add a production constructor until
-/// capability schemas, hard constraints, access/resource minimums, and
-/// required effect barriers are validated.
+/// The field is private to this child module, so the only way out of the
+/// wrapper is [`Self::into_graph`]. Production code obtains the proof from
+/// exactly one place — [`Self::try_mint`], whose only caller is
+/// `crate::evidence::compile_evidence_generation`, and which will not mint
+/// until structural validation *and* the caller's trusted capability
+/// checks both pass. The unchecked constructor exists only in unit-test
+/// builds.
 mod execution_graph_token {
     use tachyon_ir::ExecutionGraph;
 
@@ -440,6 +484,22 @@ mod execution_graph_token {
     impl ValidatedExecutionGraph {
         pub(super) fn into_graph(self) -> ExecutionGraph {
             self.0
+        }
+
+        /// The production proof constructor: validates `graph` against
+        /// the IR contract and against `trusted`, then mints. Keeping the
+        /// mint here means no module can wrap an arbitrary graph without
+        /// running both checks first.
+        pub(super) fn try_mint(
+            graph: ExecutionGraph,
+            task_id: tachyon_types::TaskId,
+            trusted: impl FnOnce(&ExecutionGraph) -> Result<(), String>,
+        ) -> Result<Self, String> {
+            graph
+                .validate(task_id)
+                .map_err(|error| format!("execution graph rejected: {error}"))?;
+            trusted(&graph)?;
+            Ok(Self(graph))
         }
     }
 
@@ -552,6 +612,34 @@ enum StateEvent {
     },
     ExecutionGraphInstalled {
         graph: ExecutionGraph,
+    },
+    /// Accepts an execution generation (ADR-0006 §8): one durable
+    /// transaction allocates the Task-wide monotonic generation, advances
+    /// the persisted counter, installs the graph, seeds every node state,
+    /// sets the active-generation pointer and records the acceptance.
+    /// Dispatch never starts before this commits.
+    ExecutionGenerationAccepted {
+        /// Allocated generation.
+        generation: u64,
+        /// Graph accepted for that generation.
+        graph: ExecutionGraph,
+    },
+    /// Commits a settled evidence generation (ADR-0006 §11): every
+    /// receipt lands in the same transaction as the node success it
+    /// belongs to. Source bytes are never carried here.
+    EvidenceGenerationCommitted {
+        /// Generation these receipts belong to.
+        generation: u64,
+        /// Durable output receipts, in graph order.
+        receipts: Vec<EvidenceReceipt>,
+    },
+    /// Retires an unsettled generation (ADR-0006 §9): every unfinished
+    /// node of that generation becomes `Cancelled` and the
+    /// active-generation pointer is cleared. Already committed receipts
+    /// stay attached to the old generation for audit.
+    GenerationInterrupted {
+        /// Generation being retired.
+        generation: u64,
     },
     NodeStatusChanged {
         node_id: NodeId,
@@ -697,6 +785,21 @@ enum SupervisorCommand {
         resolution: oneshot::Sender<ApprovalResolution>,
         /// Acknowledgement once the park is durable.
         reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
+    /// Collect bounded evidence through a Supervisor-owned execution
+    /// generation (ADR-0006 §1–§7). The reply is answered only after
+    /// every worker has drained and the receipts are durable — or the
+    /// generation has been interrupted, in which case nothing partial is
+    /// returned.
+    CollectEvidence(evidence::CollectCommand),
+    /// Retrieve one committed receipt's bytes through the supervisor
+    /// (ADR-0006 §12–§13): bounded, BLAKE3-verified and scoped to a
+    /// durable receipt of this task. An artifact id alone grants nothing.
+    FetchEvidence {
+        /// Node whose journalled receipt authorizes the read.
+        node_id: NodeId,
+        /// Answered with the verified bytes.
+        reply: oneshot::Sender<Result<EvidenceItem, CoreError>>,
     },
 }
 
@@ -988,6 +1091,53 @@ impl SupervisorHandle {
         Ok(ApprovalWaiter { rx })
     }
 
+    /// Collect bounded evidence through a Supervisor-owned execution
+    /// generation (ADR-0006). The fence is checked, every target is
+    /// opened and proven, the graph is compiled and accepted durably,
+    /// and this answers only after every worker has drained and the
+    /// receipts are journalled — or the generation was interrupted, in
+    /// which case no partial batch is returned.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn collect_evidence(
+        &self,
+        run_id: String,
+        revision: u64,
+        requests: Vec<EvidenceRequest>,
+        bounds: RuntimeBounds,
+        concurrent: bool,
+        origin: std::time::Instant,
+        cancel: tokio_util::sync::CancellationToken,
+        context: Arc<ToolsContext>,
+    ) -> Result<EvidenceBatch, EvidenceStageError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::CollectEvidence(
+            evidence::CollectCommand {
+                run_id,
+                revision,
+                requests,
+                bounds,
+                concurrent,
+                origin,
+                cancel,
+                context,
+                reply,
+            },
+        ))
+        .await;
+        rx.await
+            .unwrap_or_else(|_| Err(EvidenceStageError::Core(CoreError::SupervisorGone)))
+    }
+
+    /// Retrieve one committed receipt's bytes through the supervisor
+    /// (ADR-0006 §12–§13): bounded, verified, and scoped to a durable
+    /// receipt of this task. An artifact id alone grants no access.
+    pub async fn fetch_evidence(&self, node_id: NodeId) -> Result<EvidenceItem, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::FetchEvidence { node_id, reply })
+            .await;
+        rx.await.map_err(|_| CoreError::SupervisorGone)?
+    }
+
     /// Close command admission, cancel owned work and await exclusive-owner release.
     /// Idempotent across clones; retained handles fail closed after shutdown starts.
     /// Dropping this future does not revoke the shutdown request. This is not a
@@ -1040,6 +1190,9 @@ pub async fn create_task(
         graph: ExecutionGraph::empty(task_id, 0),
         execution_graph: None,
         node_statuses: BTreeMap::new(),
+        execution_generation: None,
+        next_execution_generation: default_next_execution_generation(),
+        evidence_receipts: BTreeMap::new(),
         effects: BTreeMap::new(),
         stages: Vec::new(),
         evidence_summary: Vec::new(),
@@ -1155,6 +1308,11 @@ pub async fn recover_task(
         })
         .await?;
     }
+    // ADR-0006 §9: an unsettled read-only evidence generation closes
+    // before anything re-enters — unfinished nodes become Cancelled for
+    // that generation, the active pointer clears, and the task lands in
+    // Recovering. Committed receipts stay attached for audit.
+    app.interrupt_unsettled_generation().await?;
     let has_interrupted_nodes = app.state.node_statuses.values().any(|status| {
         matches!(
             status,
@@ -1220,6 +1378,9 @@ fn starting_state(row: &TaskRow) -> Result<(TaskState, i64, bool), CoreError> {
         graph: ExecutionGraph::empty(id, 0),
         execution_graph: None,
         node_statuses: BTreeMap::new(),
+        execution_generation: None,
+        next_execution_generation: default_next_execution_generation(),
+        evidence_receipts: BTreeMap::new(),
         effects: BTreeMap::new(),
         stages: Vec::new(),
         evidence_summary: Vec::new(),
@@ -1312,6 +1473,11 @@ fn apply_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError
         StateEvent::Approval { .. } | StateEvent::LegacyEffectUnknownAfterCrash { .. } => {}
         execution_event @ (StateEvent::ExecutionGraphInstalled { .. }
         | StateEvent::NodeStatusChanged { .. }) => apply_node_event(state, execution_event)?,
+        generation_event @ (StateEvent::ExecutionGenerationAccepted { .. }
+        | StateEvent::EvidenceGenerationCommitted { .. }
+        | StateEvent::GenerationInterrupted { .. }) => {
+            apply_generation_event(state, generation_event)?;
+        }
         effect_event @ (StateEvent::EffectPrepared { .. }
         | StateEvent::EffectCommitted { .. }
         | StateEvent::EffectUnknownAfterCrash { .. }) => apply_effect_event(state, effect_event)?,
@@ -1377,6 +1543,156 @@ fn apply_node_event(state: &mut TaskState, event: StateEvent) -> Result<(), Core
         }
         _ => return Err(unexpected_event("node", &event)),
     }
+    Ok(())
+}
+
+/// Replays generation lifecycle events (ADR-0006 §8–§11). Each event is
+/// its own durable transaction, and the accept/interrupt/commit ordering
+/// is re-derived here so a corrupted journal fails closed instead of
+/// producing a plausible-looking generation.
+fn apply_generation_event(state: &mut TaskState, event: StateEvent) -> Result<(), CoreError> {
+    match event {
+        StateEvent::ExecutionGenerationAccepted { generation, graph } => {
+            accept_generation(state, generation, graph)
+        }
+        StateEvent::EvidenceGenerationCommitted {
+            generation,
+            receipts,
+        } => commit_generation(state, generation, &receipts),
+        StateEvent::GenerationInterrupted { generation } => interrupt_generation(state, generation),
+        _ => Err(unexpected_event("generation", &event)),
+    }
+}
+
+/// Replay of `ExecutionGenerationAccepted`: allocate, advance the
+/// persisted counter, install the graph, seed node states, set the
+/// active pointer — all derivable from this one event.
+fn accept_generation(
+    state: &mut TaskState,
+    generation: u64,
+    graph: ExecutionGraph,
+) -> Result<(), CoreError> {
+    let corrupt = |detail: String| CoreError::Corrupt { detail };
+    graph
+        .validate(state.id)
+        .map_err(|error| corrupt(format!("journalled evidence graph is invalid: {error}")))?;
+    if graph
+        .nodes
+        .values()
+        .any(|node| node.planned_revision != state.revision)
+    {
+        return Err(corrupt(
+            "journalled evidence generation has a stale planned revision".into(),
+        ));
+    }
+    if generation != state.next_execution_generation {
+        return Err(corrupt(format!(
+            "journalled generation {generation} is not the next generation ({})",
+            state.next_execution_generation
+        )));
+    }
+    if state
+        .execution_generation
+        .is_some_and(|active| active >= generation)
+    {
+        return Err(corrupt(format!(
+            "generation {generation} was accepted while another generation is active"
+        )));
+    }
+    for node_id in graph.nodes.keys() {
+        state
+            .node_statuses
+            .entry(*node_id)
+            .or_insert(NodeStatus::Pending);
+    }
+    state.execution_graph = Some(graph);
+    state.execution_generation = Some(generation);
+    state.next_execution_generation = generation.saturating_add(1);
+    Ok(())
+}
+
+/// Replay of `EvidenceGenerationCommitted`: receipts land with the node
+/// successes they belong to, and every node of the generation must now be
+/// terminal.
+fn commit_generation(
+    state: &mut TaskState,
+    generation: u64,
+    receipts: &[EvidenceReceipt],
+) -> Result<(), CoreError> {
+    let corrupt = |detail: String| CoreError::Corrupt { detail };
+    if state.execution_generation != Some(generation) {
+        return Err(corrupt(format!(
+            "receipts for generation {generation} arrived while {:?} is active",
+            state.execution_generation
+        )));
+    }
+    let active_nodes: Vec<NodeId> = state
+        .execution_graph
+        .as_ref()
+        .map(|graph| graph.nodes.keys().copied().collect())
+        .ok_or_else(|| corrupt("no active graph for a committed generation".into()))?;
+    for receipt in receipts {
+        if receipt.generation != generation {
+            return Err(corrupt(format!(
+                "receipt for generation {} committed under {generation}",
+                receipt.generation
+            )));
+        }
+        if !active_nodes.contains(&receipt.node_id) {
+            return Err(corrupt(format!(
+                "receipt for node {} is outside generation {generation}",
+                receipt.node_id
+            )));
+        }
+        state
+            .node_statuses
+            .insert(receipt.node_id, NodeStatus::Succeeded);
+        state
+            .evidence_receipts
+            .insert(receipt.node_id, receipt.clone());
+    }
+    if state.execution_generation.is_some()
+        && active_nodes.iter().any(|node_id| {
+            !state
+                .node_statuses
+                .get(node_id)
+                .is_some_and(|status| status.is_terminal())
+        })
+    {
+        return Err(corrupt(format!(
+            "generation {generation} committed with unfinished nodes"
+        )));
+    }
+    Ok(())
+}
+
+/// Replay of `GenerationInterrupted`: unfinished nodes of that generation
+/// become `Cancelled` and the active pointer clears. Receipts already
+/// committed stay attached to the old generation for audit.
+fn interrupt_generation(state: &mut TaskState, generation: u64) -> Result<(), CoreError> {
+    let corrupt = |detail: String| CoreError::Corrupt { detail };
+    if state.execution_generation != Some(generation) {
+        return Err(corrupt(format!(
+            "generation {generation} was interrupted while {:?} is active",
+            state.execution_generation
+        )));
+    }
+    let active_nodes: Vec<NodeId> = state
+        .execution_graph
+        .as_ref()
+        .map(|graph| graph.nodes.keys().copied().collect())
+        .ok_or_else(|| corrupt("no active graph for an interrupted generation".into()))?;
+    for node_id in active_nodes {
+        let status = state
+            .node_statuses
+            .get(&node_id)
+            .copied()
+            .unwrap_or(NodeStatus::Pending);
+        if !status.is_terminal() {
+            state.node_statuses.insert(node_id, NodeStatus::Cancelled);
+        }
+    }
+    state.execution_generation = None;
     Ok(())
 }
 
@@ -1728,6 +2044,18 @@ pub(crate) struct Loop {
     /// Parked approval jobs keyed by approval id: each holds the exact
     /// ask, the job's tools context, and its decision channel.
     approvals: HashMap<ApprovalId, ParkedJob>,
+    /// Supervisor-owned evidence generation workers (ADR-0006 §7). They
+    /// are joined before any settlement is acknowledged.
+    evidence_jobs: OwnedWorkers<evidence::JobResult>,
+    /// The live evidence generation: its fence, stage cancel token and
+    /// the caller's held reply.
+    active_evidence: Option<evidence::ActiveEvidence>,
+    /// The artifact spool the evidence stage ran with, retained so
+    /// retrieval stays Supervisor-mediated (ADR-0006 §13) without also
+    /// retaining the run's workspace lease.
+    evidence_spool: Option<tachyon_tools::artifact::ArtifactSpool>,
+    /// Byte bound receipts were produced under; retrieval reuses it.
+    evidence_limit: u64,
 }
 
 /// One parked supervisor-owned job awaiting a human decision.
@@ -1776,6 +2104,9 @@ async fn run_loop(
             joined = app.jobs.join_next(), if !app.jobs.is_empty() => {
                 if let Some(joined) = joined { app.finish_job(joined).await; }
             }
+            joined = app.evidence_jobs.join_next(), if !app.evidence_jobs.is_empty() => {
+                if let Some(joined) = joined { app.finish_evidence_job(joined).await; }
+            }
         }
     }
 }
@@ -1788,6 +2119,9 @@ fn event_kind(event: &StateEvent) -> &'static str {
         StateEvent::Constraint { .. } => "constraint",
         StateEvent::Status { .. } => "status",
         StateEvent::ExecutionGraphInstalled { .. } => "execution_graph_installed",
+        StateEvent::ExecutionGenerationAccepted { .. } => "execution_generation_accepted",
+        StateEvent::EvidenceGenerationCommitted { .. } => "evidence_generation_committed",
+        StateEvent::GenerationInterrupted { .. } => "generation_interrupted",
         StateEvent::NodeStatusChanged { .. } => "node_status_changed",
         StateEvent::EffectPrepared { .. } => "effect_prepared",
         StateEvent::EffectCommitted { .. } => "effect_committed",
@@ -1817,6 +2151,10 @@ impl Loop {
     ) -> Self {
         Self {
             jobs: OwnedWorkers::new(ownership.clone()),
+            evidence_jobs: OwnedWorkers::new(ownership.clone()),
+            active_evidence: None,
+            evidence_spool: None,
+            evidence_limit: RuntimeBounds::default().max_evidence_bytes_per_stage,
             ownership,
             state,
             covered,
@@ -1914,6 +2252,13 @@ impl Loop {
                 reply,
             } => {
                 let outcome = self.park(context, request, resolution).await;
+                let _ = reply.send(outcome);
+            }
+            SupervisorCommand::CollectEvidence(command) => {
+                self.collect_evidence(command).await;
+            }
+            SupervisorCommand::FetchEvidence { node_id, reply } => {
+                let outcome = self.fetch_evidence(node_id);
                 let _ = reply.send(outcome);
             }
         }

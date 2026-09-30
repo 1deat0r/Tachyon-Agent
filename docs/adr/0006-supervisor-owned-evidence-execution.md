@@ -1,6 +1,6 @@
 # 0006 — Supervisor-owned evidence execution
 
-**Status:** accepted · 2026-09-29
+**Status:** implemented · accepted 2026-09-29, landed 2026-09-30
 
 **Decision revision:** 2
 
@@ -183,9 +183,10 @@ graph does not identify the capability contract version used to interpret it.
   budget.
 - `crates/tachyon-scheduler/src/scheduler.rs`: completed output is not part
   of the public run snapshot/hydration API.
-- `crates/tachyon-tools/src/artifact.rs`: the spool is content addressed, but
-  fetch does not verify bytes against the requested ID and store does not yet
-  establish the durability contract required before journal success.
+- `crates/tachyon-tools/src/artifact.rs`: the spool is content addressed.
+  (Corrected 2026-09-30: commit `4896635` already made fetch verify bytes
+  against the requested ID and made store establish the durability contract;
+  this bullet described the pre-`4896635` state.)
 - Three independent interface reviews on 2026-09-29 agreed on the
   Supervisor-owned typed evidence seam and identified generation, output
   receipt, artifact verification, path binding, and re-entry as the critical
@@ -256,3 +257,39 @@ verify-by-quote checks confirmed:
 
 There are no open review blockers. Production implementation remains gated on
 meeting this contract and its local verification requirements.
+
+## Implementation (2026-09-30)
+
+Landed in `crates/tachyon-core/src/evidence.rs` plus the generation
+lifecycle in `crates/tachyon-core/src/lib.rs`, the driver's evidence stage
+in `crates/tachyon-core/src/driver.rs`, `outputs` on
+`tachyon_scheduler::TaskRunSnapshot`, and `Invocation::contract_version` in
+`tachyon-ir`:
+
+- **§1–§3** `SupervisorHandle::collect_evidence` →
+  `SupervisorCommand::CollectEvidence`; `prepare_evidence` then
+  `compile_evidence_generation`, which mints the proof through
+  `ValidatedExecutionGraph::try_mint` (the only production constructor).
+- **§4** bounds before open, `prepare_target`/`open_proven`: canonical
+  re-proof after the handle is open, identity match between handle and path,
+  regular-file proof before opening.
+- **§5** `EvidencePermit`, non-cloneable, spent against its own target;
+  authorization on the canonical key before any read.
+- **§6** `StageByteBudget` counts committed bytes plus in-flight
+  reservations for the whole stage; exhaustion cancels the stage.
+- **§7** workers bind to a child of the host token; the actor signals on a
+  revision change, on cancel, and on shutdown, and drains before replying.
+- **§8–§9** `ExecutionGenerationAccepted` /
+  `EvidenceGenerationCommitted` / `GenerationInterrupted`, one journal
+  transaction each; recovery retires an unsettled generation before re-entry.
+- **§10** `Invocation::contract_version`, checked by the executor and
+  re-validated by `trusted_evidence_checks`.
+- **§11–§13** receipt-scoped `fetch_evidence`, `fetch_verified`, spool
+  permissions already established by `4896635`.
+- **§15** `verification_request_allowed` refuses while the active
+  generation is unsettled.
+
+Gate: `crates/tachyon-core/tests/evidence_generation.rs`,
+`crates/tachyon-core/tests/evidence_crash.rs`, the unit tests at the bottom
+of `evidence.rs`, and `cargo verify full` (150/150 verified, concurrent
+cells measuring 4–6 overlapping evidence nodes through this path).
