@@ -22,7 +22,7 @@ use tachyon_protocol::{Command, McpEnvEntry, McpServerDescriptor};
 use tachyon_types::SessionId;
 
 mod common;
-use common::{code_of, err, ok, public_env, secret_env, test_dir};
+use common::{code_of, err, ok, public_env, secret_arg, secret_env, test_dir};
 
 fn plain(server_id: &str) -> McpServerDescriptor {
     McpServerDescriptor {
@@ -121,7 +121,10 @@ async fn pin_then_list_reports_handles_only_and_survives_restart() {
     let alpha = &servers[0];
     assert_eq!(alpha["server_id"], "alpha");
     assert_eq!(alpha["command"], "/usr/bin/fake-mcp-server");
-    assert_eq!(alpha["args"], serde_json::json!(["--stdio"]));
+    assert_eq!(
+        alpha["args"],
+        serde_json::json!([{"value": "--stdio", "secret": false}])
+    );
     assert_eq!(alpha["status"], "awaiting_approval");
     let beta = &servers[1];
     assert_eq!(beta["status"], "awaiting_approval");
@@ -160,6 +163,64 @@ async fn pin_then_list_reports_handles_only_and_survives_restart() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Ticket 02 (ACP env-secrets slice): `secret: true` argv entries pin,
+/// list, and restart exactly like secret env — the raw value registers
+/// with the vault at pin time, every list frame carries only the broker
+/// handle, and a non-secret neighbour arg still echoes raw.
+#[tokio::test]
+async fn secret_arg_pins_as_handle_and_never_lists_raw_bytes() {
+    let dir = test_dir();
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let session_id = create_session(&socket).await;
+
+    let raw_secret = "raw-arg-secret-token-777";
+    let mut guarded = plain("guarded");
+    guarded.args = vec!["--stdio".into(), secret_arg(raw_secret)];
+    register(&socket, &session_id, vec![guarded]).await;
+
+    let listed = list(&socket, &session_id).await;
+    let args = listed["servers"][0]["args"].as_array().unwrap();
+    assert_eq!(
+        args[0],
+        serde_json::json!({"value": "--stdio", "secret": false}),
+        "a non-secret arg still echoes its raw value"
+    );
+    assert_eq!(args[1]["secret"], true);
+    let handle = args[1]["value"].as_str().unwrap();
+    assert_ne!(
+        handle, raw_secret,
+        "secret arg lists as a handle, never raw"
+    );
+    assert!(
+        handle.contains("mcp-secret"),
+        "handle names the broker vault: {handle}"
+    );
+    let listed_raw = serde_json::to_string(&listed).unwrap();
+    assert!(
+        !listed_raw.contains(raw_secret),
+        "raw secret arg appears nowhere in list output"
+    );
+
+    gateway.shutdown().await;
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+
+    let again = list(&socket, &session_id).await;
+    assert_eq!(
+        again, listed,
+        "secret-arg pins are durable across a gateway restart"
+    );
+    let again_raw = serde_json::to_string(&again).unwrap();
+    assert!(
+        !again_raw.contains(raw_secret),
+        "handles — not raw secret args — survive the reopen"
+    );
+
+    gateway.shutdown().await;
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[tokio::test]
 // One rejection matrix: splitting the register-refusal catalogue would
 // hide the single untrusted-input contract it pins.
@@ -179,7 +240,7 @@ async fn malicious_descriptors_are_rejected_and_pin_nothing() {
     let mut many_args = plain("many-args");
     many_args.args = vec!["a".into(); 33];
     let mut big_arg = plain("big-arg");
-    big_arg.args = vec!["x".repeat(4097)];
+    big_arg.args = vec!["x".repeat(4097).into()];
     let mut nul_arg = plain("nul-arg");
     nul_arg.args = vec!["a\0b".into()];
     let mut big_env = plain("big-env");
@@ -202,12 +263,42 @@ async fn malicious_descriptors_are_rejected_and_pin_nothing() {
         // Loader hijack.
         "LD_PRELOAD",
         "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "GCONV_PATH",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_FALLBACK_LIBRARY_PATH",
+        // Interpreter / startup injection.
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "PS4",
+        "IFS",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "NODE_OPTIONS",
+        "PERL5OPT",
+        "OPENSSL_CONF",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_EXEC_PATH",
+        "GIT_TEMPLATE_DIR",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "RUBYOPT",
+        "GIT_CONFIG_COUNT",
     ] {
         let mut server = plain("dangerous");
         server.env = vec![public_env(var, "/tmp/evil.so")];
         cases.push(("dangerous env", server));
+    }
+    // An explicit entry may never override an inherited allowlist
+    // location key: refused by NAME, whatever the value claims.
+    for var in tachyon_tools::process::INHERITED_ENV_KEYS {
+        let mut server = plain("inherited-override");
+        server.env = vec![public_env(var, "/hostile/location")];
+        cases.push(("inherited allowlist override", server));
     }
     for bad_name in ["9LIVES", "HAS-DASH", "HAS SPACE", "a$b", ""] {
         let mut server = plain("bad-env-name");

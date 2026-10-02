@@ -972,11 +972,24 @@ fn stream_usage(usage: Option<&serde_json::Value>) -> ModelUsage {
 }
 
 /// OpenAI-compatible provider over any [`HttpTransport`].
+///
+/// Deliberately implements neither `Debug` nor `Serialize`: it can hold
+/// key bytes (see [`Self::with_resolved_api_key`]), so it has no
+/// rendering path at all (spec §35).
 pub struct OpenAiCompatProvider<T = TcpHttpTransport> {
     id: ProviderId,
     config: OpenAiCompatConfig,
     capabilities: ModelCapabilities,
     transport: T,
+    /// Key bytes the app resolved at config load and handed to the
+    /// client. [`ModelProvider::invoke`] prefers this over re-reading
+    /// `config.api_key_env`, so the bytes registered with the gateway's
+    /// redaction broker and the bytes sent as `Authorization` are the
+    /// same by construction — a mid-run env rotation cannot put
+    /// unregistered bytes on the wire (acp-env-secrets ticket 03).
+    /// `None` keeps the env re-read fallback. Not `Debug`/`Serialize`:
+    /// the struct has no rendering path (spec §35).
+    resolved_api_key: Option<String>,
 }
 
 impl<T> OpenAiCompatProvider<T> {
@@ -994,7 +1007,22 @@ impl<T> OpenAiCompatProvider<T> {
             config,
             capabilities,
             transport,
+            resolved_api_key: None,
         }
+    }
+
+    /// Hands the adapter the API key resolved at config load — the same
+    /// bytes the gateway registers with its redaction broker, so the
+    /// wire header and the registry cannot diverge. `invoke` then
+    /// prefers this value over the `api_key_env` re-read; process-env
+    /// rotation after construction is inert until restart (the
+    /// ticket-03 contract — no re-registration machinery). Without this
+    /// call, behavior is byte-identical to before: the env var is
+    /// re-read on every call.
+    #[must_use]
+    pub fn with_resolved_api_key(mut self, key: impl Into<String>) -> Self {
+        self.resolved_api_key = Some(key.into());
+        self
     }
 
     /// Renders the wire body for `request` (exposed for tests).
@@ -1040,11 +1068,18 @@ impl<T: HttpTransport> ModelProvider for OpenAiCompatProvider<T> {
         sink: crate::ModelEventSink,
     ) -> Result<ModelResult, ModelError> {
         let started = Instant::now();
-        let api_key = self
-            .config
-            .api_key_env
-            .as_deref()
-            .and_then(|name| std::env::var(name).ok());
+        // The key resolved at construction wins: registration and this
+        // header then read the same bytes, so a rotated or changed
+        // process env can never put unregistered bytes on the wire.
+        // The env re-read is retained only when no resolved key was
+        // supplied (directly constructed providers, local servers
+        // without auth) — mid-run rotation is inert until restart.
+        let api_key = self.resolved_api_key.clone().or_else(|| {
+            self.config
+                .api_key_env
+                .as_deref()
+                .and_then(|name| std::env::var(name).ok())
+        });
         let url = format!("{}/v1/chat/completions", self.config.base_url);
         // Validate scheme and host before touching the transport: stub
         // transports in tests must see the same rejection a real socket would.
@@ -1132,6 +1167,28 @@ mod tests {
                 Ok(body) => Ok(body.clone()),
                 Err(error) => Err(error.clone()),
             }
+        }
+    }
+
+    /// Records the key `invoke` actually puts on the wire, so the
+    /// resolved-vs-env preference is observable at the transport seam
+    /// (acp-env-secrets ticket 03).
+    struct SpyTransport {
+        seen: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        response: String,
+    }
+
+    #[async_trait]
+    impl HttpTransport for SpyTransport {
+        async fn post_json(
+            &self,
+            _url: &str,
+            api_key: Option<&str>,
+            _body: &str,
+            _timeout_ms: u64,
+        ) -> Result<String, ModelError> {
+            *self.seen.lock().expect("spy lock") = api_key.map(str::to_owned);
+            Ok(self.response.clone())
         }
     }
 
@@ -1376,5 +1433,89 @@ mod tests {
         let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
         let error = provider.invoke(request(), sink).await.expect_err("down");
         assert!(error.is_retryable());
+    }
+
+    /// Ticket 03 (acp-env-secrets): the resolved key is what reaches
+    /// the wire. Rotating the env var AFTER construction changes
+    /// nothing for a provider that was handed a resolved key — rotation
+    /// is inert until restart — while a provider built without one
+    /// keeps the env fallback byte-for-byte (it follows the rotation,
+    /// exactly as directly constructed unit tests rely on).
+    #[tokio::test]
+    // SAFETY: sole test in this binary that reads or writes the process
+    // environment — every other provider test builds configs with
+    // `api_key_env: None`, so no concurrent reader exists (the same
+    // single-owner shape `mcp_env_isolation`/`secret_env_allowlist`
+    // pin for their own `set_var` use).
+    #[allow(unsafe_code)]
+    async fn resolved_key_is_sent_after_env_rotation_and_env_remains_the_fallback() {
+        const KEY_ENV: &str = "TACHYON_TEST_PROVIDER_KEY_ROTATED_03";
+        const RESOLVED: &str = "sk-resolved-at-construction-03-9471";
+        const ROTATED: &str = "sk-rotated-after-construction-03-9471";
+        let completion = serde_json::json!({
+            "choices": [{"message": {"content": "{\"decision\":\"respond\",\"message\":\"hi\"}"}}]
+        })
+        .to_string();
+
+        unsafe { std::env::set_var(KEY_ENV, RESOLVED) };
+        let config = OpenAiCompatConfig {
+            api_key_env: Some(KEY_ENV.to_owned()),
+            ..OpenAiCompatConfig::default()
+        };
+
+        // Env fallback: no resolved key supplied → the env value rides
+        // the wire, byte-identical to the pre-ticket behavior.
+        let fallback_seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let fallback = OpenAiCompatProvider::new(
+            ProviderId("stub".to_owned()),
+            config.clone(),
+            SpyTransport {
+                seen: fallback_seen.clone(),
+                response: completion.clone(),
+            },
+        );
+        // Resolved path: the app hands the key in at construction.
+        let resolved_seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let resolved = OpenAiCompatProvider::new(
+            ProviderId("stub".to_owned()),
+            config,
+            SpyTransport {
+                seen: resolved_seen.clone(),
+                response: completion.clone(),
+            },
+        )
+        .with_resolved_api_key(RESOLVED);
+
+        let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
+        fallback.invoke(request(), sink).await.expect("fallback");
+        assert_eq!(
+            fallback_seen.lock().expect("spy lock").as_deref(),
+            Some(RESOLVED),
+            "with no resolved key the env fallback must send the env value"
+        );
+
+        // Rotation: the env changes after both providers were built.
+        unsafe { std::env::set_var(KEY_ENV, ROTATED) };
+
+        let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
+        resolved.invoke(request(), sink).await.expect("resolved");
+        assert_eq!(
+            resolved_seen.lock().expect("spy lock").as_deref(),
+            Some(RESOLVED),
+            "rotation must not reach the wire of a resolved provider"
+        );
+
+        let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
+        fallback
+            .invoke(request(), sink)
+            .await
+            .expect("fallback again");
+        assert_eq!(
+            fallback_seen.lock().expect("spy lock").as_deref(),
+            Some(ROTATED),
+            "the fallback path keeps following the live env (documented contract)"
+        );
+
+        unsafe { std::env::remove_var(KEY_ENV) };
     }
 }

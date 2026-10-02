@@ -23,12 +23,13 @@ use tachyon_core::{
 use tachyon_models::ModelProvider;
 use tachyon_policy::{ApprovalRequest, Approvals, DefaultPosture, Policy, operation_hash};
 use tachyon_protocol::{
-    Command, CommandResult, EventEnvelope, GatewayEvent, McpEnvEntry, McpServerDescriptor,
-    McpToolInfo, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, ServerFrame, check_version,
-    decode_frame, encode_server_frame,
+    Command, CommandResult, EventEnvelope, GatewayEvent, McpArgEntry, McpEnvEntry,
+    McpServerDescriptor, McpToolInfo, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope,
+    ServerFrame, check_version, decode_frame, encode_server_frame,
 };
 use tachyon_store::{CommitNotice, IdempotencyRow, StoreWriter};
 use tachyon_tools::credential::CredentialBroker;
+use tachyon_tools::process::INHERITED_ENV_KEYS;
 use tachyon_tools::workspace::WorkspaceLease;
 use tachyon_tools::{ToolError, ToolsContext, artifact::ArtifactSpool, authorize};
 use tachyon_types::{ApprovalId, EventId, SessionId, TaskId, Timestamp, WorkspaceId};
@@ -1637,10 +1638,41 @@ const MAX_MCP_ENV_VALUE_BYTES: usize = 16384;
 
 /// Environment variables that must never reach a server child: loader
 /// hijack names redirect dynamic linking (and therefore code execution)
-/// from outside the pinned descriptor. One deterministic name/prefix
-/// rule set consulted by register-time validation, never a copy.
+/// from outside the pinned descriptor, and interpreter/startup names
+/// make the child's runtime load attacker-chosen code before the
+/// pinned entrypoint. One deterministic name/prefix rule set —
+/// register-time validation and launch-time re-validation consult
+/// exactly this, never a copy.
 fn is_dangerous_mcp_env(name: &str) -> bool {
-    name == "LD_PRELOAD" || name == "LD_LIBRARY_PATH" || name.starts_with("DYLD_")
+    const DANGEROUS: &[&str] = &[
+        // Loader hijack (exact names + the `DYLD_*` prefix below).
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "GCONV_PATH",
+        // Interpreter / startup injection (exact names + the
+        // `GIT_CONFIG_*` prefix below).
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "PS4",
+        "IFS",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "NODE_OPTIONS",
+        "PERL5OPT",
+        "OPENSSL_CONF",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_EXEC_PATH",
+        "GIT_TEMPLATE_DIR",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "RUBYOPT",
+    ];
+    DANGEROUS.contains(&name) || name.starts_with("DYLD_") || name.starts_with("GIT_CONFIG_")
 }
 
 /// Env names are `[A-Za-z_][A-Za-z0-9_]*`: the same shape a POSIX shell
@@ -1691,13 +1723,13 @@ fn check_mcp_descriptor(server: &McpServerDescriptor) -> Result<(), String> {
         ));
     }
     for arg in &server.args {
-        if arg.len() > MAX_MCP_ARG_BYTES {
+        if arg.value.len() > MAX_MCP_ARG_BYTES {
             return Err(format!(
                 "server '{}': arg exceeds {MAX_MCP_ARG_BYTES} bytes",
                 server.server_id
             ));
         }
-        if arg.contains('\0') {
+        if arg.value.contains('\0') {
             return Err(format!(
                 "server '{}': arg must be NUL-free",
                 server.server_id
@@ -1714,6 +1746,16 @@ fn check_mcp_descriptor(server: &McpServerDescriptor) -> Result<(), String> {
         if is_dangerous_mcp_env(&entry.name) {
             return Err(format!(
                 "server '{}': env '{}' is forbidden",
+                server.server_id, entry.name
+            ));
+        }
+        // An explicit entry may not override an inherited allowlist
+        // location key: the child's PATH/HOME/... comes from the
+        // gateway's inherited set alone, so a descriptor cannot
+        // repoint it. Rejected by NAME; the value is never echoed.
+        if INHERITED_ENV_KEYS.contains(&entry.name.as_str()) {
+            return Err(format!(
+                "server '{}': env '{}' overrides an inherited allowlist key",
                 server.server_id, entry.name
             ));
         }
@@ -1902,6 +1944,18 @@ async fn encode_mcp_pins(
     let mut pins: Vec<(String, String, String, String)> = Vec::with_capacity(servers.len());
     let mut broker = state.mcp_credentials.lock().await;
     for server in servers {
+        let mut stored_args = Vec::with_capacity(server.args.len());
+        for arg in &server.args {
+            let stored_value = if arg.secret {
+                broker.register(arg.value.as_bytes(), "mcp-secret").0
+            } else {
+                arg.value.clone()
+            };
+            stored_args.push(McpArgEntry {
+                value: stored_value,
+                secret: arg.secret,
+            });
+        }
         let mut stored_env = Vec::with_capacity(server.env.len());
         for entry in &server.env {
             let stored_value = if entry.secret {
@@ -1915,7 +1969,7 @@ async fn encode_mcp_pins(
                 secret: entry.secret,
             });
         }
-        let args_json = match serde_json::to_string(&server.args) {
+        let args_json = match serde_json::to_string(&stored_args) {
             Ok(json) => json,
             Err(err) => return Err(fail("internal", format!("args encode failed: {err}"))),
         };
@@ -1994,7 +2048,7 @@ async fn list_mcp_servers(state: &Arc<GatewayState>, session_id: SessionId) -> C
         Ok(rows) => {
             let mut servers = Vec::with_capacity(rows.len());
             for row in &rows {
-                let args: Vec<String> = match serde_json::from_str(&row.args_json) {
+                let args: Vec<McpArgEntry> = match serde_json::from_str(&row.args_json) {
                     Ok(args) => args,
                     Err(err) => {
                         return fail("internal", format!("stored args unreadable: {err}"));
@@ -2182,7 +2236,7 @@ async fn launch_one_mcp_server(
         }
         Err(err) => return Err(fail("internal", err.to_string())),
     };
-    let args: Vec<String> = match serde_json::from_str(&row.args_json) {
+    let args: Vec<McpArgEntry> = match serde_json::from_str(&row.args_json) {
         Ok(args) => args,
         Err(err) => {
             return Err(fail(
@@ -2200,6 +2254,27 @@ async fn launch_one_mcp_server(
             ));
         }
     };
+    // Defense in depth (ticket 01): the stored row is untrusted at the
+    // use site, so the full register-time core re-runs on it right
+    // before spawn. A mutated, legacy, or hostile row refuses typed —
+    // name-only message, zero processes started — through the same
+    // launch-failure lifecycle as any other pre-spawn failure below.
+    if let Err(message) = check_mcp_descriptor(&McpServerDescriptor {
+        server_id: server_id.to_owned(),
+        command: row.command.clone(),
+        args: args.clone(),
+        env: env.clone(),
+    }) {
+        if let Err(store_err) = state
+            .store
+            .mark_mcp_servers(session_id, &[server_id], "stopped")
+            .await
+        {
+            return Err(fail("internal", store_err.to_string()));
+        }
+        drop_live_mcp_servers(state, session_id, &[server_id]).await;
+        return Err(fail("invalid_mcp_descriptor", message));
+    }
     let live = match launch_mcp_server(server_id, &row.command, &args, &env, secrets, cwd).await {
         Ok(live) => live,
         Err(err) => {
@@ -4194,5 +4269,138 @@ mod stale_supervisor_tests {
 
         state.store.close().await;
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod mcp_descriptor_tests {
+    //! The shared descriptor core (ticket 01): one deterministic
+    //! name/prefix rule set consulted by register-time validation AND
+    //! launch-time re-validation — loader-hijack and
+    //! interpreter-startup env names denied, inherited allowlist
+    //! location keys never overridable by an explicit entry, every
+    //! refusal name-only.
+
+    use super::*;
+
+    fn descriptor(env: Vec<McpEnvEntry>) -> McpServerDescriptor {
+        McpServerDescriptor {
+            server_id: "probe".to_owned(),
+            command: "/usr/bin/true".to_owned(),
+            args: vec![],
+            env,
+        }
+    }
+
+    fn env_entry(name: &str, value: &str) -> McpEnvEntry {
+        McpEnvEntry {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            secret: false,
+        }
+    }
+
+    /// Every spec-pinned denylist vector: loader hijack (exact names +
+    /// `DYLD_*`) and interpreter/startup injection (exact names +
+    /// `GIT_CONFIG_*`), and nothing benign near them.
+    #[test]
+    fn denylist_covers_loader_and_interpreter_vectors() {
+        for name in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "GCONV_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "BASH_ENV",
+            "ENV",
+            "SHELLOPTS",
+            "PS4",
+            "IFS",
+            "PYTHONPATH",
+            "PYTHONSTARTUP",
+            "NODE_OPTIONS",
+            "PERL5OPT",
+            "OPENSSL_CONF",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "GIT_SSH_COMMAND",
+            "GIT_SSH",
+            "GIT_EXEC_PATH",
+            "GIT_TEMPLATE_DIR",
+            "JAVA_TOOL_OPTIONS",
+            "_JAVA_OPTIONS",
+            "RUBYOPT",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+        ] {
+            assert!(is_dangerous_mcp_env(name), "{name} must be denied");
+        }
+        for name in ["LOG_LEVEL", "API_TOKEN", "LANG", "LC_ALL", "TZ", "GEM_HOME"] {
+            assert!(!is_dangerous_mcp_env(name), "{name} must stay allowed");
+        }
+    }
+
+    #[test]
+    fn denylisted_names_are_refused_by_name_without_the_value() {
+        for name in [
+            "LD_PRELOAD",
+            "LD_AUDIT",
+            "GCONV_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "BASH_ENV",
+            "ENV",
+            "SHELLOPTS",
+            "PS4",
+            "IFS",
+            "PYTHONPATH",
+            "PYTHONSTARTUP",
+            "NODE_OPTIONS",
+            "PERL5OPT",
+            "OPENSSL_CONF",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "GIT_SSH_COMMAND",
+            "GIT_SSH",
+            "GIT_EXEC_PATH",
+            "GIT_TEMPLATE_DIR",
+            "JAVA_TOOL_OPTIONS",
+            "_JAVA_OPTIONS",
+            "RUBYOPT",
+            "GIT_CONFIG_COUNT",
+        ] {
+            let err =
+                check_mcp_descriptor(&descriptor(vec![env_entry(name, "hostile-value-marker")]))
+                    .expect_err(&format!("{name} must be refused"));
+            assert!(err.contains(name), "refusal names '{name}': {err}");
+            assert!(
+                !err.contains("hostile-value-marker"),
+                "refusal never echoes the value: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_allowlist_keys_are_never_overridable() {
+        for key in tachyon_tools::process::INHERITED_ENV_KEYS {
+            let err =
+                check_mcp_descriptor(&descriptor(vec![env_entry(key, "hostile-value-marker")]))
+                    .expect_err(&format!("an explicit {key} entry must be refused"));
+            assert!(err.contains(key), "refusal names '{key}': {err}");
+            assert!(
+                !err.contains("hostile-value-marker"),
+                "refusal never echoes the value: {err}"
+            );
+        }
+    }
+
+    /// The launch re-validation re-runs THIS core, so its coverage is
+    /// the launch coverage: env value bounds included, not a subset.
+    #[test]
+    fn check_mcp_descriptor_covers_env_value_bounds() {
+        let err = check_mcp_descriptor(&descriptor(vec![env_entry("BLOB", &"v".repeat(16_385))]))
+            .expect_err("an oversized env value must be refused");
+        assert!(err.contains("16384"), "bound named in the refusal: {err}");
+        assert!(!err.contains(&"v".repeat(64)), "value never echoed: {err}");
     }
 }

@@ -119,6 +119,66 @@ pub struct McpEnvEntry {
     pub secret: bool,
 }
 
+/// One argument of a client-supplied **MCP server** descriptor —
+/// symmetric with [`McpEnvEntry`] (ADR-0005 blocker 4, ticket 02).
+///
+/// `value` is the literal argv value for `secret: false`. For
+/// `secret: true` the gateway registers the value in the
+/// `CredentialBroker` at registration time; only the issued handle is
+/// ever persisted or returned, never the raw value. A plain JSON string
+/// inside `args` deserializes as `{value, secret: false}`, so legacy
+/// requests and stored rows keep parsing unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct McpArgEntry {
+    /// Literal argv value, or the broker handle once pinned and listed.
+    pub value: String,
+    /// When true, the value is secret material (broker handle only).
+    pub secret: bool,
+}
+
+impl From<String> for McpArgEntry {
+    fn from(value: String) -> Self {
+        Self {
+            value,
+            secret: false,
+        }
+    }
+}
+
+impl From<&str> for McpArgEntry {
+    fn from(value: &str) -> Self {
+        Self {
+            value: value.to_owned(),
+            secret: false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for McpArgEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Plain(String),
+            Entry {
+                value: String,
+                #[serde(default)]
+                secret: bool,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Plain(value) => McpArgEntry {
+                value,
+                secret: false,
+            },
+            Repr::Entry { value, secret } => McpArgEntry { value, secret },
+        })
+    }
+}
+
 /// Client-supplied **MCP server** descriptor: the authorized subprocess
 /// shape pinned to one session (ticket 01 validates + pins, no launch).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,7 +189,9 @@ pub struct McpServerDescriptor {
     /// registration; executability at launch).
     pub command: String,
     /// Arguments (at most 32 entries, each at most 4KiB, NUL-free).
-    pub args: Vec<String>,
+    /// Plain JSON strings deserialize as non-secret entries; a
+    /// `secret: true` entry persists and lists as a broker handle only.
+    pub args: Vec<McpArgEntry>,
     /// Environment entries (names `[A-Za-z_][A-Za-z0-9_]*`, values at
     /// most 16KiB; dangerous variables rejected).
     #[serde(default)]
@@ -868,6 +930,85 @@ mod tests {
             }
             other => panic!("expected opaque journal passthrough, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn mcp_args_parse_legacy_strings_and_secret_entries() {
+        use super::{McpArgEntry, McpServerDescriptor};
+
+        // Legacy plain-string arrays (pre-secret rows and requests)
+        // parse as non-secret entries.
+        let legacy: McpServerDescriptor = serde_json::from_str(
+            r#"{"server_id":"legacy","command":"/usr/bin/s","args":["--stdio","-v"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.args,
+            vec![McpArgEntry::from("--stdio"), McpArgEntry::from("-v")]
+        );
+        assert!(legacy.args.iter().all(|arg| !arg.secret));
+
+        // Entry form: `secret` defaults to false when omitted.
+        let entries: McpServerDescriptor = serde_json::from_str(
+            r#"{"server_id":"entries","command":"/usr/bin/s",
+                "args":[{"value":"--token","secret":true},{"value":"-v"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            entries.args,
+            vec![
+                McpArgEntry {
+                    value: "--token".to_owned(),
+                    secret: true,
+                },
+                McpArgEntry::from("-v"),
+            ]
+        );
+
+        // A full legacy request frame still decodes end to end.
+        let request: RequestEnvelope = serde_json::from_value(serde_json::json!({
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": EventId::generate(),
+            "command": {
+                "RegisterMCPServers": {
+                    "session_id": SessionId::generate(),
+                    "servers": [{
+                        "server_id": "legacy",
+                        "command": "/usr/bin/s",
+                        "args": ["--stdio"]
+                    }]
+                }
+            },
+        }))
+        .unwrap();
+        let Command::RegisterMCPServers { servers, .. } = request.command else {
+            panic!("expected RegisterMCPServers, got {:?}", request.command);
+        };
+        assert_eq!(servers[0].args, vec![McpArgEntry::from("--stdio")]);
+
+        // Entries serialize as `{value, secret}` objects and round-trip
+        // through a frame unchanged.
+        let register = Command::RegisterMCPServers {
+            session_id: SessionId::generate(),
+            servers: vec![McpServerDescriptor {
+                server_id: "entries".to_owned(),
+                command: "/usr/bin/s".to_owned(),
+                args: vec![McpArgEntry {
+                    value: "handle-only".to_owned(),
+                    secret: true,
+                }],
+                env: vec![],
+            }],
+        };
+        let bytes = encode_frame(&register).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, register);
+        let json: serde_json::Value = serde_json::from_slice(&bytes[FRAME_PREFIX_LEN..]).unwrap();
+        assert_eq!(
+            json["RegisterMCPServers"]["servers"][0]["args"],
+            serde_json::json!([{"value": "handle-only", "secret": true}])
+        );
     }
 
     #[test]

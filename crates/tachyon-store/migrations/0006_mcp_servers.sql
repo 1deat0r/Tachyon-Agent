@@ -1,7 +1,7 @@
 -- Pinned MCP server descriptors (issue #57, ACP MCP-stdio slice ticket 01;
 -- ADR-0005 blocker 3). One row per (session_id, server_id): the validated
--- command, args JSON, env JSON (`secret: true` env values persist as
--- CredentialBroker handles only, never raw), and lifecycle status
+-- command, args JSON, env JSON (`secret: true` arg and env values persist
+-- as CredentialBroker handles only, never raw), and lifecycle status
 -- (`awaiting_approval` at pin; `live` / `refused` / `stopped` via launch
 -- decisions). Additive: new table only, existing rows and columns untouched.
 -- Re-register upserts the named rows; no expiry/GC this slice.

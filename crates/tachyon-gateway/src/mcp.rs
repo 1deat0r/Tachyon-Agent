@@ -22,7 +22,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tachyon_protocol::{McpEnvEntry, McpToolInfo};
+use tachyon_protocol::{McpArgEntry, McpEnvEntry, McpToolInfo};
 use tachyon_tools::credential::CredentialBroker;
 use tachyon_tools::process::INHERITED_ENV_KEYS;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -310,15 +310,17 @@ impl LiveMcpServer {
 /// Spawns one pinned server, handshakes it, and records its inventory.
 /// The full launch contract in one place: absolute-path command, cleared
 /// environment (allowlist + explicit entries with broker-injected
-/// secrets), cwd forced to the pinned session root, owned process
-/// group, stderr drained redacted to logs,
+/// secrets), secret argv entries resolved from the vault exactly like
+/// secret env (a handle this gateway's vault never saw refuses the
+/// launch before any process starts), cwd forced to the pinned session
+/// root, owned process group, stderr drained redacted to logs,
 /// `initialize` version check, then the `tools/list` inventory — the
 /// child is admitted `live` only once both round trips answer within
 /// their bounds.
 pub async fn launch_mcp_server(
     server_id: &str,
     command: &str,
-    args: &[String],
+    args: &[McpArgEntry],
     env: &[McpEnvEntry],
     secrets: &CredentialBroker,
     cwd: &Path,
@@ -352,9 +354,34 @@ pub async fn launch_mcp_server(
         };
         literal.insert(entry.name.clone().into(), value);
     }
+    // Secret args resolve from the vault exactly like secret env, into
+    // the child's argv: a handle this gateway's vault never saw fails
+    // the launch BEFORE any process starts (typed `mcp_spawn_failed`),
+    // so a stale post-restart row never execs with a missing secret.
+    // The refusal names the argument position only — never its value.
+    let mut child_args: Vec<OsString> = Vec::with_capacity(args.len());
+    for (index, arg) in args.iter().enumerate() {
+        let value = if arg.secret {
+            let handle = tachyon_tools::credential::CredentialHandle(arg.value.clone());
+            match secrets.use_handle(&handle) {
+                Some(secret) => os_string_from_secret(&secret),
+                None => {
+                    return Err(McpLaunchError::spawn(format!(
+                        "server '{server_id}': secret arg #{} is not in this \
+                         gateway's vault (register again to re-arm it)",
+                        index + 1
+                    )));
+                }
+            }
+        } else {
+            arg.value.clone().into()
+        };
+        child_args.push(value);
+    }
+
     let mut spawn = Command::new(command);
     spawn
-        .args(args)
+        .args(&child_args)
         .env_clear()
         .envs(&literal)
         .current_dir(cwd)
@@ -686,6 +713,34 @@ mod tests {
         )
         .await
         .expect_err("an unarmed secret must fail the launch");
+        assert_eq!(err.code, "mcp_spawn_failed");
+        assert!(
+            err.message.contains("not in this gateway's vault"),
+            "the refusal names the vault loss: {err:?}"
+        );
+    }
+
+    /// The argv twin of `unarmed_vault_refuses_spawn_before_any_process_starts`:
+    /// a `secret: true` arg whose handle this gateway's vault never saw
+    /// fails the launch BEFORE any spawn — typed `mcp_spawn_failed` —
+    /// so a stale row can never exec with a missing secret.
+    #[tokio::test]
+    async fn unarmed_vault_refuses_spawn_for_secret_args_before_any_process() {
+        let broker = CredentialBroker::default();
+        let dir = std::env::temp_dir();
+        let err = launch_mcp_server(
+            "worker",
+            "/bin/definitely-not-a-real-mcp-server",
+            &[McpArgEntry {
+                value: "mcp-secret-1".to_owned(),
+                secret: true,
+            }],
+            &[],
+            &broker,
+            &dir,
+        )
+        .await
+        .expect_err("an unarmed secret arg must fail the launch");
         assert_eq!(err.code, "mcp_spawn_failed");
         assert!(
             err.message.contains("not in this gateway's vault"),

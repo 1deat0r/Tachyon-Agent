@@ -22,7 +22,9 @@ use thiserror::Error;
 
 use tachyon_gateway::{FAKE_PROVIDER_LABEL, GatewayRuntime};
 use tachyon_models::fake::FakeModelProvider;
-use tachyon_models::{ModelProvider, OpenAiCompatConfig, OpenAiCompatProvider};
+use tachyon_models::{
+    HttpTransport, ModelProvider, OpenAiCompatConfig, OpenAiCompatProvider, TcpHttpTransport,
+};
 use tachyon_tools::credential::CredentialBroker;
 use tachyon_types::ProviderId;
 
@@ -270,18 +272,9 @@ impl Config {
                     .unwrap_or_else(|| "scripted-replay-1".to_owned()),
             ),
             Some(section) => {
-                let provider = OpenAiCompatProvider::local(
-                    ProviderId("openai-compat".into()),
-                    OpenAiCompatConfig {
-                        base_url: section.base_url.clone().unwrap_or_default(),
-                        model: section.model.clone().unwrap_or_default(),
-                        api_key_env: section.api_key_env.clone(),
-                        request_timeout_ms: 60_000,
-                        context_window_tokens: 128_000,
-                        allow_insecure_remote: section.allow_insecure_remote.unwrap_or(false),
-                        stream: section.stream.unwrap_or(true),
-                    },
-                );
+                let transport =
+                    TcpHttpTransport::new(section.allow_insecure_remote.unwrap_or(false));
+                let provider = self.build_openai_compat(section, transport);
                 (
                     Some(std::sync::Arc::new(provider) as std::sync::Arc<dyn ModelProvider>),
                     "openai_compat".to_owned(),
@@ -294,6 +287,40 @@ impl Config {
             label,
             model,
             redactor,
+        }
+    }
+
+    /// Builds the `openai_compat` provider for `section` over `transport`,
+    /// injecting the key this config resolved at load. This is the ONE
+    /// construction site: `gateway_runtime` and the wire-key test share
+    /// it, and `gateway_runtime` registers the same
+    /// [`Config::provider_key`] bytes with the redaction broker — so the
+    /// registered bytes and the transport's `Authorization` header are
+    /// the same by construction, never by convention (acp-env-secrets
+    /// ticket 03). Generic over the transport so tests can substitute a
+    /// recording one; `api_key_env` stays as the fallback for a config
+    /// with no resolved key.
+    fn build_openai_compat<T: HttpTransport>(
+        &self,
+        section: &ProviderConfig,
+        transport: T,
+    ) -> OpenAiCompatProvider<T> {
+        let provider = OpenAiCompatProvider::new(
+            ProviderId("openai-compat".into()),
+            OpenAiCompatConfig {
+                base_url: section.base_url.clone().unwrap_or_default(),
+                model: section.model.clone().unwrap_or_default(),
+                api_key_env: section.api_key_env.clone(),
+                request_timeout_ms: 60_000,
+                context_window_tokens: 128_000,
+                allow_insecure_remote: section.allow_insecure_remote.unwrap_or(false),
+                stream: section.stream.unwrap_or(true),
+            },
+            transport,
+        );
+        match self.provider_key.as_ref() {
+            Some(key) => provider.with_resolved_api_key(key.expose()),
+            None => provider,
         }
     }
 
@@ -542,6 +569,32 @@ mod provider_tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tachyon_gateway::FAKE_PROVIDER_LABEL;
+    use tachyon_models::{HttpTransport, ModelError, ModelProvider, ModelRequest, Role};
+
+    /// Canned completion a recording transport answers with, so
+    /// `invoke` completes instead of erroring after the header is sent.
+    const WIRE_COMPLETION: &str = r#"{"choices":[{"message":{"content":"{\"decision\":\"respond\",\"message\":\"wire\"}"}}]}"#;
+
+    /// Ticket 03: captures the key `invoke` puts on the wire — the
+    /// app-side twin of the spy in tachyon-models' `openai_compat` tests.
+    struct RecordingTransport {
+        seen: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for RecordingTransport {
+        async fn post_json(
+            &self,
+            _url: &str,
+            api_key: Option<&str>,
+            _body: &str,
+            _timeout_ms: u64,
+        ) -> Result<String, ModelError> {
+            *self.seen.lock().expect("recording lock") = api_key.map(str::to_owned);
+            Ok(self.response.clone())
+        }
+    }
 
     fn write_config(json: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -725,6 +778,132 @@ mod provider_tests {
         assert!(
             scrubbed.contains("[redacted:provider-api-key"),
             "got {scrubbed}"
+        );
+    }
+
+    /// Ticket 03 (acp-env-secrets): the app-resolved key is the single
+    /// source of truth. One narrative pins the whole chain — resolve at
+    /// load, register those exact bytes, build the provider through the
+    /// SAME construction site `gateway_runtime` uses, rotate the
+    /// process env, invoke — and the transport header still carries the
+    /// registered bytes. Rotation is inert until restart; there is no
+    /// re-registration machinery (the ticket's contract).
+    ///
+    /// The chain runs in a self-spawned child that executes exactly
+    /// this one test (the `effect_recovery_tests` pattern), because the
+    /// unit-test binary is shared with tests that read the process env
+    /// concurrently — `set_var` is only sound when this process has no
+    /// other env reader, so the mutation never happens in-process here.
+    const ROTATION_KEY_ENV: &str = "TACHYON_TEST_PROVIDER_KEY_ROTATION_03";
+    const ROTATION_CHILD_ENV: &str = "TACHYON_TEST_PROVIDER_KEY_ROTATION_CHILD_03";
+    const REGISTERED_KEY: &str = "sk-registered-at-config-load-03-9471";
+    const ROTATED_KEY: &str = "sk-rotated-after-config-load-03-9471";
+
+    #[tokio::test]
+    async fn registered_key_is_the_transport_header_after_process_env_rotation() {
+        if std::env::var(ROTATION_CHILD_ENV).is_ok() {
+            rotation_chain().await;
+            std::process::exit(0);
+        }
+        let mut child = std::process::Command::new(
+            std::env::current_exe().expect("test binary path"),
+        )
+        .args([
+            "--exact",
+            "config::provider_tests::registered_key_is_the_transport_header_after_process_env_rotation",
+            "--nocapture",
+        ])
+        .env(ROTATION_CHILD_ENV, "1")
+        .env(ROTATION_KEY_ENV, REGISTERED_KEY)
+        .spawn()
+        .expect("rotation child spawns");
+        // Bounded wait (the effect-recovery precedent): a wedged child
+        // must fail the test, never hang the suite.
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll rotation child") {
+                break status;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(30) {
+                let _ = child.kill();
+                panic!("rotation chain child timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(
+            status.success(),
+            "rotation chain child failed ({status}); its assertions print above"
+        );
+    }
+
+    /// The chain itself. Runs ONLY in the self-spawned child (env
+    /// marker above): that process executes exactly this one test
+    /// (`--exact`), so the `set_var` rotation below has no concurrent
+    /// environment reader — the SAFETY shape `effect_recovery_tests`,
+    /// `mcp_env_isolation`, and `secret_env_allowlist` use.
+    #[allow(unsafe_code)]
+    async fn rotation_chain() {
+        // 1. Resolve at load: the child process starts with the key in
+        //    its environment (the parent passed it with `.env`).
+        let json = format!(
+            r#"{{"provider":{{"kind":"openai_compat","base_url":"http://127.0.0.1:11434","model":"llama-3","api_key_env":"{ROTATION_KEY_ENV}"}}}}"#
+        );
+        let path = write_config(&json);
+        let config =
+            Config::load(Some(path), CliOverrides::default()).expect("load resolves the key");
+        assert_eq!(
+            config.provider_key.as_ref().expect("resolved").expose(),
+            REGISTERED_KEY,
+            "Config::load must resolve the declared key at load"
+        );
+
+        // 2. Register at load: gateway_runtime registers exactly those
+        //    bytes with the redaction broker.
+        let runtime = config.gateway_runtime();
+        let probe = format!("upstream 401: bearer token {REGISTERED_KEY} rejected");
+        let scrubbed = runtime.redactor.redact(&probe);
+        assert!(
+            !scrubbed.contains(REGISTERED_KEY),
+            "registered bytes not redacted: {scrubbed}"
+        );
+        assert!(
+            scrubbed.contains("[redacted:provider-api-key"),
+            "got {scrubbed}"
+        );
+
+        // 3. The provider goes through the SAME construction site
+        //    gateway_runtime used, over a recording transport so the
+        //    header bytes are observable.
+        let section = config.provider.as_ref().expect("provider section").clone();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let provider = config.build_openai_compat(
+            &section,
+            RecordingTransport {
+                seen: seen.clone(),
+                response: WIRE_COMPLETION.to_owned(),
+            },
+        );
+
+        // 4. Rotate the process env AFTER load+register — the exact
+        //    divergence this ticket closes.
+        // SAFETY: sole test in this child process (spawned `--exact`),
+        // so nothing else reads the environment concurrently.
+        unsafe { std::env::set_var(ROTATION_KEY_ENV, ROTATED_KEY) };
+
+        // 5. The wire header must still be the registered bytes.
+        let request = ModelRequest {
+            role: Role::Primary,
+            model: section.model.clone().unwrap_or_default(),
+            context: Vec::new(),
+            max_output_tokens: 64,
+            require_structured_output: false,
+        };
+        let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
+        provider.invoke(request, sink).await.expect("invoke");
+        assert_eq!(
+            seen.lock().expect("recording lock").as_deref(),
+            Some(REGISTERED_KEY),
+            "the rotated env value reached the transport header"
         );
     }
 }

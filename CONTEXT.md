@@ -45,6 +45,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | Term | Meaning |
 |------|---------|
 | **Capability** | Explicit policy-controlled permission (path globs, process, network, credentials). Model text cannot grant capabilities. |
+| **Credential handle** | Opaque reference standing in for a raw secret. Durable rows and list frames carry the **bare** handle (`mcp-secret-1`); the `[redacted:<label>-<n>]` wrapper appears only in scrubbed outputs (receipts, logs, tool results), never in a row. Only the in-process `CredentialBroker` maps handle → raw value; raw bytes reach exactly one sink (e.g. a child's `execve`) and never a row, prompt, or log (ADR-0005). |
 | **Access set** | See above; also the thing policy checks against capabilities. |
 | **JudgmentProvider** | Abstraction over OpenJEV (and fakes). OpenJEV is replaceable; core works without it. |
 | **Acceptance contract / verification gate** | Machine-checkable definition of done. Completion never comes from model self-report. |

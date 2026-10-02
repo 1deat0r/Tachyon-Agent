@@ -219,8 +219,9 @@ pub struct SessionRow {
 /// One row of `mcp_servers` (ACP MCP-stdio slice tickets 01-02): a
 /// validated client-supplied **MCP server** descriptor pinned to one
 /// session. `args_json` is the JSON args array and `env_json` the JSON
-/// env array (`secret: true` values persist as broker handles only,
-/// never raw). `version` is the `initialize`-negotiated protocol version
+/// env array, each with `secret: true` entries stored as broker handles
+/// only — an arg entry with a secret value persists as its credential
+/// handle, never raw. `version` is the `initialize`-negotiated protocol version
 /// and `tools_json` the recorded `tools/list` inventory — both set only
 /// while the row is `live`, cleared on every other transition.
 #[derive(Clone, Debug, PartialEq, Eq, FromRow)]
@@ -231,7 +232,8 @@ pub struct McpServerRow {
     pub server_id: String,
     /// Absolute server command path.
     pub command: String,
-    /// JSON-encoded args array.
+    /// JSON-encoded args array (entries with secret values persisted as
+    /// credential handles).
     pub args_json: String,
     /// JSON-encoded env array (handles only for secrets).
     pub env_json: String,
@@ -274,7 +276,7 @@ pub struct McpApprovalRow {
 }
 
 /// One validated MCP server to pin: the durable column values the
-/// gateway computed (args JSON, env JSON — broker handles where an env
+/// gateway computed (args JSON, env JSON — credential handles where a
 /// secret is marked). The store only
 /// persists what it is given; validation and secret registration live
 /// in the gateway.
@@ -284,7 +286,8 @@ pub struct McpServerPin<'a> {
     pub server_id: &'a str,
     /// Absolute server command path.
     pub command: &'a str,
-    /// JSON-encoded args array.
+    /// JSON-encoded args array (entries with secret values persisted as
+    /// credential handles).
     pub args_json: &'a str,
     /// JSON-encoded env array (handles only for secrets).
     pub env_json: &'a str,

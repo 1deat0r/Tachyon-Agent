@@ -11,7 +11,8 @@ use tachyon_gateway::{FAKE_PROVIDER_LABEL, GatewayRuntime};
 use tachyon_models::ModelProvider;
 use tachyon_models::fake::FakeModelProvider;
 use tachyon_protocol::{
-    Command, CommandResult, McpEnvEntry, McpServerDescriptor, RequestEnvelope, ResponseEnvelope,
+    Command, CommandResult, McpArgEntry, McpEnvEntry, McpServerDescriptor, RequestEnvelope,
+    ResponseEnvelope,
 };
 use tachyon_tools::credential::CredentialBroker;
 use tachyon_types::{EventId, ProviderId};
@@ -130,6 +131,16 @@ pub fn public_env(name: &str, value: &str) -> McpEnvEntry {
 pub fn secret_env(name: &str, value: &str) -> McpEnvEntry {
     McpEnvEntry {
         name: name.to_owned(),
+        value: value.to_owned(),
+        secret: true,
+    }
+}
+
+/// One secret argv entry for an MCP server descriptor (ticket 02):
+/// registered in the broker vault at `RegisterMCPServers` time,
+/// persisted and listed as a handle only — never the raw value.
+pub fn secret_arg(value: &str) -> McpArgEntry {
+    McpArgEntry {
         value: value.to_owned(),
         secret: true,
     }

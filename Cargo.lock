@@ -2521,6 +2521,7 @@ name = "tachyon-app"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "serde",
  "serde_json",

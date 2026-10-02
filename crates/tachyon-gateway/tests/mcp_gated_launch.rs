@@ -106,8 +106,8 @@ use tachyon_types::{ApprovalId, SessionId};
 
 mod common;
 use common::{
-    code_of, create_rooted_session, err, ok, public_env, script_server, secret_env, send,
-    server_by_id, test_dir, write_script,
+    code_of, create_rooted_session, err, ok, public_env, script_server, secret_arg, secret_env,
+    send, server_by_id, test_dir, write_script,
 };
 
 /// Fake MCP child that exits before any handshake I/O (EOF path).
@@ -208,8 +208,83 @@ fn fake_noisy_with_secret(secret: &str) -> String {
     )
 }
 
+/// Fake MCP child that demands `__EXPECTED_ARG__` in its own argv and
+/// exits before the handshake otherwise: a live launch IS the proof that
+/// the broker-resolved raw secret reached `execve` as an argument.
+const FAKE_ARG_TEMPLATE: &str = r#"
+import json, os, sys, time
+marker = os.environ.get("MARKER_FILE", "")
+if marker:
+    with open(marker, "a") as f:
+        f.write("spawn\n")
+expected = __EXPECTED_ARG__
+if expected and expected not in sys.argv:
+    sys.exit(1)
+version = os.environ.get("REPORT_VERSION", "2024-11-05")
+def readline():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(0)
+    return json.loads(line)
+req = readline()
+assert req.get("method") == "initialize", req
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0", "id": req.get("id"),
+    "result": {"protocolVersion": version,
+               "serverInfo": {"name": "fake-mcp", "version": "0.1"}},
+}) + "\n")
+sys.stdout.flush()
+msg = readline()
+if "id" not in msg:
+    msg = readline()
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0", "id": msg.get("id"),
+    "result": {"tools": [{"name": "echo", "description": "echo input"},
+                         {"name": "add", "description": "add numbers"}]},
+}) + "\n")
+sys.stdout.flush()
+while True:
+    time.sleep(60)
+"#;
+
+/// The argv fake expecting `arg` as one argv element: the literal is
+/// JSON-quoted into the script, so the value never crosses the gateway
+/// as a public entry.
+fn fake_ok_with_arg(arg: &str) -> String {
+    FAKE_ARG_TEMPLATE.replace("__EXPECTED_ARG__", &serde_json::to_string(arg).unwrap())
+}
+
 fn marker_count(marker: &Path) -> usize {
     std::fs::read_to_string(marker).map_or(0, |text| text.lines().count())
+}
+
+/// Rewrites one pinned row's JSON column directly in `state.db` — the
+/// hostile-mutation / legacy-row seam register-time validation can never
+/// see (`env_json` for env entries, `args_json` for argv entries). The
+/// trailing `changes()` proves exactly one row was rewritten (its line
+/// is the last in the output, after the `busy_timeout` echo).
+fn mutate_row_json(db: &Path, server_id: &str, column: &str, json: &str) {
+    let sql = format!(
+        "PRAGMA busy_timeout = 5000;\n\
+         UPDATE mcp_servers SET {column} = '{json}' WHERE server_id = '{server_id}';\n\
+         SELECT changes();"
+    );
+    let output = std::process::Command::new("sqlite3")
+        .arg(db)
+        .arg(sql)
+        .output()
+        .expect("sqlite3 CLI rewrites the pinned row");
+    assert!(
+        output.status.success(),
+        "sqlite3 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.lines().last(),
+        Some("1"),
+        "exactly one pinned row mutated: {stdout:?}"
+    );
 }
 
 async fn create_rootless_session(socket: &Path) -> String {
@@ -876,6 +951,89 @@ async fn nonexistent_command_is_a_typed_spawn_failure() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Ticket 01 (ACP env-secrets slice): the stored row is untrusted at
+/// the use site, not just at register. Each case pins a valid row,
+/// then rewrites its `env_json` straight in `state.db` (bypassing
+/// register-time validation) with a hostile entry: the full descriptor
+/// core re-runs immediately before spawn and refuses with typed
+/// `invalid_mcp_descriptor` — name-only message, zero processes
+/// started, and the existing launch-failure lifecycle marks the row
+/// `stopped`.
+#[tokio::test]
+async fn mutated_row_launch_refuses_typed_with_zero_process() {
+    // One case per rule group the launch re-validation must cover:
+    // loader denylist, interpreter denylist, inherited allowlist
+    // override, env name shape, and env value bounds.
+    let cases: Vec<(&str, String)> = vec![
+        ("LD_PRELOAD", "/tmp/evil.so".to_owned()),
+        ("BASH_ENV", "/tmp/hostile-bashrc".to_owned()),
+        ("PATH", "/hostile/bin".to_owned()),
+        ("BAD-NAME", "hostile-value".to_owned()),
+        ("BLOB", "v".repeat(17_000)),
+    ];
+    for (bad_name, bad_value) in &cases {
+        let dir = test_dir();
+        let root = dir.join("session-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let script = write_script(&dir, "fake_ok.py", &fake_ok());
+        let marker = dir.join("spawns.log");
+        let gateway = start(&dir).await.unwrap();
+        let socket = gateway.address().to_owned();
+        let session_id = create_rooted_session(&socket, &root).await;
+
+        let registered = register(
+            &socket,
+            &session_id,
+            vec![script_server(
+                "mutated",
+                &script,
+                vec![public_env("MARKER_FILE", marker.to_str().unwrap())],
+            )],
+        )
+        .await;
+        let approval_id = registered["approval_id"].as_str().unwrap().to_owned();
+
+        let env_json = serde_json::json!([
+            {"name": bad_name, "value": bad_value, "secret": false},
+            {"name": "MARKER_FILE", "value": marker.to_str().unwrap(), "secret": false},
+        ])
+        .to_string();
+        mutate_row_json(&dir.join("state.db"), "mutated", "env_json", &env_json);
+
+        let (status, _, failure) = approve(&socket, &session_id, &approval_id).await;
+        assert_eq!(
+            status, 400,
+            "{bad_name}: a mutated row must refuse launch: {failure}"
+        );
+        assert_eq!(
+            code_of(&failure),
+            "invalid_mcp_descriptor",
+            "{bad_name}: the refusal is typed: {failure}"
+        );
+        assert!(
+            failure.contains(bad_name),
+            "{bad_name}: the refusal names the offending entry: {failure}"
+        );
+        assert!(
+            !failure.contains(bad_value),
+            "{bad_name}: the refusal never echoes the value: {failure}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!marker.exists(), "{bad_name}: zero processes started");
+
+        let listed = list(&socket, &session_id).await;
+        assert_eq!(
+            server_by_id(&listed, "mutated")["status"],
+            "stopped",
+            "{bad_name}: the launch-failure lifecycle marks the row stopped"
+        );
+
+        gateway.shutdown().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn notifying_child_stays_live_through_handshake_with_inventory_intact() {
     let dir = test_dir();
@@ -1093,6 +1251,326 @@ async fn secret_reregister_rearms_the_vault_after_restart() {
         )],
     )
     .await;
+    let fresh = registered["approval_id"].as_str().unwrap().to_owned();
+    let (status, payload, message) = approve(&socket, &session_id, &fresh).await;
+    assert_eq!(status, 200, "the re-armed reload reconnects: {message}");
+    assert_eq!(payload["servers"][0]["status"], "live");
+    assert_eq!(marker_count(&marker), 2, "only approved launches spawned");
+
+    gateway.shutdown().await;
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Ticket 02 (ACP env-secrets slice): a `secret: true` argv entry
+/// registers with the vault at pin time (the durable row keeps only the
+/// handle), resolves into the child's argv at spawn — the fake exits
+/// before the handshake unless its argv carries the raw value, so a live
+/// launch IS the delivery proof — while list output and the durable
+/// bytes stay handle-only for the secret and raw for the neighbour.
+#[tokio::test]
+async fn secret_arg_resolves_into_argv_and_lists_handle_only() {
+    let raw_secret = "argv-delivered-secret-555";
+    let dir = test_dir();
+    let root = dir.join("session-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = write_script(&dir, "fake_arg.py", &fake_ok_with_arg(raw_secret));
+    let marker = dir.join("spawns.log");
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let session_id = create_rooted_session(&socket, &root).await;
+
+    let registered = register(
+        &socket,
+        &session_id,
+        vec![McpServerDescriptor {
+            server_id: "guarded".to_owned(),
+            command: "/usr/bin/python3".to_owned(),
+            args: vec![script.as_str().into(), secret_arg(raw_secret)],
+            env: vec![public_env("MARKER_FILE", marker.to_str().unwrap())],
+        }],
+    )
+    .await;
+    let approval_id = registered["approval_id"].as_str().unwrap().to_owned();
+
+    let listed = list(&socket, &session_id).await;
+    let args: Vec<Value> = server_by_id(&listed, "guarded")["args"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        args[0],
+        serde_json::json!({"value": script, "secret": false}),
+        "the non-secret script arg echoes raw"
+    );
+    assert_eq!(args[1]["secret"], true);
+    let handle = args[1]["value"].as_str().unwrap().to_owned();
+    assert_ne!(
+        handle, raw_secret,
+        "secret arg lists as a handle, never raw"
+    );
+    assert!(
+        handle.contains("mcp-secret"),
+        "handle names the broker vault: {handle}"
+    );
+    assert!(
+        !serde_json::to_string(&listed).unwrap().contains(raw_secret),
+        "raw secret arg appears nowhere in list output"
+    );
+
+    // The fake exits before the handshake unless its argv carries the
+    // raw secret: a 200 launch proves the vault resolved into argv.
+    let (status, payload, message) = approve(&socket, &session_id, &approval_id).await;
+    assert_eq!(status, 200, "the raw secret reached argv: {message}");
+    assert_eq!(payload["servers"][0]["status"], "live");
+    assert_eq!(marker_count(&marker), 1, "exactly one child spawned");
+
+    gateway.shutdown().await;
+    let mut durable = Vec::new();
+    for name in ["state.db", "state.db-wal", "state.db-shm"] {
+        let path = dir.join(name);
+        if path.exists() {
+            durable.extend(std::fs::read(&path).unwrap());
+        }
+    }
+    assert!(!durable.is_empty(), "the store files exist to scan");
+    let raw = raw_secret.as_bytes();
+    assert!(
+        durable.windows(raw.len()).all(|window| window != raw),
+        "the raw secret arg persists nowhere durable"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Ticket 02: launch resolves secret handles at the use site, so a row
+/// naming a handle this gateway's vault never issued (the post-restart
+/// shape, written straight to `state.db`) fails closed as typed
+/// `mcp_spawn_failed` BEFORE any process starts. The same rewrite also
+/// proves the dual-format parse: one legacy plain-string element and one
+/// secret entry in the same array.
+#[tokio::test]
+async fn missing_secret_arg_handle_refuses_spawn_with_zero_process() {
+    let dir = test_dir();
+    let root = dir.join("session-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = write_script(&dir, "fake_arg.py", &fake_ok_with_arg("anything"));
+    let marker = dir.join("spawns.log");
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let session_id = create_rooted_session(&socket, &root).await;
+
+    let registered = register(
+        &socket,
+        &session_id,
+        vec![script_server(
+            "guarded",
+            &script,
+            vec![public_env("MARKER_FILE", marker.to_str().unwrap())],
+        )],
+    )
+    .await;
+    let approval_id = registered["approval_id"].as_str().unwrap().to_owned();
+
+    let args_json = serde_json::json!([
+        script,
+        {"value": "mcp-secret-404", "secret": true},
+    ])
+    .to_string();
+    mutate_row_json(&dir.join("state.db"), "guarded", "args_json", &args_json);
+
+    let (status, _, failure) = approve(&socket, &session_id, &approval_id).await;
+    assert_eq!(
+        status, 400,
+        "a handle outside this gateway's vault must refuse launch: {failure}"
+    );
+    assert_eq!(
+        code_of(&failure),
+        "mcp_spawn_failed",
+        "the refusal is typed: {failure}"
+    );
+    assert!(
+        failure.contains("not in this gateway's vault"),
+        "the refusal names the vault loss: {failure}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!marker.exists(), "zero processes started");
+
+    let listed = list(&socket, &session_id).await;
+    assert_eq!(
+        server_by_id(&listed, "guarded")["status"],
+        "stopped",
+        "the launch-failure lifecycle marks the row stopped"
+    );
+
+    gateway.shutdown().await;
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Ticket 02: launch re-validates argv entries at the use site exactly
+/// like env — a row mutated past the register-time bounds (oversized or
+/// NUL-carrying value, written straight to `state.db`) refuses with
+/// typed `invalid_mcp_descriptor` — value never echoed — and zero
+/// processes start.
+#[tokio::test]
+async fn mutated_arg_row_refuses_launch_typed_with_zero_process() {
+    let cases: Vec<(&str, String)> = vec![
+        ("oversized arg", "x".repeat(4097)),
+        ("NUL arg", "a\u{0}b".to_owned()),
+    ];
+    for (what, bad_value) in &cases {
+        let dir = test_dir();
+        let root = dir.join("session-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let script = write_script(&dir, "fake_ok.py", &fake_ok());
+        let marker = dir.join("spawns.log");
+        let gateway = start(&dir).await.unwrap();
+        let socket = gateway.address().to_owned();
+        let session_id = create_rooted_session(&socket, &root).await;
+
+        let registered = register(
+            &socket,
+            &session_id,
+            vec![script_server(
+                "mutated",
+                &script,
+                vec![public_env("MARKER_FILE", marker.to_str().unwrap())],
+            )],
+        )
+        .await;
+        let approval_id = registered["approval_id"].as_str().unwrap().to_owned();
+
+        // One legacy plain-string element plus the hostile value: the
+        // dual-format parse accepts the row, then the bounds re-run.
+        let args_json = serde_json::json!([script, bad_value]).to_string();
+        mutate_row_json(&dir.join("state.db"), "mutated", "args_json", &args_json);
+
+        let (status, _, failure) = approve(&socket, &session_id, &approval_id).await;
+        assert_eq!(
+            status, 400,
+            "{what}: a mutated arg row must refuse launch: {failure}"
+        );
+        assert_eq!(
+            code_of(&failure),
+            "invalid_mcp_descriptor",
+            "{what}: the refusal is typed: {failure}"
+        );
+        assert!(
+            failure.contains("arg"),
+            "{what}: the refusal names the offending arg rule: {failure}"
+        );
+        assert!(
+            !failure.contains(bad_value),
+            "{what}: the refusal never echoes the value: {failure}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!marker.exists(), "{what}: zero processes started");
+
+        let listed = list(&socket, &session_id).await;
+        assert_eq!(
+            server_by_id(&listed, "mutated")["status"],
+            "stopped",
+            "{what}: the launch-failure lifecycle marks the row stopped"
+        );
+
+        gateway.shutdown().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// Ticket 02: rows written before secret args existed are a plain JSON
+/// string array; the use site parses them as non-secret entries and the
+/// launch proceeds unchanged (no migration, dual-format parse).
+#[tokio::test]
+async fn legacy_plain_string_args_row_still_launches() {
+    let dir = test_dir();
+    let root = dir.join("session-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = write_script(&dir, "fake_ok.py", &fake_ok());
+    let marker = dir.join("spawns.log");
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let session_id = create_rooted_session(&socket, &root).await;
+
+    let registered = register(
+        &socket,
+        &session_id,
+        vec![script_server(
+            "legacy",
+            &script,
+            vec![public_env("MARKER_FILE", marker.to_str().unwrap())],
+        )],
+    )
+    .await;
+    let approval_id = registered["approval_id"].as_str().unwrap().to_owned();
+
+    // The pre-secret-args writer's exact shape: a plain string array.
+    let args_json = serde_json::json!([script]).to_string();
+    mutate_row_json(&dir.join("state.db"), "legacy", "args_json", &args_json);
+
+    let (status, payload, message) = approve(&socket, &session_id, &approval_id).await;
+    assert_eq!(status, 200, "a legacy row still launches: {message}");
+    assert_eq!(payload["servers"][0]["status"], "live");
+    assert_eq!(marker_count(&marker), 1, "exactly one child spawned");
+
+    gateway.shutdown().await;
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Ticket 02: mirror of `secret_reregister_rearms_the_vault_after_restart`
+/// for argv — grants and the in-memory vault never survive a restart
+/// while the row keeps naming its handle: the pre-restart approval fails
+/// closed as `approval_missing`, the pinned handle still lists raw-free
+/// after the reopen, and a fresh register (re-supplying the raw value)
+/// re-arms the vault so the relaunch succeeds. The armed-vault refusal
+/// itself is the `unarmed_vault_refuses_spawn_for_secret_args` unit test
+/// at the transport seam plus `missing_secret_arg_handle_refuses_spawn...`
+/// above at the gateway seam.
+#[tokio::test]
+async fn secret_arg_reregister_rearms_the_vault_after_restart() {
+    let raw_secret = "restart-rearmed-arg-secret-321";
+    let dir = test_dir();
+    let root = dir.join("session-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = write_script(&dir, "fake_arg.py", &fake_ok_with_arg(raw_secret));
+    let marker = dir.join("spawns.log");
+    let descriptor = |script: &str| McpServerDescriptor {
+        server_id: "worker".to_owned(),
+        command: "/usr/bin/python3".to_owned(),
+        args: vec![script.into(), secret_arg(raw_secret)],
+        env: vec![public_env("MARKER_FILE", marker.to_str().unwrap())],
+    };
+
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let session_id = create_rooted_session(&socket, &root).await;
+    let registered = register(&socket, &session_id, vec![descriptor(&script)]).await;
+    let first = registered["approval_id"].as_str().unwrap().to_owned();
+    let (status, _, message) = approve(&socket, &session_id, &first).await;
+    assert_eq!(status, 200, "first launch grants: {message}");
+    gateway.shutdown().await;
+
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let (status, _, failure) = approve(&socket, &session_id, &first).await;
+    assert_eq!(status, 400, "the pre-restart grant is gone with its vault");
+    assert_eq!(code_of(&failure), "approval_missing");
+
+    // The row kept its handle — and only its handle — across the reopen.
+    let listed = list(&socket, &session_id).await;
+    let args = server_by_id(&listed, "worker")["args"].as_array().unwrap();
+    assert_eq!(args[1]["secret"], true);
+    assert_ne!(
+        args[1]["value"].as_str().unwrap(),
+        raw_secret,
+        "the durable row still names the handle, never the raw secret"
+    );
+    assert!(
+        !serde_json::to_string(&listed).unwrap().contains(raw_secret),
+        "list stays handle-only after the restart"
+    );
+
+    let registered = register(&socket, &session_id, vec![descriptor(&script)]).await;
     let fresh = registered["approval_id"].as_str().unwrap().to_owned();
     let (status, payload, message) = approve(&socket, &session_id, &fresh).await;
     assert_eq!(status, 200, "the re-armed reload reconnects: {message}");

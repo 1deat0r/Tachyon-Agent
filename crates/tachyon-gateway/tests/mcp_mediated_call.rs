@@ -49,8 +49,8 @@ use tachyon_types::{ApprovalId, SessionId};
 
 mod common;
 use common::{
-    code_of, create_rooted_session, err, ok, public_env, script_server, secret_env, send,
-    server_by_id, test_dir, write_script,
+    code_of, create_rooted_session, err, ok, public_env, script_server, secret_arg, secret_env,
+    send, server_by_id, test_dir, write_script,
 };
 
 /// Registered secret under test: registered in the broker at
@@ -136,6 +136,45 @@ async fn register(socket: &Path, session_id: &str, servers: Vec<McpServerDescrip
     )
     .await
 }
+
+/// Fake MCP child whose `echo` answers with its OWN argv as JSON: a
+/// receipt carrying the broker's redacted marker proves the raw secret
+/// arg reached `execve` and was scrubbed on the way back out (ticket 02
+/// delivery proof).
+const FAKE_ARGV_CALL: &str = r#"
+import json, sys
+def readline():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(0)
+    return json.loads(line)
+req = readline()
+assert req.get("method") == "initialize", req
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0", "id": req.get("id"),
+    "result": {"protocolVersion": "2024-11-05",
+               "serverInfo": {"name": "fake-mcp", "version": "0.1"}},
+}) + "\n")
+sys.stdout.flush()
+msg = readline()
+if "id" not in msg:
+    msg = readline()
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0", "id": msg.get("id"),
+    "result": {"tools": [{"name": "echo", "description": "echo argv"}]},
+}) + "\n")
+sys.stdout.flush()
+while True:
+    call = readline()
+    if call.get("method") != "tools/call":
+        continue
+    sys.stdout.write(json.dumps({
+        "jsonrpc": "2.0", "id": call.get("id"),
+        "result": {"content": [{"type": "text",
+                              "text": json.dumps(sys.argv)}]},
+    }) + "\n")
+    sys.stdout.flush()
+"#;
 
 async fn approve_launch(
     socket: &Path,
@@ -562,6 +601,92 @@ async fn secret_env_stays_handles_across_list_receipt_and_durable_files() {
         "the raw secret persists nowhere: store, journal, or receipts"
     );
 
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Ticket 02 (ACP env-secrets slice): delivery proof through a call
+/// receipt — the fake echoes its own argv, so a receipt carrying exactly
+/// the broker's redacted marker (`[redacted:<handle>]`, the marker shape
+/// secret env receipts already show) proves the raw secret arg reached
+/// the child AND was scrubbed on the way out; list frames and the
+/// durable bytes stay handle-only.
+#[tokio::test]
+async fn secret_arg_reaches_argv_and_receipt_redacts_to_handle() {
+    let dir = test_dir();
+    let root = dir.join("session-root");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = write_script(&dir, "fake_argv.py", FAKE_ARGV_CALL);
+    let gateway = start(&dir).await.unwrap();
+    let socket = gateway.address().to_owned();
+    let session_id = create_rooted_session(&socket, &root).await;
+
+    let registered = register(
+        &socket,
+        &session_id,
+        vec![McpServerDescriptor {
+            server_id: "guarded".to_owned(),
+            command: "/usr/bin/python3".to_owned(),
+            args: vec![script.as_str().into(), secret_arg(SECRET)],
+            env: vec![],
+        }],
+    )
+    .await;
+    let launch_id = registered["approval_id"].as_str().unwrap().to_owned();
+    let (status, _, message) = approve_launch(&socket, &session_id, &launch_id).await;
+    assert_eq!(status, 200, "launch grants: {message}");
+
+    let listed = list(&socket, &session_id).await;
+    let args = server_by_id(&listed, "guarded")["args"].as_array().unwrap();
+    assert_eq!(args[1]["secret"], true);
+    let handle = args[1]["value"].as_str().unwrap().to_owned();
+    assert_ne!(
+        handle, SECRET,
+        "list shows the handle, never the raw secret"
+    );
+    assert!(
+        !serde_json::to_string(&listed).unwrap().contains(SECRET),
+        "raw secret arg appears nowhere in list output"
+    );
+
+    let (status, payload, message) = call(
+        &socket,
+        &session_id,
+        "guarded",
+        "echo",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, 200, "call parks: {message}");
+    let call_id = payload["approval_id"].as_str().unwrap().to_owned();
+    let (status, receipt, message) = approve_call(&socket, &session_id, &call_id).await;
+    assert_eq!(status, 200, "grant executes: {message}");
+    let echoed = receipt["result"]["content"][0]["text"]
+        .as_str()
+        .expect("echo answers with the child's argv");
+    assert!(
+        echoed.contains(&format!("[redacted:{handle}]")),
+        "the child echoed the raw secret from its argv; the receipt \
+         redacts it to the listed handle: {echoed}"
+    );
+    assert!(
+        !serde_json::to_string(&receipt).unwrap().contains(SECRET),
+        "raw secret arg appears nowhere in the receipt"
+    );
+
+    gateway.shutdown().await;
+    let mut durable = Vec::new();
+    for name in ["state.db", "state.db-wal", "state.db-shm"] {
+        let path = dir.join(name);
+        if path.exists() {
+            durable.extend(std::fs::read(&path).unwrap());
+        }
+    }
+    assert!(!durable.is_empty(), "the store files exist to scan");
+    let raw = SECRET.as_bytes();
+    assert!(
+        durable.windows(raw.len()).all(|window| window != raw),
+        "the raw secret arg persists nowhere durable"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
