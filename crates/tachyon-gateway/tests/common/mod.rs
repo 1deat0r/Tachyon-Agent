@@ -10,7 +10,9 @@ use tachyon_gateway::transport::connect;
 use tachyon_gateway::{FAKE_PROVIDER_LABEL, GatewayRuntime};
 use tachyon_models::ModelProvider;
 use tachyon_models::fake::FakeModelProvider;
-use tachyon_protocol::{Command, CommandResult, RequestEnvelope, ResponseEnvelope};
+use tachyon_protocol::{
+    Command, CommandResult, McpEnvEntry, McpServerDescriptor, RequestEnvelope, ResponseEnvelope,
+};
 use tachyon_tools::credential::CredentialBroker;
 use tachyon_types::{EventId, ProviderId};
 
@@ -102,6 +104,69 @@ pub async fn new_task(socket: &Path) -> String {
     )
     .await;
     task["task_id"].as_str().unwrap().to_owned()
+}
+
+/// Writes a fake MCP child script into `dir`; returns its path. The MCP
+/// child is always a test script speaking newline-delimited JSON-RPC —
+/// never a real server binary.
+pub fn write_script(dir: &Path, name: &str, body: &str) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    path.display().to_string()
+}
+
+/// One public env entry for an MCP server descriptor.
+pub fn public_env(name: &str, value: &str) -> McpEnvEntry {
+    McpEnvEntry {
+        name: name.to_owned(),
+        value: value.to_owned(),
+        secret: false,
+    }
+}
+
+/// One secret env entry for an MCP server descriptor: registered in the
+/// broker vault at `RegisterMCPServers` time, persisted and listed as a
+/// handle only.
+pub fn secret_env(name: &str, value: &str) -> McpEnvEntry {
+    McpEnvEntry {
+        name: name.to_owned(),
+        value: value.to_owned(),
+        secret: true,
+    }
+}
+
+/// One MCP server descriptor running `script` under python3 stdio.
+pub fn script_server(server_id: &str, script: &str, env: Vec<McpEnvEntry>) -> McpServerDescriptor {
+    McpServerDescriptor {
+        server_id: server_id.to_owned(),
+        command: "/usr/bin/python3".to_owned(),
+        args: vec![script.into()],
+        env,
+    }
+}
+
+/// A session rooted at `root`: MCP children spawn with this cwd.
+pub async fn create_rooted_session(socket: &Path, root: &Path) -> String {
+    ok(
+        socket,
+        Command::CreateSession {
+            workspace_root: Some(root.display().to_string()),
+        },
+    )
+    .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Finds one server in a `ListMCPServers` payload by id (panics when absent).
+pub fn server_by_id<'a>(listed: &'a Value, server_id: &str) -> &'a Value {
+    listed["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["server_id"] == server_id)
+        .unwrap_or_else(|| panic!("no server {server_id} in {listed}"))
 }
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

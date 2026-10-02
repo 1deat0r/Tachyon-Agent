@@ -26,6 +26,8 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | **Access set** | Declared read/write (and related) footprint of a node. No two running nodes may hold conflicting access sets. |
 | **Effect class** | Declared consequence class of an operation (e.g. pure read, local process, external keyed effect). Paired with **idempotency**. |
 | **Idempotency key** | Client-supplied request token (per Session) that makes a create command replayable: the gateway stores the original response with the work and replays it on retry instead of duplicating. Distinct from effect idempotency. |
+| **MCP server** | Client-supplied stdio subprocess (command, args, env) pinned to one Session; launched only as a Supervisor-owned validated operation with approval; load reconnects only the pinned set or fails closed (ADR-0005). |
+| **MCP tool** | Single tool offered by a pinned MCP server; every call proposal is authorized per server/tool scope like any other effect — never a parallel execution path (ADR-0005). |
 | **Commit barrier** | Point where irreversible/ambiguous effects become durable under policy. |
 | **Durable journal** | Append-only event log; source of truth for recovery. Snapshots are materializations, not the sole truth. |
 | **TaskStatus** | Canonical enum: `Created`, `Routing`, `Planning`, `Executing`, `Verifying`, `WaitingApproval`, `Paused`, `Recovering`, `Completed`, `Failed`, `Cancelled`. |

@@ -216,6 +216,80 @@ pub struct SessionRow {
     pub workspace_root: Option<String>,
 }
 
+/// One row of `mcp_servers` (ACP MCP-stdio slice tickets 01-02): a
+/// validated client-supplied **MCP server** descriptor pinned to one
+/// session. `args_json` is the JSON args array and `env_json` the JSON
+/// env array (`secret: true` values persist as broker handles only,
+/// never raw). `version` is the `initialize`-negotiated protocol version
+/// and `tools_json` the recorded `tools/list` inventory — both set only
+/// while the row is `live`, cleared on every other transition.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct McpServerRow {
+    /// Owning session id.
+    pub session_id: String,
+    /// Opaque server identity (1..=64 bytes, validated by the gateway).
+    pub server_id: String,
+    /// Absolute server command path.
+    pub command: String,
+    /// JSON-encoded args array.
+    pub args_json: String,
+    /// JSON-encoded env array (handles only for secrets).
+    pub env_json: String,
+    /// Lifecycle status (`awaiting_approval` at pin, `live` after a
+    /// granted launch, `refused` / `stopped` otherwise).
+    pub status: String,
+    /// Negotiated protocol version (empty unless `live`).
+    pub version: String,
+    /// JSON-encoded tool inventory (empty array unless `live`).
+    pub tools_json: String,
+    /// Creation time (micros since epoch).
+    pub created_at: i64,
+    /// Last update time (micros since epoch).
+    pub updated_at: i64,
+}
+
+/// One row of `mcp_approvals` (review fix round): the durable audit
+/// trail of one parked session-scoped MCP approval. The live park
+/// stays in memory (fail closed across restarts); this row proves the
+/// park and its outcome happened.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct McpApprovalRow {
+    /// Session-scoped approval id (hyphenated UUID).
+    pub approval_id: String,
+    /// Owning session id.
+    pub session_id: String,
+    /// Approval kind: `launch` (one register call's server set) or
+    /// `call` (one parked `CallMCPTool`).
+    pub kind: String,
+    /// BLAKE3 hash (hex) of the exact authorized operation JSON.
+    pub op_hash: String,
+    /// Row machine state: `parked`, then one-shot `granted` /
+    /// `denied` / `consumed-missing` (the first decision wins, never
+    /// rewritten).
+    pub outcome: String,
+    /// Park time (micros since epoch).
+    pub created_at: i64,
+    /// Decide time (micros since epoch); 0 while `parked`.
+    pub decided_at: i64,
+}
+
+/// One validated MCP server to pin: the durable column values the
+/// gateway computed (args JSON, env JSON — broker handles where an env
+/// secret is marked). The store only
+/// persists what it is given; validation and secret registration live
+/// in the gateway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServerPin<'a> {
+    /// Opaque server identity.
+    pub server_id: &'a str,
+    /// Absolute server command path.
+    pub command: &'a str,
+    /// JSON-encoded args array.
+    pub args_json: &'a str,
+    /// JSON-encoded env array (handles only for secrets).
+    pub env_json: &'a str,
+}
+
 /// One entry of a session's ordered turn skeleton: the turn's sequence
 /// number, the task that occupies it, and that task's canonical status
 /// name. Derived read-only from the `tasks` row (ADR-0005 Session
@@ -760,6 +834,252 @@ impl StoreWriter {
         )
         .bind(session_id)
         .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)
+    }
+
+    /// Pins a validated set of MCP servers for one session in a single
+    /// transaction (tickets 01-02): each named row is inserted as
+    /// `awaiting_approval` — the launch parks until one
+    /// `ApproveMCPServers` consumes the register call's approval — or,
+    /// when `(session_id, server_id)` already exists, replaced in place
+    /// (re-register upserts the named rows and re-parks them; unnamed
+    /// rows are left untouched). All-or-nothing: a mid-set failure rolls
+    /// back every row of the call, so a register never leaves a partial
+    /// set.
+    pub async fn pin_mcp_servers(
+        &self,
+        session_id: &str,
+        servers: &[McpServerPin<'_>],
+    ) -> Result<(), StoreError> {
+        let _guard = self.write.lock().await;
+        let now = Timestamp::now().as_micros();
+        let mut tx = self.pool.begin().await?;
+        for server in servers {
+            sqlx::query(
+                "INSERT INTO mcp_servers
+                 (session_id, server_id, command, args_json, env_json,
+                  status, version, tools_json, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 'awaiting_approval', '', '[]', ?, ?)
+                 ON CONFLICT (session_id, server_id) DO UPDATE SET
+                    command = excluded.command,
+                    args_json = excluded.args_json,
+                    env_json = excluded.env_json,
+                    status = 'awaiting_approval',
+                    version = '',
+                    tools_json = '[]',
+                    updated_at = excluded.updated_at",
+            )
+            .bind(session_id)
+            .bind(server.server_id)
+            .bind(server.command)
+            .bind(server.args_json)
+            .bind(server.env_json)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Lists one session's pinned MCP servers in `server_id` order.
+    /// Strictly read-only.
+    pub async fn list_mcp_servers(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<McpServerRow>, StoreError> {
+        sqlx::query_as::<_, McpServerRow>(
+            "SELECT session_id, server_id, command, args_json, env_json,
+                    status, version, tools_json, created_at, updated_at
+             FROM mcp_servers WHERE session_id = ? ORDER BY server_id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::from)
+    }
+
+    /// Loads one pinned MCP server; `None` when the session pins no
+    /// server under that id. Strictly read-only.
+    pub async fn get_mcp_server(
+        &self,
+        session_id: &str,
+        server_id: &str,
+    ) -> Result<Option<McpServerRow>, StoreError> {
+        sqlx::query_as::<_, McpServerRow>(
+            "SELECT session_id, server_id, command, args_json, env_json,
+                    status, version, tools_json, created_at, updated_at
+             FROM mcp_servers WHERE session_id = ? AND server_id = ?",
+        )
+        .bind(session_id)
+        .bind(server_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::from)
+    }
+
+    /// Marks one pinned server `live` with its negotiated version and
+    /// recorded tool inventory JSON. The caller performed the handshake
+    /// and owns the child; the store only records the outcome.
+    pub async fn mark_mcp_live(
+        &self,
+        session_id: &str,
+        server_id: &str,
+        version: &str,
+        tools_json: &str,
+    ) -> Result<(), StoreError> {
+        let _guard = self.write.lock().await;
+        sqlx::query(
+            "UPDATE mcp_servers SET status = 'live', version = ?,
+                    tools_json = ?, updated_at = ?
+             WHERE session_id = ? AND server_id = ?",
+        )
+        .bind(version)
+        .bind(tools_json)
+        .bind(Timestamp::now().as_micros())
+        .bind(session_id)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Moves a set of pinned servers to `refused` or `stopped` (the only
+    /// non-live transitions this slice issues): the negotiated version
+    /// and inventory are cleared so a later `ListMCPServers` never shows
+    /// stale liveness. Servers outside the set are untouched.
+    pub async fn mark_mcp_servers(
+        &self,
+        session_id: &str,
+        server_ids: &[&str],
+        status: &str,
+    ) -> Result<(), StoreError> {
+        debug_assert!(
+            status == "refused" || status == "stopped",
+            "mark_mcp_servers only issues non-live transitions"
+        );
+        let _guard = self.write.lock().await;
+        let now = Timestamp::now().as_micros();
+        let mut tx = self.pool.begin().await?;
+        for server_id in server_ids {
+            sqlx::query(
+                "UPDATE mcp_servers SET status = ?, version = '',
+                        tools_json = '[]', updated_at = ?
+                 WHERE session_id = ? AND server_id = ?",
+            )
+            .bind(status)
+            .bind(now)
+            .bind(session_id)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Gateway-boot recovery (ticket 02): every row left `live` by a dead
+    /// gateway falls back to `stopped` with its version and inventory
+    /// cleared — grants never survive a restart, and nothing relaunches
+    /// until an explicit approved reload. Parked (`awaiting_approval`) and
+    /// refused rows are untouched. Returns the number of rows stopped.
+    pub async fn reset_mcp_live_to_stopped(&self) -> Result<u64, StoreError> {
+        let _guard = self.write.lock().await;
+        let changed = sqlx::query(
+            "UPDATE mcp_servers SET status = 'stopped', version = '',
+                    tools_json = '[]', updated_at = ?
+             WHERE status = 'live'",
+        )
+        .bind(Timestamp::now().as_micros())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(changed)
+    }
+
+    /// Parks one session-scoped MCP approval record (`outcome='parked'`,
+    /// `decided_at=0`): the approval id, owning session, kind
+    /// (`launch` | `call`), and BLAKE3 hash of the exact authorized
+    /// operation JSON the grant binds to. One row per parked approval;
+    /// re-parking an id replaces it (a re-register supersedes the stale
+    /// park). Additive audit surface — the live park stays in memory,
+    /// so crash semantics are unchanged (fail closed).
+    pub async fn record_mcp_approval(
+        &self,
+        approval_id: &str,
+        session_id: &str,
+        kind: &str,
+        op_hash: &str,
+    ) -> Result<(), StoreError> {
+        debug_assert!(
+            kind == "launch" || kind == "call",
+            "record_mcp_approval only records launch|call kinds"
+        );
+        let _guard = self.write.lock().await;
+        sqlx::query(
+            "INSERT INTO mcp_approvals
+             (approval_id, session_id, kind, op_hash, outcome, created_at, decided_at)
+             VALUES (?, ?, ?, ?, 'parked', ?, 0)
+             ON CONFLICT (approval_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                kind = excluded.kind,
+                op_hash = excluded.op_hash,
+                outcome = 'parked',
+                created_at = excluded.created_at,
+                decided_at = 0",
+        )
+        .bind(approval_id)
+        .bind(session_id)
+        .bind(kind)
+        .bind(op_hash)
+        .bind(Timestamp::now().as_micros())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Decides one parked MCP approval record one-shot
+    /// (`parked` -> `granted` | `denied` | `consumed-missing`): the
+    /// outcome is written once with the decide timestamp and never
+    /// rewritten afterwards. Best-effort audit — deciding an unknown
+    /// id is a no-op, never an error.
+    pub async fn decide_mcp_approval(
+        &self,
+        approval_id: &str,
+        outcome: &str,
+    ) -> Result<(), StoreError> {
+        debug_assert!(
+            outcome == "granted" || outcome == "denied" || outcome == "consumed-missing",
+            "decide_mcp_approval only records terminal outcomes"
+        );
+        let _guard = self.write.lock().await;
+        sqlx::query(
+            "UPDATE mcp_approvals SET outcome = ?, decided_at = ?
+             WHERE approval_id = ? AND outcome = 'parked'",
+        )
+        .bind(outcome)
+        .bind(Timestamp::now().as_micros())
+        .bind(approval_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Loads one MCP approval record; `None` when no row carries the id.
+    /// Strictly read-only (tests + audit).
+    pub async fn get_mcp_approval(
+        &self,
+        approval_id: &str,
+    ) -> Result<Option<McpApprovalRow>, StoreError> {
+        sqlx::query_as::<_, McpApprovalRow>(
+            "SELECT approval_id, session_id, kind, op_hash, outcome,
+                    created_at, decided_at
+             FROM mcp_approvals WHERE approval_id = ?",
+        )
+        .bind(approval_id)
+        .fetch_optional(&self.pool)
         .await
         .map_err(StoreError::from)
     }
@@ -2149,6 +2469,336 @@ mod tests {
             .unwrap_err();
         assert!(matches!(late, super::StoreError::ApprovalWrongState { .. }));
         assert!(store.load_pending_for_task("t").await.unwrap().is_empty());
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Pins are upserts under `UNIQUE (session_id, server_id)`: racing
+    /// pins of one server leave exactly one row (last writer wins, no
+    /// duplicate), and pins for distinct servers coexist.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_pin_of_one_server_keeps_a_single_row() {
+        use super::McpServerPin;
+        use std::sync::Arc;
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        let store = Arc::new(store);
+        let args_json = "[\"--stdio\"]";
+        let env_json = "[]";
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let store = Arc::clone(&store);
+            let command = format!("/usr/bin/fake-mcp-server-{i}");
+            handles.push(tokio::spawn(async move {
+                store
+                    .pin_mcp_servers(
+                        "s",
+                        &[McpServerPin {
+                            server_id: "solo",
+                            command: &command,
+                            args_json,
+                            env_json,
+                        }],
+                    )
+                    .await
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .unwrap()
+                .expect("every racing pin must succeed");
+        }
+        let rows = store.list_mcp_servers("s").await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "UNIQUE (session_id, server_id) holds under race: {rows:?}"
+        );
+        assert_eq!(rows[0].server_id, "solo");
+        assert_eq!(rows[0].status, "awaiting_approval");
+
+        store
+            .pin_mcp_servers(
+                "s",
+                &[
+                    McpServerPin {
+                        server_id: "solo",
+                        command: "/usr/bin/fake-mcp-server-final",
+                        args_json,
+                        env_json,
+                    },
+                    McpServerPin {
+                        server_id: "peer",
+                        command: "/usr/bin/other",
+                        args_json,
+                        env_json,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        let rows = store.list_mcp_servers("s").await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].server_id, "peer");
+        assert_eq!(rows[1].server_id, "solo");
+        assert_eq!(rows[1].command, "/usr/bin/fake-mcp-server-final");
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Handles — not raw secrets — persist: rows store the gateway's
+    /// env-with-handles JSON opaquely, and a reopen over the same
+    /// directory returns the identical handles with the raw secret
+    /// present nowhere in any row.
+    #[tokio::test]
+    async fn pinned_handles_survive_reopen_without_raw_secrets() {
+        use super::McpServerPin;
+        let raw_secret = "live-raw-secret-must-never-persist";
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .pin_mcp_servers(
+                "s",
+                &[McpServerPin {
+                    server_id: "beta",
+                    command: "/usr/bin/fake-mcp-server",
+                    args_json: "[\"--stdio\"]",
+                    env_json: "[{\"name\":\"API_TOKEN\",\"value\":\"mcp-secret-1\",\"secret\":true}]",
+                }],
+            )
+            .await
+            .unwrap();
+        store.close().await;
+
+        let reopened = super::StoreWriter::open(&dir).await.unwrap();
+        let rows = reopened.list_mcp_servers("s").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "awaiting_approval");
+        assert!(
+            rows[0].env_json.contains("mcp-secret-1"),
+            "handle persists: {}",
+            rows[0].env_json
+        );
+        assert!(
+            !rows[0].env_json.contains(raw_secret),
+            "raw secret is nowhere in the row"
+        );
+        let dump: String = sqlx::query_scalar(
+            "SELECT group_concat(command || args_json || env_json || status, '|')
+             FROM mcp_servers WHERE session_id = 's'",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert!(
+            !dump.contains(raw_secret),
+            "raw secret is nowhere on disk rows"
+        );
+
+        reopened.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---- ACP slice (issue #57 ticket 02): MCP status transitions ----
+
+    /// The launch lifecycle is a status walk with the liveness columns
+    /// set only while `live`: pin parks (`awaiting_approval`, blank
+    /// version, empty inventory), going live records the negotiated
+    /// version and inventory, and every non-live transition clears them
+    /// so a later list never shows stale liveness.
+    #[tokio::test]
+    async fn mcp_status_walk_records_liveness_only_while_live() {
+        use super::McpServerPin;
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .pin_mcp_servers(
+                "s",
+                &[McpServerPin {
+                    server_id: "w",
+                    command: "/usr/bin/fake-mcp-server",
+                    args_json: "[\"--stdio\"]",
+                    env_json: "[]",
+                }],
+            )
+            .await
+            .unwrap();
+        let parked = store.get_mcp_server("s", "w").await.unwrap().unwrap();
+        assert_eq!(parked.status, "awaiting_approval");
+        assert_eq!(parked.version, "");
+        assert_eq!(parked.tools_json, "[]");
+        assert!(store.get_mcp_server("s", "ghost").await.unwrap().is_none());
+
+        store
+            .mark_mcp_live("s", "w", "2024-11-05", "[{\"name\":\"echo\"}]")
+            .await
+            .unwrap();
+        let live = store.get_mcp_server("s", "w").await.unwrap().unwrap();
+        assert_eq!(live.status, "live");
+        assert_eq!(live.version, "2024-11-05");
+        assert_eq!(live.tools_json, "[{\"name\":\"echo\"}]");
+
+        store
+            .mark_mcp_servers("s", &["w"], "stopped")
+            .await
+            .unwrap();
+        let stopped = store.get_mcp_server("s", "w").await.unwrap().unwrap();
+        assert_eq!(stopped.status, "stopped");
+        assert_eq!(stopped.version, "", "stopping clears the version");
+        assert_eq!(stopped.tools_json, "[]", "stopping clears the inventory");
+
+        store
+            .mark_mcp_servers("s", &["w"], "refused")
+            .await
+            .unwrap();
+        let refused = store.get_mcp_server("s", "w").await.unwrap().unwrap();
+        assert_eq!(refused.status, "refused");
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Boot recovery stops exactly the rows a dead gateway left `live`
+    /// (with version and inventory cleared) and touches nothing else:
+    /// parked and refused rows keep their status, so only an explicit
+    /// approved reload ever relaunches.
+    #[tokio::test]
+    async fn mcp_boot_reset_stops_only_live_rows() {
+        use super::McpServerPin;
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .pin_mcp_servers(
+                "s",
+                &[
+                    McpServerPin {
+                        server_id: "parked",
+                        command: "/bin/a",
+                        args_json: "[]",
+                        env_json: "[]",
+                    },
+                    McpServerPin {
+                        server_id: "running",
+                        command: "/bin/b",
+                        args_json: "[]",
+                        env_json: "[]",
+                    },
+                    McpServerPin {
+                        server_id: "denied",
+                        command: "/bin/c",
+                        args_json: "[]",
+                        env_json: "[]",
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        store
+            .mark_mcp_live("s", "running", "2024-11-05", "[{\"name\":\"t\"}]")
+            .await
+            .unwrap();
+        store
+            .mark_mcp_servers("s", &["denied"], "refused")
+            .await
+            .unwrap();
+
+        let stopped = store.reset_mcp_live_to_stopped().await.unwrap();
+        assert_eq!(stopped, 1, "exactly the live row falls back");
+        let rows = store.list_mcp_servers("s").await.unwrap();
+        // Ordered by server_id: denied, parked, running.
+        assert_eq!(rows[0].status, "refused");
+        assert_eq!(rows[1].status, "awaiting_approval");
+        assert_eq!(rows[2].status, "stopped");
+        assert_eq!(rows[2].version, "");
+        assert_eq!(rows[2].tools_json, "[]");
+        let again = store.reset_mcp_live_to_stopped().await.unwrap();
+        assert_eq!(again, 0, "the reset is a fixpoint");
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mcp_approval_park_decide_round_trips_with_hash_and_timestamps() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .record_mcp_approval("aid-1", "s", "launch", "op-hash-abc")
+            .await
+            .unwrap();
+        let row = store
+            .get_mcp_approval("aid-1")
+            .await
+            .unwrap()
+            .expect("parked row");
+        assert_eq!(row.session_id, "s");
+        assert_eq!(row.kind, "launch");
+        assert_eq!(row.op_hash, "op-hash-abc");
+        assert_eq!(row.outcome, "parked");
+        assert!(row.created_at > 0);
+        assert_eq!(row.decided_at, 0, "undecided while parked");
+
+        store.decide_mcp_approval("aid-1", "granted").await.unwrap();
+        let row = store
+            .get_mcp_approval("aid-1")
+            .await
+            .unwrap()
+            .expect("decided row");
+        assert_eq!(row.outcome, "granted");
+        assert!(row.decided_at > 0, "decide stamps the decision time");
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mcp_approval_decide_is_one_shot_and_unknown_ids_are_noops() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .record_mcp_approval("aid-2", "s", "call", "op-hash-def")
+            .await
+            .unwrap();
+        store.decide_mcp_approval("aid-2", "denied").await.unwrap();
+        // A second decision never rewrites the first: the grant/refusal
+        // executes exactly once, and so does its audit.
+        store.decide_mcp_approval("aid-2", "granted").await.unwrap();
+        let row = store
+            .get_mcp_approval("aid-2")
+            .await
+            .unwrap()
+            .expect("decided row");
+        assert_eq!(row.outcome, "denied", "first decision sticks");
+        // Deciding an id that was never parked is a silent no-op, never
+        // an error — late duplicates after a supersede must fail quiet.
+        store
+            .decide_mcp_approval("aid-never-parked", "granted")
+            .await
+            .unwrap();
+        assert!(
+            store
+                .get_mcp_approval("aid-never-parked")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Re-parking an id (a re-register superseding the stale park)
+        // resets it to undecided with the fresh hash.
+        store
+            .record_mcp_approval("aid-2", "s", "launch", "op-hash-fresh")
+            .await
+            .unwrap();
+        let row = store
+            .get_mcp_approval("aid-2")
+            .await
+            .unwrap()
+            .expect("re-parked row");
+        assert_eq!(row.outcome, "parked");
+        assert_eq!(row.op_hash, "op-hash-fresh");
+        assert_eq!(row.decided_at, 0);
 
         store.close().await;
         std::fs::remove_dir_all(dir).unwrap();

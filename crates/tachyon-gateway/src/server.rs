@@ -15,20 +15,22 @@ use tachyon_core::driver::{
     DriveError, DriveHost, EvidenceMode, RunPlan, TaskModelContext, drive,
     validate_hard_constraint_bindings,
 };
-use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds};
+use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds, compile_operation};
 use tachyon_core::{
     CoreError, SupervisorHandle, TaskStatus, create_task, create_task_with_idempotency,
     project_task_state, recover_task,
 };
 use tachyon_models::ModelProvider;
-use tachyon_policy::Policy;
+use tachyon_policy::{ApprovalRequest, Approvals, DefaultPosture, Policy, operation_hash};
 use tachyon_protocol::{
-    Command, CommandResult, EventEnvelope, GatewayEvent, PROTOCOL_VERSION, RequestEnvelope,
-    ResponseEnvelope, ServerFrame, check_version, decode_frame, encode_server_frame,
+    Command, CommandResult, EventEnvelope, GatewayEvent, McpEnvEntry, McpServerDescriptor,
+    McpToolInfo, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, ServerFrame, check_version,
+    decode_frame, encode_server_frame,
 };
 use tachyon_store::{CommitNotice, IdempotencyRow, StoreWriter};
+use tachyon_tools::credential::CredentialBroker;
 use tachyon_tools::workspace::WorkspaceLease;
-use tachyon_tools::{ToolsContext, artifact::ArtifactSpool, credential::CredentialBroker};
+use tachyon_tools::{ToolError, ToolsContext, artifact::ArtifactSpool, authorize};
 use tachyon_types::{ApprovalId, EventId, SessionId, TaskId, Timestamp, WorkspaceId};
 use tachyon_verify::{AcceptanceContract, Clause, CommandCheck, VerificationRisk};
 use thiserror::Error;
@@ -41,6 +43,7 @@ use uuid::Uuid;
 use crate::endpoint::{
     ClaimPaths, EndpointError, claim_runtime_dir, release_runtime_dir, write_endpoint,
 };
+use crate::mcp::{LiveMcpServer, launch_mcp_server};
 use crate::transport::{Listener, Stream};
 
 /// Errors produced by the gateway.
@@ -93,6 +96,66 @@ struct GatewayState {
     recovering: Mutex<HashSet<TaskId>>,
     /// Scrubbed failure text of runs this gateway spawned, keyed by task.
     failures: Mutex<HashMap<TaskId, String>>,
+    /// MCP secret vault (ticket 01): `secret: true` env values register
+    /// here at `RegisterMCPServers` time; only handles ever reach the
+    /// store, logs, or list output. Behind a mutex because registration
+    /// mutates the broker while dispatch otherwise only reads state.
+    mcp_credentials: Mutex<CredentialBroker>,
+    /// Parked MCP launches (ticket 02): one entry per `RegisterMCPServers`
+    /// call, keyed by the session-scoped approval id the response
+    /// carried. The live park is in-memory on purpose — grants never
+    /// survive a restart, so a rebooted gateway answers every
+    /// pre-restart id with `approval_missing` and nothing relaunches
+    /// without a fresh register + approve — while the durable audit
+    /// trail lives in the store's `mcp_approvals` table (one-shot
+    /// session-scoped record per park, decided at grant/refuse time).
+    mcp_approvals: Mutex<HashMap<ApprovalId, McpPendingApproval>>,
+    /// Parked MCP tool calls (ticket 03): one entry per parked
+    /// `CallMCPTool`, keyed by the policy ask's own approval id. The
+    /// live park is in-memory like launches — a rebooted gateway
+    /// answers every pre-restart call id with `approval_missing` —
+    /// while the durable audit trail lives in `mcp_approvals`.
+    mcp_call_approvals: Mutex<HashMap<ApprovalId, McpPendingCall>>,
+    /// Live MCP children (ticket 02), keyed by `(session_id, server_id)`.
+    /// A call holds this map's lock across its whole round trip (known
+    /// issue: head-of-line blocking across sessions; feeds the
+    /// cancellation-drain slice). Owned by the gateway, never by a
+    /// client connection: a disconnect leaves them running, and
+    /// dropping the map (shutdown) kills them through `kill_on_drop`.
+    mcp_live: Mutex<HashMap<McpLiveKey, LiveMcpServer>>,
+}
+
+/// Key of the live-server map: owning session + server.
+type McpLiveKey = (String, String);
+
+/// One parked MCP launch: the exact per-server spawn operations one
+/// register call pinned, releasable exactly once by the session it was
+/// registered under. Each entry carries the policy's own
+/// `ApprovalRequest` plus the identical operation JSON, so
+/// `ApproveMCPServers` re-authorizes each launch through a one-shot
+/// grant before any spawn — the same park/grant funnel as tool calls.
+struct McpPendingApproval {
+    session_id: SessionId,
+    server_ids: Vec<String>,
+    requests: Vec<ApprovalRequest>,
+    operations: Vec<serde_json::Value>,
+}
+
+/// One parked MCP tool call (ticket 03): the exact operation the policy
+/// `Ask` parked, releasable exactly once by the owning session. The
+/// `request` is the policy's own `ApprovalRequest` (its id is the
+/// session-scoped `approval_id` the `CallMCPTool` response carried), so
+/// `ApproveMCPTool` re-authorizes the IDENTICAL operation through a
+/// one-shot grant — any material change fails closed, and the grant
+/// burns on first use. The live park is in-memory, like launches:
+/// grants never survive a restart (the durable audit lives in
+/// `mcp_approvals`).
+struct McpPendingCall {
+    session_id: SessionId,
+    request: ApprovalRequest,
+    server_id: String,
+    tool: String,
+    arguments: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -255,8 +318,23 @@ pub async fn start_with(
         running: Mutex::new(HashMap::new()),
         recovering: Mutex::new(HashSet::new()),
         failures: Mutex::new(HashMap::new()),
+        mcp_credentials: Mutex::new(CredentialBroker::default()),
+        mcp_approvals: Mutex::new(HashMap::new()),
+        mcp_call_approvals: Mutex::new(HashMap::new()),
+        mcp_live: Mutex::new(HashMap::new()),
     });
     recover_incomplete(&state).await?;
+    // Ticket 02: rows left `live` by a dead gateway fall back to `stopped`
+    // before serving — grants never survive a restart, and nothing
+    // relaunches until an explicit approved reload.
+    match state.store.reset_mcp_live_to_stopped().await {
+        Ok(0) => {}
+        Ok(stopped) => tracing::info!(
+            stopped,
+            "mcp servers left live by a dead gateway stopped at boot"
+        ),
+        Err(err) => return Err(GatewayError::Store(err)),
+    }
     let shutdown = CancellationToken::new();
     let accept_loop = tokio::spawn(accept_loop(listener, state.clone(), shutdown.clone()));
     // Publish the endpoint only once the gateway can serve (#35): before
@@ -1097,6 +1175,9 @@ fn core_err(error: &CoreError) -> CommandResult {
 }
 
 async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> CommandResult {
+    if let Some(result) = handle_mcp_command(state, command).await {
+        return result;
+    }
     match command {
         Command::Ping => ok(json!({"pong": true, "protocol_version": PROTOCOL_VERSION})),
         Command::GetStatus => {
@@ -1185,6 +1266,62 @@ async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> Command
             workspace_root,
             question,
         } => handle_query(workspace_root, question).await,
+        // MCP commands route via `handle_mcp_command`; this arm is exhaustiveness-only.
+        Command::RegisterMCPServers { .. }
+        | Command::ApproveMCPServers { .. }
+        | Command::DenyMCPServers { .. }
+        | Command::ListMCPServers { .. }
+        | Command::CallMCPTool { .. }
+        | Command::ApproveMCPTool { .. }
+        | Command::DenyMCPTool { .. } => fail("internal", "mcp dispatch regression".into()),
+    }
+}
+
+/// MCP commands (ticket 02): parked launch, approval routing, and
+/// inventory listing. `Some` when `command` is an MCP command (handled),
+/// `None` otherwise (the main dispatch owns it). Split out so the main
+/// `handle_command` match stays within the line budget.
+async fn handle_mcp_command(state: &Arc<GatewayState>, command: &Command) -> Option<CommandResult> {
+    match command {
+        Command::RegisterMCPServers {
+            session_id,
+            servers,
+        } => Some(register_mcp_servers(state, *session_id, servers.clone()).await),
+        Command::ApproveMCPServers {
+            session_id,
+            approval_id,
+        } => Some(approve_mcp_servers(state, *session_id, *approval_id).await),
+        Command::DenyMCPServers {
+            session_id,
+            approval_id,
+            reason,
+        } => Some(deny_mcp_servers(state, *session_id, *approval_id, reason.clone()).await),
+        Command::ListMCPServers { session_id } => Some(list_mcp_servers(state, *session_id).await),
+        Command::CallMCPTool {
+            session_id,
+            server_id,
+            tool,
+            arguments_json,
+        } => Some(
+            call_mcp_tool(
+                state,
+                *session_id,
+                server_id.clone(),
+                tool.clone(),
+                arguments_json.clone(),
+            )
+            .await,
+        ),
+        Command::ApproveMCPTool {
+            session_id,
+            approval_id,
+        } => Some(approve_mcp_tool(state, *session_id, *approval_id).await),
+        Command::DenyMCPTool {
+            session_id,
+            approval_id,
+            reason,
+        } => Some(deny_mcp_tool(state, *session_id, *approval_id, reason.clone()).await),
+        _ => None,
     }
 }
 
@@ -1466,6 +1603,1137 @@ async fn finish_created(state: &Arc<GatewayState>, handle: SupervisorHandle) -> 
         ),
         Err(err) => fail("internal", err.to_string()),
     }
+}
+
+/// Bounds for client-supplied **MCP server** descriptors (ticket 01):
+/// opaque ids and bounded args/env keep one register call from storing
+/// unbounded data per row.
+const MAX_MCP_SERVER_ID_BYTES: usize = 64;
+/// Maximum number of args per descriptor.
+const MAX_MCP_ARGS: usize = 32;
+/// Maximum size of one arg in bytes (4KiB).
+const MAX_MCP_ARG_BYTES: usize = 4096;
+/// Maximum size of one env value in bytes (16KiB).
+const MAX_MCP_ENV_VALUE_BYTES: usize = 16384;
+
+/// Environment variables that must never reach a server child: loader
+/// hijack names redirect dynamic linking (and therefore code execution)
+/// from outside the pinned descriptor. One deterministic name/prefix
+/// rule set consulted by register-time validation, never a copy.
+fn is_dangerous_mcp_env(name: &str) -> bool {
+    name == "LD_PRELOAD" || name == "LD_LIBRARY_PATH" || name.starts_with("DYLD_")
+}
+
+/// Env names are `[A-Za-z_][A-Za-z0-9_]*`: the same shape a POSIX shell
+/// and `execve` accept, so no name can smuggle a second binding.
+fn is_valid_mcp_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Validates one descriptor as untrusted input. `Err` carries the human
+/// half of the typed `invalid_mcp_descriptor` refusal; it never echoes a
+/// secret env value, only names and shapes.
+fn check_mcp_descriptor(server: &McpServerDescriptor) -> Result<(), String> {
+    let id_len = server.server_id.len();
+    if id_len == 0 || id_len > MAX_MCP_SERVER_ID_BYTES {
+        return Err(format!(
+            "server id must be 1..={MAX_MCP_SERVER_ID_BYTES} bytes, got {id_len}"
+        ));
+    }
+    if server.server_id.contains('\0') {
+        return Err("server id must be NUL-free".to_owned());
+    }
+    // The authorize scopes (`<server-id>/launch`, `<server-id>/<tool>`)
+    // split on `/`: an id carrying one would break scope parsing, so it
+    // is rejected here — before any pin, secret registration, or park —
+    // rather than as a compile refusal later.
+    if server.server_id.contains('/') {
+        return Err(format!(
+            "server '{}': server id must not contain '/'",
+            server.server_id
+        ));
+    }
+    if !Path::new(&server.command).is_absolute() {
+        return Err(format!(
+            "server '{}': command must be an absolute path",
+            server.server_id
+        ));
+    }
+    if server.args.len() > MAX_MCP_ARGS {
+        return Err(format!(
+            "server '{}': at most {MAX_MCP_ARGS} args, got {}",
+            server.server_id,
+            server.args.len()
+        ));
+    }
+    for arg in &server.args {
+        if arg.len() > MAX_MCP_ARG_BYTES {
+            return Err(format!(
+                "server '{}': arg exceeds {MAX_MCP_ARG_BYTES} bytes",
+                server.server_id
+            ));
+        }
+        if arg.contains('\0') {
+            return Err(format!(
+                "server '{}': arg must be NUL-free",
+                server.server_id
+            ));
+        }
+    }
+    for entry in &server.env {
+        if !is_valid_mcp_env_name(&entry.name) {
+            return Err(format!(
+                "server '{}': invalid env name '{}'",
+                server.server_id, entry.name
+            ));
+        }
+        if is_dangerous_mcp_env(&entry.name) {
+            return Err(format!(
+                "server '{}': env '{}' is forbidden",
+                server.server_id, entry.name
+            ));
+        }
+        if entry.value.len() > MAX_MCP_ENV_VALUE_BYTES {
+            return Err(format!(
+                "server '{}': env '{}' exceeds {MAX_MCP_ENV_VALUE_BYTES} bytes",
+                server.server_id, entry.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The validated-IR gate, park half (pure — no state touch, like
+/// validation): every launch compiles (shape + ADR-0006 §10 contract
+/// pin) and parks through `authorize()` as capability `mcp.spawn` with
+/// scope `<server-id>/launch`. A compile refusal is a typed descriptor
+/// rejection (a `/` in the id would break the scope split); the policy
+/// always parks under the Ask default. Returns the per-server policy
+/// requests plus their identical operations for the grant half.
+fn plan_mcp_spawns(
+    servers: &[McpServerDescriptor],
+    approval_id: &ApprovalId,
+) -> Result<(Vec<ApprovalRequest>, Vec<serde_json::Value>), CommandResult> {
+    let mut requests = Vec::with_capacity(servers.len());
+    let mut operations = Vec::with_capacity(servers.len());
+    for server in servers {
+        let operation = mcp_spawn_operation(&server.server_id, approval_id);
+        if let Err(err) = compile_operation(TaskId::generate(), 0, "mcp.spawn", &operation) {
+            return Err(fail(
+                "invalid_mcp_descriptor",
+                format!(
+                    "server '{}': launch refused to compile: {err}",
+                    server.server_id
+                ),
+            ));
+        }
+        match authorize(
+            &mcp_launch_policy(),
+            &Approvals::default(),
+            "mcp.spawn",
+            &mcp_spawn_scope(&server.server_id),
+            &operation,
+            &mcp_spawn_summary(&server.server_id),
+        ) {
+            Ok(()) => {
+                return Err(fail(
+                    "internal",
+                    "mcp launch policy allowed without a grant".to_owned(),
+                ));
+            }
+            Err(ToolError::ApprovalRequired { request, .. }) => {
+                requests.push(*request);
+                operations.push(operation);
+            }
+            Err(err) => {
+                return Err(fail(
+                    "internal",
+                    format!("mcp launch authorize failed: {err}"),
+                ));
+            }
+        }
+    }
+    Ok((requests, operations))
+}
+
+/// Validates every descriptor, then pins the whole set durably with the
+/// launch parked (ticket 02: rows stay `awaiting_approval`, nothing
+/// spawns). Validation precedes ANY state touch — broker or store — so a
+/// rejected set pins nothing (no partial rows, no registered secrets,
+/// no parked approval). `secret: true` values register in the vault;
+/// only the issued handles persist in the store and appear in the
+/// response. One session-scoped approval id covers this call: approving
+/// launches exactly this set, denying refuses it. Re-register upserts
+/// the named `server_id` rows (re-parking them) and leaves unnamed rows
+/// untouched — and it invalidates any still-parked approval covering a
+/// re-pinned server, so a stale approval can never launch a superseded
+/// pin (`approval_missing`, fail closed).
+async fn register_mcp_servers(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    servers: Vec<McpServerDescriptor>,
+) -> CommandResult {
+    if !state
+        .store
+        .session_exists(&session_id.to_string())
+        .await
+        .unwrap_or(false)
+    {
+        return fail("unknown_session", format!("no session {session_id}"));
+    }
+    for server in &servers {
+        if let Err(message) = check_mcp_descriptor(server) {
+            return fail("invalid_mcp_descriptor", message);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for server in &servers {
+        if !seen.insert(server.server_id.clone()) {
+            return fail(
+                "invalid_mcp_descriptor",
+                format!(
+                    "server '{}': duplicate server id in one register call",
+                    server.server_id
+                ),
+            );
+        }
+    }
+    let sid = session_id.to_string();
+    let approval_id = ApprovalId::generate();
+    let (requests, operations) = match plan_mcp_spawns(&servers, &approval_id) {
+        Ok(planned) => planned,
+        Err(result) => return result,
+    };
+    let pins = match encode_mcp_pins(state, &servers).await {
+        Ok(pins) => pins,
+        Err(result) => return result,
+    };
+    let pin_refs: Vec<tachyon_store::McpServerPin<'_>> = pins
+        .iter()
+        .map(
+            |(server_id, command, args_json, env_json)| tachyon_store::McpServerPin {
+                server_id,
+                command,
+                args_json,
+                env_json,
+            },
+        )
+        .collect();
+    match state.store.pin_mcp_servers(&sid, &pin_refs).await {
+        Ok(()) => {
+            let server_ids: Vec<String> = pins
+                .iter()
+                .map(|(server_id, _, _, _)| server_id.clone())
+                .collect();
+            let id_refs: Vec<&str> = server_ids.iter().map(String::as_str).collect();
+            issue_mcp_approval(
+                state,
+                session_id,
+                approval_id,
+                &server_ids,
+                requests,
+                operations,
+            )
+            .await;
+            // Durable one-shot session-scoped record: the set document
+            // hash binds exactly the server set this approval releases.
+            let set_doc =
+                serde_json::json!({"servers": server_ids, "approval_id": approval_id.to_string()});
+            if let Err(err) = state
+                .store
+                .record_mcp_approval(
+                    &approval_id.to_string(),
+                    &sid,
+                    "launch",
+                    &operation_hash(&set_doc),
+                )
+                .await
+            {
+                state.mcp_approvals.lock().await.remove(&approval_id);
+                return fail("internal", err.to_string());
+            }
+            // A re-register re-parks the named rows: any still-running
+            // child from a superseded pin is reaped, so the live map
+            // always reflects the latest granted pin (a refused pin
+            // never has a running child behind it, either).
+            drop_live_mcp_servers(state, &sid, &id_refs).await;
+            let servers_json: Vec<Value> = server_ids
+                .iter()
+                .map(|server_id| json!({"server_id": server_id, "status": "awaiting_approval"}))
+                .collect();
+            ok(json!({"servers": servers_json, "approval_id": approval_id.to_string()}))
+        }
+        Err(err) => fail("internal", err.to_string()),
+    }
+}
+
+/// Encodes one validated register set into durable pins: `secret: true`
+/// values register in the vault (only handles persist downstream) and
+/// args/env become row JSON. Pure encode — the store write stays in the
+/// caller, so validation still precedes every state touch.
+async fn encode_mcp_pins(
+    state: &Arc<GatewayState>,
+    servers: &[McpServerDescriptor],
+) -> Result<Vec<(String, String, String, String)>, CommandResult> {
+    let mut pins: Vec<(String, String, String, String)> = Vec::with_capacity(servers.len());
+    let mut broker = state.mcp_credentials.lock().await;
+    for server in servers {
+        let mut stored_env = Vec::with_capacity(server.env.len());
+        for entry in &server.env {
+            let stored_value = if entry.secret {
+                broker.register(entry.value.as_bytes(), "mcp-secret").0
+            } else {
+                entry.value.clone()
+            };
+            stored_env.push(McpEnvEntry {
+                name: entry.name.clone(),
+                value: stored_value,
+                secret: entry.secret,
+            });
+        }
+        let args_json = match serde_json::to_string(&server.args) {
+            Ok(json) => json,
+            Err(err) => return Err(fail("internal", format!("args encode failed: {err}"))),
+        };
+        let env_json = match serde_json::to_string(&stored_env) {
+            Ok(json) => json,
+            Err(err) => return Err(fail("internal", format!("env encode failed: {err}"))),
+        };
+        pins.push((
+            server.server_id.clone(),
+            server.command.clone(),
+            args_json,
+            env_json,
+        ));
+    }
+    Ok(pins)
+}
+
+/// Parks one approval covering exactly `server_ids`: a re-pin supersedes
+/// any still-parked approval covering the same servers, so a stale id
+/// fails closed as `approval_missing` instead of launching a superseded
+/// pin. Superseded parks are marked `consumed-missing` in the durable
+/// audit (decided without ever granting); the fresh park carries the
+/// per-server policy requests + identical operations the grant half
+/// re-authorizes one-shot before any spawn.
+async fn issue_mcp_approval(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+    server_ids: &[String],
+    requests: Vec<ApprovalRequest>,
+    operations: Vec<serde_json::Value>,
+) {
+    let mut approvals = state.mcp_approvals.lock().await;
+    let mut superseded = Vec::new();
+    approvals.retain(|id, pending| {
+        let keep = pending.session_id != session_id
+            || !pending.server_ids.iter().any(|id| server_ids.contains(id));
+        if !keep {
+            superseded.push(*id);
+        }
+        keep
+    });
+    approvals.insert(
+        approval_id,
+        McpPendingApproval {
+            session_id,
+            server_ids: server_ids.to_vec(),
+            requests,
+            operations,
+        },
+    );
+    drop(approvals);
+    for id in superseded {
+        let _ = state
+            .store
+            .decide_mcp_approval(&id.to_string(), "consumed-missing")
+            .await;
+    }
+}
+
+/// Answers `ListMCPServers` from the durable rows: descriptors with
+/// broker handles only for secrets (raw values never left the vault),
+/// lifecycle status, negotiated version (null unless `live`), and the
+/// recorded tool inventory (empty unless `live`). Strictly read-only;
+/// unknown session is a typed `unknown_session`.
+async fn list_mcp_servers(state: &Arc<GatewayState>, session_id: SessionId) -> CommandResult {
+    if !state
+        .store
+        .session_exists(&session_id.to_string())
+        .await
+        .unwrap_or(false)
+    {
+        return fail("unknown_session", format!("no session {session_id}"));
+    }
+    match state.store.list_mcp_servers(&session_id.to_string()).await {
+        Ok(rows) => {
+            let mut servers = Vec::with_capacity(rows.len());
+            for row in &rows {
+                let args: Vec<String> = match serde_json::from_str(&row.args_json) {
+                    Ok(args) => args,
+                    Err(err) => {
+                        return fail("internal", format!("stored args unreadable: {err}"));
+                    }
+                };
+                let env: Vec<McpEnvEntry> = match serde_json::from_str(&row.env_json) {
+                    Ok(env) => env,
+                    Err(err) => {
+                        return fail("internal", format!("stored env unreadable: {err}"));
+                    }
+                };
+                let tools: Vec<McpToolInfo> = match serde_json::from_str(&row.tools_json) {
+                    Ok(tools) => tools,
+                    Err(err) => {
+                        return fail("internal", format!("stored tools unreadable: {err}"));
+                    }
+                };
+                servers.push(json!({
+                    "server_id": row.server_id,
+                    "command": row.command,
+                    "args": args,
+                    "env": env,
+                    "status": row.status,
+                    "version": if row.version.is_empty() { Value::Null } else { Value::String(row.version.clone()) },
+                    "tools": tools,
+                }));
+            }
+            ok(json!({"servers": servers}))
+        }
+        Err(err) => fail("internal", err.to_string()),
+    }
+}
+
+/// Consumes one parked MCP approval and launches its exact server set
+/// (ticket 02): each launch re-authorizes its parked `mcp.spawn`
+/// operation through a one-shot policy grant (scope
+/// `<server-id>/launch`, validated-IR compile + ADR-0006 §10 contract
+/// pin — the same park/grant funnel as tool calls), then each pinned
+/// server spawns as a supervised stdio child with cwd forced to the
+/// session's pinned canonical root, handshakes `initialize`, and
+/// records its `tools/list` inventory. Every server in the set is
+/// attempted; a failed one is reaped, marked `stopped`, and — after
+/// the rest are attempted — fails the whole command with the first
+/// failure's typed code. A launch that replaces a still-running child
+/// from a superseded pin drops (and thereby kills) the old child, so the
+/// live map always reflects the latest granted pin. The durable
+/// one-shot record moves `parked` -> `granted` at consumption.
+async fn approve_mcp_servers(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+) -> CommandResult {
+    let sid = session_id.to_string();
+    if !state.store.session_exists(&sid).await.unwrap_or(false) {
+        return fail("unknown_session", format!("no session {session_id}"));
+    }
+    // One-shot: the id leaves the map before any spawn, so a concurrent
+    // second approve of the same id fails closed as `approval_missing`.
+    // A scope mismatch does NOT consume: the owning session may still
+    // approve.
+    let pending = {
+        let mut approvals = state.mcp_approvals.lock().await;
+        match approvals.get(&approval_id) {
+            None => {
+                return fail(
+                    "approval_missing",
+                    format!("no parked mcp launch for {approval_id}"),
+                );
+            }
+            Some(pending) if pending.session_id != session_id => {
+                return fail(
+                    "approval_session_mismatch",
+                    format!("approval {approval_id} belongs to another session"),
+                );
+            }
+            Some(_) => approvals.remove(&approval_id).expect("approval is parked"),
+        }
+    };
+    let McpPendingApproval {
+        server_ids,
+        requests,
+        operations,
+        ..
+    } = pending;
+    let id_refs: Vec<&str> = server_ids.iter().map(String::as_str).collect();
+    // The decision is granted exactly once, at consumption: the durable
+    // one-shot record moves `parked` -> `granted` even when an
+    // individual launch below fails (the grant executed; the failure
+    // is the launch's typed refusal, not a second decision).
+    if let Err(err) = state
+        .store
+        .decide_mcp_approval(&approval_id.to_string(), "granted")
+        .await
+    {
+        return fail("internal", err.to_string());
+    }
+    // The child scope is the pinned session root — no second resolution,
+    // no fallback: without a root there is nowhere a child may run.
+    let cwd = match state.store.load_session(&sid).await {
+        Ok(Some(session)) => session.workspace_root,
+        Ok(None) => return fail("unknown_session", format!("no session {session_id}")),
+        Err(err) => return fail("internal", err.to_string()),
+    };
+    let Some(root) = cwd else {
+        if let Err(err) = state
+            .store
+            .mark_mcp_servers(&sid, &id_refs, "stopped")
+            .await
+        {
+            return fail("internal", err.to_string());
+        }
+        drop_live_mcp_servers(state, &sid, &id_refs).await;
+        return fail(
+            "mcp_no_session_root",
+            format!("session {session_id} pins no workspace root for mcp children"),
+        );
+    };
+    let cwd = PathBuf::from(root);
+    // Snapshot the vault: launches resolve secret handles without holding
+    // the broker lock across child I/O.
+    let secrets = state.mcp_credentials.lock().await.clone();
+    // The grant half of the validated-IR funnel: each parked per-server
+    // request arms a one-shot policy grant, and the IDENTICAL operation
+    // re-authorizes through it — the grant burns here, so the spawn
+    // below is its single use, exactly like a granted tool call. A
+    // re-authorization refusal fails the whole command without spawning.
+    for (server_id, request, operation) in server_ids
+        .iter()
+        .zip(requests.iter())
+        .zip(operations.iter())
+        .map(|((server_id, request), operation)| (server_id, request, operation))
+    {
+        let grant = Approvals::default();
+        grant.decide(request.clone(), true);
+        if let Err(err) = authorize(
+            &mcp_launch_policy(),
+            &grant,
+            "mcp.spawn",
+            &mcp_spawn_scope(server_id),
+            operation,
+            &mcp_spawn_summary(server_id),
+        ) {
+            return fail(
+                "internal",
+                format!("granted mcp launch refused re-authorization: {err}"),
+            );
+        }
+    }
+    let mut launched = Vec::with_capacity(server_ids.len());
+    let mut first_failure: Option<CommandResult> = None;
+    for server_id in &server_ids {
+        match launch_one_mcp_server(state, &sid, server_id, &cwd, &secrets).await {
+            Ok(entry) => launched.push(entry),
+            Err(failure) => first_failure = first_failure.or(Some(failure)),
+        }
+    }
+    match first_failure {
+        Some(failure) => failure,
+        None => ok(json!({"servers": launched})),
+    }
+}
+
+/// Launches one approved server and records the outcome: the pinned row
+/// is read and re-validated as untrusted input (the full register-time
+/// core, immediately before spawn), the child spawns + handshakes +
+/// inventories, and the row moves to `live` (or `stopped`, reaped, on
+/// failure). Returns the `live` list entry on success, the typed
+/// refusal otherwise. A launch that replaces a still-running child from
+/// a superseded pin drops (and kills) the old child, so the live map
+/// always reflects the latest granted pin.
+async fn launch_one_mcp_server(
+    state: &Arc<GatewayState>,
+    session_id: &str,
+    server_id: &str,
+    cwd: &Path,
+    secrets: &CredentialBroker,
+) -> Result<Value, CommandResult> {
+    let row = match state.store.get_mcp_server(session_id, server_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return Err(fail(
+                "internal",
+                format!("server '{server_id}': pinned row vanished mid-approve"),
+            ));
+        }
+        Err(err) => return Err(fail("internal", err.to_string())),
+    };
+    let args: Vec<String> = match serde_json::from_str(&row.args_json) {
+        Ok(args) => args,
+        Err(err) => {
+            return Err(fail(
+                "internal",
+                format!("server '{server_id}': stored args unreadable: {err}"),
+            ));
+        }
+    };
+    let env: Vec<McpEnvEntry> = match serde_json::from_str(&row.env_json) {
+        Ok(env) => env,
+        Err(err) => {
+            return Err(fail(
+                "internal",
+                format!("server '{server_id}': stored env unreadable: {err}"),
+            ));
+        }
+    };
+    let live = match launch_mcp_server(server_id, &row.command, &args, &env, secrets, cwd).await {
+        Ok(live) => live,
+        Err(err) => {
+            if let Err(store_err) = state
+                .store
+                .mark_mcp_servers(session_id, &[server_id], "stopped")
+                .await
+            {
+                return Err(fail("internal", store_err.to_string()));
+            }
+            drop_live_mcp_servers(state, session_id, &[server_id]).await;
+            return Err(fail(
+                err.code,
+                format!("server '{server_id}': {}", err.message),
+            ));
+        }
+    };
+    let tools_json = match serde_json::to_string(&live.tools) {
+        Ok(tools_json) => tools_json,
+        Err(err) => {
+            return Err(fail(
+                "internal",
+                format!("server '{server_id}': inventory encode failed: {err}"),
+            ));
+        }
+    };
+    if let Err(err) = state
+        .store
+        .mark_mcp_live(session_id, server_id, &live.version, &tools_json)
+        .await
+    {
+        return Err(fail("internal", err.to_string()));
+    }
+    let entry = json!({
+        "server_id": server_id,
+        "status": "live",
+        "version": live.version,
+        "tools": live.tools,
+    });
+    state
+        .mcp_live
+        .lock()
+        .await
+        .insert((session_id.to_owned(), server_id.to_owned()), live);
+    Ok(entry)
+}
+
+/// Consumes one parked MCP approval and refuses its set (ticket 02):
+/// rows move to `refused` for audit and nothing ever spawns. Any live
+/// children from a superseded pin of the same ids are reaped, so a
+/// refused pin never has a running child behind it.
+async fn deny_mcp_servers(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+    reason: String,
+) -> CommandResult {
+    let sid = session_id.to_string();
+    if !state.store.session_exists(&sid).await.unwrap_or(false) {
+        return fail("unknown_session", format!("no session {session_id}"));
+    }
+    let pending = {
+        let mut approvals = state.mcp_approvals.lock().await;
+        match approvals.get(&approval_id) {
+            None => {
+                return fail(
+                    "approval_missing",
+                    format!("no parked mcp launch for {approval_id}"),
+                );
+            }
+            Some(pending) if pending.session_id != session_id => {
+                return fail(
+                    "approval_session_mismatch",
+                    format!("approval {approval_id} belongs to another session"),
+                );
+            }
+            Some(_) => approvals.remove(&approval_id).expect("approval is parked"),
+        }
+    };
+    let server_ids: Vec<String> = pending.server_ids;
+    let id_refs: Vec<&str> = server_ids.iter().map(String::as_str).collect();
+    if let Err(err) = state
+        .store
+        .decide_mcp_approval(&approval_id.to_string(), "denied")
+        .await
+    {
+        return fail("internal", err.to_string());
+    }
+    if let Err(err) = state
+        .store
+        .mark_mcp_servers(&sid, &id_refs, "refused")
+        .await
+    {
+        return fail("internal", err.to_string());
+    }
+    drop_live_mcp_servers(state, &sid, &id_refs).await;
+    tracing::info!(
+        session_id = %sid,
+        servers = ?server_ids,
+        reason = %reason,
+        "mcp servers refused"
+    );
+    let servers: Vec<Value> = server_ids
+        .iter()
+        .map(|server_id| json!({"server_id": server_id, "status": "refused"}))
+        .collect();
+    ok(json!({"servers": servers}))
+}
+
+/// Drops (and thereby kills, via `kill_on_drop`) the live children for
+/// the given ids. No-op for ids with no running child.
+async fn drop_live_mcp_servers(state: &Arc<GatewayState>, session_id: &str, server_ids: &[&str]) {
+    let mut live = state.mcp_live.lock().await;
+    for server_id in server_ids {
+        live.remove(&(session_id.to_owned(), (*server_id).to_owned()));
+    }
+}
+
+/// The authorize scope of one mediated call: `<server-id>/<tool>`.
+/// Built from compiler-validated parts (neither may hold `/`), so the
+/// scope splits unambiguously on its single `/`.
+fn mcp_tool_scope(server_id: &str, tool: &str) -> String {
+    format!("{server_id}/{tool}")
+}
+
+/// The authorized operation JSON of one mediated call: the server and
+/// tool identity plus the FULL arguments verbatim. The policy binds
+/// grants to the BLAKE3 hash of exactly this document, so any material
+/// argument change invalidates them.
+fn mcp_tool_operation(
+    server_id: &str,
+    tool: &str,
+    arguments: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({"server_id": server_id, "tool": tool, "arguments": arguments})
+}
+
+/// The policy mediated calls authorize against: default Ask, no grants,
+/// no denials — every call parks, and a human grants each one through
+/// the session-scoped approve commands (`allow_once` semantics live in
+/// the one-shot approval consumption, never in durable grants).
+fn mcp_call_policy() -> Policy {
+    Policy::new(DefaultPosture::Ask)
+}
+
+/// Human summary shown at approval time. Arguments are deliberately
+/// excluded: they may carry caller-supplied secrets, and the parked
+/// approval must never become a disclosure surface.
+fn mcp_tool_summary(server_id: &str, tool: &str) -> String {
+    format!("MCP tool call {server_id}/{tool}")
+}
+
+/// The authorize scope of one mediated launch: `<server-id>/launch`.
+/// Built from the compiler-validated `server_id` (no `/`), so the
+/// scope splits unambiguously on its single `/` — the same shape as
+/// the call scope `<server-id>/<tool>`.
+fn mcp_spawn_scope(server_id: &str) -> String {
+    format!("{server_id}/launch")
+}
+
+/// The authorized operation JSON of one mediated launch: the server
+/// identity plus the launch-approval id (the compiler's idempotency
+/// key). The policy binds grants to the BLAKE3 hash of exactly this
+/// document, so a launch under a different approval is a different
+/// grant.
+fn mcp_spawn_operation(server_id: &str, approval_id: &ApprovalId) -> serde_json::Value {
+    serde_json::json!({"server_id": server_id, "approval_id": approval_id.to_string()})
+}
+
+/// The policy mediated launches authorize against: default Ask, no
+/// grants, no denials — the same funnel as calls. The human grant is
+/// the session-scoped approval consumption; the per-server authorize
+/// binds scope + operation hash exactly once per launch.
+fn mcp_launch_policy() -> Policy {
+    Policy::new(DefaultPosture::Ask)
+}
+
+/// Human summary shown at approval time: identity only, never the
+/// descriptor (it may carry caller-supplied secrets).
+fn mcp_spawn_summary(server_id: &str) -> String {
+    format!("MCP server launch {server_id}")
+}
+
+/// Proves a call target before any child I/O: the row exists
+/// (`unknown_mcp_server`), is `live` (`mcp_not_live`, with the caller's
+/// hint appended), and its recorded inventory offers `tool`
+/// (`unknown_capability`). The live map is never touched here, so an
+/// unknown tool provably causes no child I/O.
+async fn prove_mcp_tool_target(
+    state: &Arc<GatewayState>,
+    session_id: &SessionId,
+    server_id: &str,
+    tool: &str,
+    not_live_hint: &str,
+) -> Result<(), CommandResult> {
+    let sid = session_id.to_string();
+    let row = match state.store.get_mcp_server(&sid, server_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return Err(fail(
+                "unknown_mcp_server",
+                format!("session {session_id} pins no mcp server '{server_id}'"),
+            ));
+        }
+        Err(err) => return Err(fail("internal", err.to_string())),
+    };
+    if row.status != "live" {
+        return Err(fail(
+            "mcp_not_live",
+            format!(
+                "server '{server_id}' is {}, not live: {not_live_hint}",
+                row.status
+            ),
+        ));
+    }
+    let inventory: Vec<McpToolInfo> = match serde_json::from_str(&row.tools_json) {
+        Ok(tools) => tools,
+        Err(err) => return Err(fail("internal", format!("stored tools unreadable: {err}"))),
+    };
+    if !inventory.iter().any(|info| info.name == tool) {
+        return Err(fail(
+            "unknown_capability",
+            format!("server '{server_id}' offers no tool '{tool}'"),
+        ));
+    }
+    Ok(())
+}
+
+/// Parks one mediated **MCP tool** call (ticket 03): the tool name is
+/// checked against the recorded `tools/list` inventory first — an
+/// unknown tool fails as `unknown_capability` before any child I/O
+/// (the live map is never touched on that path) — then the call
+/// compiles to a validated `mcp.tool` IR node (shape + contract pin)
+/// and authorizes through `authorize()` as capability `mcp.tool` with
+/// scope `<server-id>/<tool>`. Under the default Ask policy the call
+/// always parks: the response carries the session-scoped `approval_id`
+/// one later `ApproveMCPTool` (or `DenyMCPTool`) consumes.
+async fn call_mcp_tool(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    server_id: String,
+    tool: String,
+    arguments: serde_json::Value,
+) -> CommandResult {
+    let sid = session_id.to_string();
+    if !state.store.session_exists(&sid).await.unwrap_or(false) {
+        return fail("unknown_session", format!("no session {session_id}"));
+    }
+    if !arguments.is_object() {
+        return fail(
+            "invalid_mcp_call",
+            format!("server '{server_id}': call arguments must be a JSON object"),
+        );
+    }
+    if let Err(result) = prove_mcp_tool_target(
+        state,
+        &session_id,
+        &server_id,
+        &tool,
+        "approve its launch first",
+    )
+    .await
+    {
+        return result;
+    }
+    let scope = mcp_tool_scope(&server_id, &tool);
+    let operation = mcp_tool_operation(&server_id, &tool, &arguments);
+    // The validated-IR gate: the node compiles (shape + ADR-0006 §10
+    // contract pin) before the policy gate parks it. A compile refusal
+    // here is internal — every client-reachable shape passed above —
+    // and the node is never installed in a graph: the gateway executes
+    // the granted call directly (the throwaway task id only satisfies
+    // the compiler's node identity).
+    if let Err(err) = compile_operation(TaskId::generate(), 0, "mcp.tool", &operation) {
+        return fail("internal", format!("mcp.tool refused to compile: {err}"));
+    }
+    let summary = mcp_tool_summary(&server_id, &tool);
+    match authorize(
+        &mcp_call_policy(),
+        &Approvals::default(),
+        "mcp.tool",
+        &scope,
+        &operation,
+        &summary,
+    ) {
+        Ok(()) => fail(
+            "internal",
+            "mcp call policy allowed without a grant".to_owned(),
+        ),
+        Err(ToolError::ApprovalRequired { request, .. }) => {
+            let approval_id = request.id;
+            let op_hash = request.operation_hash.clone();
+            state.mcp_call_approvals.lock().await.insert(
+                approval_id,
+                McpPendingCall {
+                    session_id,
+                    request: *request,
+                    server_id: server_id.clone(),
+                    tool: tool.clone(),
+                    arguments: arguments.clone(),
+                },
+            );
+            // Durable one-shot session-scoped record: the policy's own
+            // operation hash binds exactly the parked call.
+            if let Err(err) = state
+                .store
+                .record_mcp_approval(&approval_id.to_string(), &sid, "call", &op_hash)
+                .await
+            {
+                state.mcp_call_approvals.lock().await.remove(&approval_id);
+                return fail("internal", err.to_string());
+            }
+            tracing::info!(
+                session_id = %sid,
+                server_id = %server_id,
+                tool = %tool,
+                approval_id = %approval_id,
+                "mcp tool call parked"
+            );
+            ok(json!({
+                "status": "awaiting_approval",
+                "approval_id": approval_id,
+                "server_id": server_id,
+                "tool": tool,
+            }))
+        }
+        Err(err) => fail("internal", format!("mcp call authorize failed: {err}")),
+    }
+}
+
+/// Takes one parked MCP tool call one-shot (shared by the grant and
+/// refuse paths): unknown or already-consumed ids fail as
+/// `approval_missing`, foreign-session ids as
+/// `approval_session_mismatch` without consuming. The id leaves the
+/// map before any re-check or child I/O, so a concurrent second
+/// approve of the same id fails closed.
+async fn take_mcp_call_approval(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+) -> Result<McpPendingCall, CommandResult> {
+    let sid = session_id.to_string();
+    if !state.store.session_exists(&sid).await.unwrap_or(false) {
+        return Err(fail("unknown_session", format!("no session {session_id}")));
+    }
+    let mut approvals = state.mcp_call_approvals.lock().await;
+    match approvals.get(&approval_id) {
+        None => Err(fail(
+            "approval_missing",
+            format!("no parked mcp tool call for {approval_id}"),
+        )),
+        Some(pending) if pending.session_id != session_id => Err(fail(
+            "approval_session_mismatch",
+            format!("approval {approval_id} belongs to another session"),
+        )),
+        Some(_) => Ok(approvals.remove(&approval_id).expect("approval is parked")),
+    }
+}
+
+/// Re-proves liveness and inventory under a consumed grant: the world
+/// may have moved while the call was parked (a dead child, a
+/// superseded inventory), so both are re-checked before any child I/O.
+async fn recheck_mcp_call_target(
+    state: &Arc<GatewayState>,
+    session_id: &SessionId,
+    pending: &McpPendingCall,
+) -> Result<(), CommandResult> {
+    prove_mcp_tool_target(
+        state,
+        session_id,
+        &pending.server_id,
+        &pending.tool,
+        "the server died while the call was parked",
+    )
+    .await
+}
+
+/// Arms the policy's own parked request one-shot, re-authorizes the
+/// IDENTICAL operation (the grant burns here, so the execution below
+/// is its single use — exactly once), and runs one `tools/call` round
+/// trip. A child that dies mid-call fails as `mcp_call_failed` (never
+/// silent success) with the row fallen back to `stopped`.
+async fn execute_granted_mcp_call(
+    state: &Arc<GatewayState>,
+    session_id: &SessionId,
+    pending: &McpPendingCall,
+) -> CommandResult {
+    let sid = session_id.to_string();
+    let scope = mcp_tool_scope(&pending.server_id, &pending.tool);
+    let operation = mcp_tool_operation(&pending.server_id, &pending.tool, &pending.arguments);
+    let grants = Approvals::default();
+    grants.decide(pending.request.clone(), true);
+    if let Err(err) = authorize(
+        &mcp_call_policy(),
+        &grants,
+        "mcp.tool",
+        &scope,
+        &operation,
+        &mcp_tool_summary(&pending.server_id, &pending.tool),
+    ) {
+        return fail(
+            "internal",
+            format!("granted mcp call refused re-authorization: {err}"),
+        );
+    }
+    // Snapshot the vault: the call resolves secret handles without
+    // holding the broker lock across child I/O.
+    let secrets = state.mcp_credentials.lock().await.clone();
+    // One live-map lock across the whole round trip (MCP-slice known
+    // issue: head-of-line blocking across sessions; feeds the
+    // cancellation-drain slice). Same-server calls serialize because
+    // JSON-RPC ids match on the shared pipes; the lock is released
+    // before the error path below reaps anything.
+    let key = (sid.clone(), pending.server_id.clone());
+    let outcome = {
+        let mut live = state.mcp_live.lock().await;
+        match live.get_mut(&key) {
+            Some(server) => {
+                server
+                    .call_tool(
+                        &pending.server_id,
+                        &pending.tool,
+                        &pending.arguments,
+                        &secrets,
+                    )
+                    .await
+            }
+            None => {
+                return fail(
+                    "mcp_not_live",
+                    format!("server '{}' is no longer live", pending.server_id),
+                );
+            }
+        }
+    };
+    match outcome {
+        Ok(result) => {
+            tracing::info!(
+                session_id = %sid,
+                server_id = %pending.server_id,
+                tool = %pending.tool,
+                "mcp tool call granted"
+            );
+            ok(json!({
+                "status": "ok",
+                "server_id": pending.server_id,
+                "tool": pending.tool,
+                "result": result,
+            }))
+        }
+        Err(err) => {
+            // A JSON-RPC `error` answer is a completed round trip against
+            // a healthy child — the TOOL refused, the transport did not
+            // die. It fails typed without touching the row or the live
+            // child, so a later fresh approved call needs no relaunch
+            // (reaping a compliant server for answering would repeat the
+            // notification-kill shape: never kill health for protocol).
+            if err.code == "mcp_tool_error" {
+                return fail(
+                    err.code,
+                    format!("server '{}': {}", pending.server_id, err.message),
+                );
+            }
+            // §19 at the gateway seam: the child died with the outcome
+            // unknown — never success. The row falls back to `stopped`
+            // and the dead child is reaped, so the next call fails
+            // `mcp_not_live` instead of writing into dead pipes; retry
+            // needs a fresh approved call, never a blind replay.
+            let id_ref = pending.server_id.as_str();
+            if let Err(store_err) = state
+                .store
+                .mark_mcp_servers(&sid, &[id_ref], "stopped")
+                .await
+            {
+                return fail("internal", store_err.to_string());
+            }
+            drop_live_mcp_servers(state, &sid, &[id_ref]).await;
+            fail(
+                err.code,
+                format!("server '{}': {}", pending.server_id, err.message),
+            )
+        }
+    }
+}
+
+/// Grants one parked MCP tool call: consumes the approval one-shot
+/// (a late or duplicate grant after deny/cancel finds nothing and
+/// fails as `approval_missing` — never executed), re-checks liveness
+/// and inventory under the grant, re-authorizes the IDENTICAL parked
+/// operation through a one-shot policy grant (burns on first use, so
+/// the call executes exactly once), and runs one `tools/call` round
+/// trip. A server that died while parked fails as `mcp_not_live`; a
+/// child that dies mid-call fails as `mcp_call_failed` (never silent
+/// success) and the row falls back to `stopped`. The receipt carries
+/// the broker-redacted `result` — raw secrets never reach the client.
+async fn approve_mcp_tool(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+) -> CommandResult {
+    let pending = match take_mcp_call_approval(state, session_id, approval_id).await {
+        Ok(pending) => pending,
+        Err(result) => return result,
+    };
+    // The decision is granted exactly once, at consumption — even when
+    // the re-check below refuses the world that moved while parked.
+    if let Err(err) = state
+        .store
+        .decide_mcp_approval(&approval_id.to_string(), "granted")
+        .await
+    {
+        return fail("internal", err.to_string());
+    }
+    if let Err(result) = recheck_mcp_call_target(state, &session_id, &pending).await {
+        return result;
+    }
+    execute_granted_mcp_call(state, &session_id, &pending).await
+}
+
+/// Refuses one parked MCP tool call: consumes the approval one-shot
+/// and nothing ever executes. A later `ApproveMCPTool` of the same id
+/// fails as `approval_missing` — the late grant is ignored, which is
+/// the approval/cancellation serialization this path needs.
+async fn deny_mcp_tool(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+    reason: String,
+) -> CommandResult {
+    let sid = session_id.to_string();
+    let pending = match take_mcp_call_approval(state, session_id, approval_id).await {
+        Ok(pending) => pending,
+        Err(result) => return result,
+    };
+    if let Err(err) = state
+        .store
+        .decide_mcp_approval(&approval_id.to_string(), "denied")
+        .await
+    {
+        return fail("internal", err.to_string());
+    }
+    tracing::info!(
+        session_id = %sid,
+        server_id = %pending.server_id,
+        tool = %pending.tool,
+        reason = %reason,
+        "mcp tool call refused"
+    );
+    ok(json!({
+        "status": "denied",
+        "server_id": pending.server_id,
+        "tool": pending.tool,
+    }))
 }
 
 async fn supervisor_for(
@@ -2779,6 +4047,10 @@ mod stale_supervisor_tests {
             running: Mutex::new(HashMap::new()),
             recovering: Mutex::new(HashSet::new()),
             failures: Mutex::new(HashMap::new()),
+            mcp_credentials: Mutex::new(CredentialBroker::default()),
+            mcp_approvals: Mutex::new(HashMap::new()),
+            mcp_call_approvals: Mutex::new(HashMap::new()),
+            mcp_live: Mutex::new(HashMap::new()),
         });
 
         let lease = acquire_run_lease(&canonical).await.expect("lease acquired");

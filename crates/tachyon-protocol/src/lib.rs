@@ -102,6 +102,52 @@ pub struct EventEnvelope {
     pub event: GatewayEvent,
 }
 
+/// One environment entry of a client-supplied **MCP server** descriptor
+/// (CONTEXT.md glossary; ADR-0005 blocker 3, ticket 01).
+///
+/// `value` is the literal value for `secret: false`. For `secret: true`
+/// the gateway registers the value in the `CredentialBroker` at
+/// registration time; only the issued handle is ever persisted or
+/// returned, never the raw value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpEnvEntry {
+    /// Environment variable name (`[A-Za-z_][A-Za-z0-9_]*`).
+    pub name: String,
+    /// Literal value, or the broker handle once pinned and listed.
+    pub value: String,
+    /// When true, the value is secret material (broker handle only).
+    pub secret: bool,
+}
+
+/// Client-supplied **MCP server** descriptor: the authorized subprocess
+/// shape pinned to one session (ticket 01 validates + pins, no launch).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerDescriptor {
+    /// Opaque server identity, 1..=64 bytes.
+    pub server_id: String,
+    /// Absolute path of the server executable (shape checked at
+    /// registration; executability at launch).
+    pub command: String,
+    /// Arguments (at most 32 entries, each at most 4KiB, NUL-free).
+    pub args: Vec<String>,
+    /// Environment entries (names `[A-Za-z_][A-Za-z0-9_]*`, values at
+    /// most 16KiB; dangerous variables rejected).
+    #[serde(default)]
+    pub env: Vec<McpEnvEntry>,
+}
+
+/// One tool a live **MCP server** (CONTEXT.md glossary) advertises through
+/// its `tools/list` inventory: the name the gateway authorizes
+/// `mcp.tool` calls against, plus the server's own description.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolInfo {
+    /// Tool name as reported by the child (`tools/call` addresses it).
+    pub name: String,
+    /// Server-supplied description; empty when the child sends none.
+    #[serde(default)]
+    pub description: String,
+}
+
 /// Commands a gateway client may send. Every command is validated and
 /// policy-checked by the core before execution; nothing here self-authorizes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +280,113 @@ pub enum Command {
         workspace_root: String,
         /// The user's question in plain text.
         question: String,
+    },
+    /// Validate + durably pin client-supplied MCP server descriptors
+    /// against a session (ticket 02: the launch parks). Every descriptor
+    /// is validated as untrusted input; any rejection fails with typed
+    /// `invalid_mcp_descriptor` and pins nothing. A valid set pins with
+    /// status `awaiting_approval` and the response carries the
+    /// session-scoped `approval_id` that one later `ApproveMCPServers`
+    /// (or `DenyMCPServers`) consumes — one approval per register call.
+    /// Unknown session fails with typed `unknown_session`.
+    RegisterMCPServers {
+        /// Session that will own the pinned servers.
+        session_id: SessionId,
+        /// Descriptors to validate and pin.
+        servers: Vec<McpServerDescriptor>,
+    },
+    /// Launch a parked MCP server set: spawns each pinned server as a
+    /// supervised stdio child, performs the `initialize` handshake, and
+    /// records the `tools/list` inventory. Consumes the `approval_id`
+    /// the matching `RegisterMCPServers` returned (one-shot); unknown or
+    /// already-consumed ids fail with typed `approval_missing`, and an id
+    /// from another session fails with `approval_session_mismatch`.
+    /// A failed server is reaped and marked `stopped` while the rest of
+    /// the set is still attempted; any failure turns the whole command
+    /// into a typed `mcp_spawn_failed` / `mcp_handshake_failed` /
+    /// `mcp_version_mismatch` error. Unknown session fails with typed
+    /// `unknown_session`.
+    ApproveMCPServers {
+        /// Session whose parked servers launch.
+        session_id: SessionId,
+        /// Session-scoped approval the register call returned.
+        approval_id: ApprovalId,
+    },
+    /// Refuse a parked MCP server set: rows move to `refused` for audit
+    /// and nothing ever spawns. Consumes the `approval_id` like
+    /// `ApproveMCPServers`; unknown or consumed ids fail with typed
+    /// `approval_missing`. Unknown session fails with typed
+    /// `unknown_session`.
+    DenyMCPServers {
+        /// Session whose parked servers are refused.
+        session_id: SessionId,
+        /// Session-scoped approval the register call returned.
+        approval_id: ApprovalId,
+        /// Human-readable reason, logged for audit.
+        reason: String,
+    },
+    /// List a session's pinned MCP servers. Secret env values are
+    /// reported as broker handles only, never raw values. Each entry
+    /// carries its lifecycle `status` (`awaiting_approval` / `live` /
+    /// `refused` / `stopped`), the negotiated `version` (null unless
+    /// live), and the recorded `tools` inventory (empty unless live).
+    /// Unknown session fails with typed `unknown_session`.
+    ListMCPServers {
+        /// Session whose servers to list.
+        session_id: SessionId,
+    },
+    /// Route one **MCP tool** call through `authorize()` as capability
+    /// `mcp.tool` with scope `<server-id>/<tool>` and the full arguments
+    /// in the operation JSON (ticket 03). The tool name is checked
+    /// against the recorded `tools/list` inventory first: an unknown
+    /// tool fails as typed `unknown_capability` before any child I/O,
+    /// an unpinned server as `unknown_mcp_server`, and a pinned but
+    /// non-`live` server as `mcp_not_live`. Non-object arguments fail
+    /// as `invalid_mcp_call`. Under the default Ask policy the call
+    /// parks: the `Ok` payload reports `status: "awaiting_approval"`
+    /// with the session-scoped `approval_id` one later `ApproveMCPTool`
+    /// (or `DenyMCPTool`) consumes — one approval per parked call.
+    /// Unknown session fails with typed `unknown_session`.
+    CallMCPTool {
+        /// Session owning the pinned server.
+        session_id: SessionId,
+        /// Pinned server to call through (must be `live`).
+        server_id: String,
+        /// Tool name from the recorded inventory.
+        tool: String,
+        /// Tool arguments (must be a JSON object; carried verbatim in
+        /// the authorized operation JSON).
+        arguments_json: serde_json::Value,
+    },
+    /// Grant one parked **MCP tool** call: re-authorizes the exact parked
+    /// operation through the one-shot grant and executes it exactly
+    /// once, returning the broker-redacted receipt (`status: "ok"` with
+    /// the child's `result`). Consumes the `approval_id` the matching
+    /// `CallMCPTool` returned (one-shot); unknown or already-consumed
+    /// ids fail with typed `approval_missing` — a late or duplicate
+    /// grant after deny/cancel is therefore ignored, never executed —
+    /// and an id from another session fails with
+    /// `approval_session_mismatch`. A server that died while parked
+    /// fails as `mcp_not_live`; a child that dies mid-call fails as
+    /// typed `mcp_call_failed` (never silent success). Unknown session
+    /// fails with typed `unknown_session`.
+    ApproveMCPTool {
+        /// Session whose parked call executes.
+        session_id: SessionId,
+        /// Session-scoped approval the call returned.
+        approval_id: ApprovalId,
+    },
+    /// Refuse one parked **MCP tool** call: consumes the `approval_id`
+    /// like `ApproveMCPTool` and nothing ever executes. Unknown or
+    /// consumed ids fail with typed `approval_missing`. Unknown session
+    /// fails with typed `unknown_session`.
+    DenyMCPTool {
+        /// Session whose parked call is refused.
+        session_id: SessionId,
+        /// Session-scoped approval the call returned.
+        approval_id: ApprovalId,
+        /// Human-readable reason, logged for audit.
+        reason: String,
     },
 }
 
@@ -606,6 +759,50 @@ mod tests {
         // Query is additive inside protocol v2, like StartRun: a new
         // stateless command is not a breaking change.
         assert_eq!(super::PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn mcp_tool_call_commands_round_trip_and_stay_v2() {
+        let session_id = SessionId::generate();
+        let approval_id = tachyon_types::ApprovalId::generate();
+        let call = Command::CallMCPTool {
+            session_id,
+            server_id: "alpha".to_owned(),
+            tool: "echo".to_owned(),
+            arguments_json: serde_json::json!({"input": "hi"}),
+        };
+        let bytes = encode_frame(&call).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, call);
+        let json: serde_json::Value = serde_json::from_slice(&bytes[FRAME_PREFIX_LEN..]).unwrap();
+        assert_eq!(json["CallMCPTool"]["server_id"], "alpha");
+        assert_eq!(json["CallMCPTool"]["tool"], "echo");
+        assert_eq!(json["CallMCPTool"]["arguments_json"]["input"], "hi");
+
+        let approve = Command::ApproveMCPTool {
+            session_id,
+            approval_id,
+        };
+        let bytes = encode_frame(&approve).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, approve);
+
+        let deny = Command::DenyMCPTool {
+            session_id,
+            approval_id,
+            reason: "not this tool".to_owned(),
+        };
+        let bytes = encode_frame(&deny).unwrap();
+        let (back, used): (Command, usize) = decode_frame(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(back, deny);
+
+        // The mediated-call commands are additive inside protocol v2,
+        // like the ticket-02 MCP commands: no version bump.
+        assert_eq!(super::PROTOCOL_VERSION, 2);
+        assert_eq!(check_version(super::PROTOCOL_VERSION), Ok(()));
     }
 
     #[test]

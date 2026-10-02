@@ -276,6 +276,9 @@ pub fn verify_manifest_freshness(
 /// Real IR declarations per slice capability. Unknown capabilities, raw
 /// shell, credentials/network, and model-supplied access/effect metadata
 /// fail closed here, before any graph is built.
+// Dispatch table over the slice capabilities: arms stay one-liners via
+// helpers (`mcp_tool_parts`), so the line budget buys no readability.
+#[allow(clippy::too_many_lines)]
 pub fn compile_operation(
     task_id: TaskId,
     revision: u64,
@@ -345,6 +348,8 @@ pub fn compile_operation(
                 Idempotency::Keyed,
             )
         }
+        "mcp.tool" => mcp_tool_parts(capability, object)?,
+        "mcp.spawn" => mcp_spawn_parts(capability, object)?,
         "shell.exec" | "process.spawn" | "credential.use" | "net.fetch" => {
             return Err(RuntimeError::ForbiddenCapability(capability.to_owned()));
         }
@@ -384,16 +389,140 @@ pub fn compile_operation(
     })
 }
 
+/// Node declarations for one gateway-mediated `mcp.tool` call: the
+/// gateway inventory-checks the tool name against the live server's
+/// recorded `tools/list` before compiling, so an unknown tool never
+/// reaches child I/O. The compiler pins the shape here — non-empty
+/// `server_id`/`tool` with no `/` (the authorize scope is
+/// `<server-id>/<tool>`, split on the single `/`) and an object
+/// `arguments` carried verbatim in the authorized operation JSON.
+fn mcp_tool_parts(
+    capability: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(ExecutorKind, AccessSet, EffectClass, Idempotency), RuntimeError> {
+    let string_field = |field: &str| -> Result<String, RuntimeError> {
+        object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| RuntimeError::InvalidArgs {
+                capability: capability.to_owned(),
+                reason: format!("missing typed string field {field:?}"),
+            })
+    };
+    let server_id = string_field("server_id")?;
+    let tool = string_field("tool")?;
+    if server_id.is_empty() || tool.is_empty() || server_id.contains('/') || tool.contains('/') {
+        return Err(RuntimeError::InvalidArgs {
+            capability: capability.to_owned(),
+            reason: "mcp.tool needs non-empty server_id and tool with no '/'".into(),
+        });
+    }
+    let arguments = object
+        .get("arguments")
+        .ok_or_else(|| RuntimeError::InvalidArgs {
+            capability: capability.to_owned(),
+            reason: "missing object field \"arguments\"".into(),
+        })?;
+    if !arguments.is_object() {
+        return Err(RuntimeError::InvalidArgs {
+            capability: capability.to_owned(),
+            reason: "mcp.tool \"arguments\" must be a JSON object".into(),
+        });
+    }
+    // An MCP tool runs inside an untrusted child with ambient authority
+    // and declares no recovery path: an interrupted call classifies
+    // `UnknownAfterCrash` per the §19 matrix (never blindly replayed),
+    // and the node never speculates.
+    Ok((
+        ExecutorKind::Tool,
+        AccessSet {
+            reads: Vec::new(),
+            writes: Vec::new(),
+        },
+        EffectClass::DestructiveExternalMutation,
+        Idempotency::Unknown,
+    ))
+}
+
+/// Node declarations for one gateway-mediated `mcp.spawn` launch: the
+/// gateway compiles the launch before spawning, so the untrusted child
+/// starts only under a validated, authorized operation. The compiler
+/// pins the shape here — a non-empty `server_id` with no `/` (the
+/// authorize scope is `<server-id>/launch`, split on the single `/`).
+/// Empty access set: the child runs with ambient authority outside any
+/// declared resource. Idempotency is `Keyed` on the launch-approval id
+/// carried in the operation (`approval_id`): one approval launches
+/// exactly once, and a replay under a different id is a different key.
+fn mcp_spawn_parts(
+    capability: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(ExecutorKind, AccessSet, EffectClass, Idempotency), RuntimeError> {
+    let string_field = |field: &str| -> Result<String, RuntimeError> {
+        object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| RuntimeError::InvalidArgs {
+                capability: capability.to_owned(),
+                reason: format!("missing typed string field {field:?}"),
+            })
+    };
+    let server_id = string_field("server_id")?;
+    if server_id.is_empty() || server_id.contains('/') {
+        return Err(RuntimeError::InvalidArgs {
+            capability: capability.to_owned(),
+            reason: "mcp.spawn needs a non-empty server_id with no '/'".into(),
+        });
+    }
+    // The launch-approval id is the idempotency key: present and
+    // non-empty, otherwise two launches of the same server would share
+    // one key and the compiler could not tell them apart.
+    let approval_id = string_field("approval_id")?;
+    if approval_id.is_empty() {
+        return Err(RuntimeError::InvalidArgs {
+            capability: capability.to_owned(),
+            reason: "mcp.spawn needs a non-empty approval_id idempotency key".into(),
+        });
+    }
+    // A launch starts an untrusted child with ambient authority and no
+    // recovery path: spawning it is the consequential effect, so the
+    // node is `DestructiveExternalMutation`, never speculated, exactly
+    // like the mediated `mcp.tool` call it precedes.
+    Ok((
+        ExecutorKind::Tool,
+        AccessSet {
+            reads: Vec::new(),
+            writes: Vec::new(),
+        },
+        EffectClass::DestructiveExternalMutation,
+        Idempotency::Keyed,
+    ))
+}
+
 /// Capability contract version this node is compiled under (ADR-0006
 /// §10): persisted on the invocation so recovery never reinterprets it
-/// under newer semantics. Only `fs.read` has a versioned contract in
-/// this slice; every other capability records "no contract".
+/// under newer semantics. Only `fs.read`, `mcp.spawn`, and `mcp.tool`
+/// have versioned contracts in this slice; every other capability
+/// records "no contract".
 fn capability_contract_version(capability: &str) -> u16 {
     match capability {
         "fs.read" => crate::evidence::FS_READ_CONTRACT_VERSION,
+        "mcp.spawn" => MCP_SPAWN_CONTRACT_VERSION,
+        "mcp.tool" => MCP_TOOL_CONTRACT_VERSION,
         _ => tachyon_ir::CAPABILITY_CONTRACT_NONE,
     }
 }
+
+/// Capability contract version of the `mcp.spawn` launch capability,
+/// persisted on every invocation so recovery never reinterprets an
+/// invocation under newer semantics (ADR-0006 §10).
+pub const MCP_SPAWN_CONTRACT_VERSION: u16 = 1;
+
+/// Capability contract version of the `mcp.tool` mediated-call
+/// capability, persisted on every invocation so recovery never
+/// reinterprets an invocation under newer semantics (ADR-0006 §10).
+pub const MCP_TOOL_CONTRACT_VERSION: u16 = 1;
 
 /// Output declarations are part of the trusted compilation, not the
 /// caller's proposal: the evidence capability promises exactly one
@@ -641,6 +770,16 @@ fn parse_patch_operation(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     if capability != "mutation.patch" {
+        // `mcp.tool` / `mcp.spawn` name real capabilities, but a patch
+        // batch can never carry them: mediated MCP calls and launches
+        // compile only through `compile_operation` on the gateway path,
+        // never through model patch proposals. They fail as
+        // `UnknownCapability` here — explicitly carved out of the
+        // forbidden set below, so a future widening of that set cannot
+        // silently reclassify them.
+        if capability == "mcp.tool" || capability == "mcp.spawn" {
+            return Err(RuntimeError::UnknownCapability(capability.to_owned()));
+        }
         if matches!(
             capability,
             "shell.exec" | "process.spawn" | "credential.use" | "net.fetch"

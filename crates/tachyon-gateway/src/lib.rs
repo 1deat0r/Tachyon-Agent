@@ -8,6 +8,7 @@
 #![warn(unsafe_code)]
 
 mod endpoint;
+mod mcp;
 mod query;
 mod server;
 pub mod transport;

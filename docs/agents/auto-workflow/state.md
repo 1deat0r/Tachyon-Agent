@@ -205,6 +205,7 @@ updated: 2026-10-02T05:54:51Z
 2026-10-02T05:54:51Z EVENT ===== RULE 5 OVERRIDE (user, live session): every small task MUST be committed locally AND pushed to GitHub — skill rule 5 no-commit default replaced for this invocation and thereafter; decision row in decisions.md; enforcement = verify-then-commit-then-hook-push per task; retroactive backlog lands as per-slice atomic commits (each pre-verified in --keep-index state before commit so the post-commit hook never pushes an unverified tree) =====
 2026-10-02T05:54:51Z EVENT pre-override state: HEAD 8c23b6e, 5 verified slices + bridge ticket 01 uncommitted (57 porcelain entries); going forward: commit boundary = each ticket/review-fix after Phase 6 GREEN
 2026-10-02T06:27:53Z EVENT commit 74909b4 (chore(agents): auto-workflow state, decisions, and slice trails) pre-verified cargo verify exit 0, pushed
+2026-10-02T06:33:11Z EVENT commit dd944e9 (feat(gateway): idempotent CreateTask and StartRun retry reconciliation (#57)) pre-verified cargo verify exit 0, pushed
 
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
