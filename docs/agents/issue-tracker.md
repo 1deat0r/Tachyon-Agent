@@ -2,6 +2,27 @@
 
 The canonical remote is `1deat0r/Tachyon-Agent`; `gh` resolves it from this checkout. GitHub Issues are one optional persistent tracker, not the default development loop. Apply the selection rules in [`docs/DEVELOPMENT_WORKFLOW.md`](../DEVELOPMENT_WORKFLOW.md) before creating or publishing tickets. Routine changes should stay in the current task and working tree.
 
+## Local task hierarchy (scratch tickets)
+
+Local ticket files under `.scratch/<feature>/issues/` use the four-level hierarchy (workflow rule 18, user rule 2026-10-02):
+
+```markdown
+# TASK NN: <name>
+**Status:** ready | in-progress | complete (`cargo verify` exit 0; boxes checked <date>)
+**Blocked by:** None (NN complete) | NN
+**What to build:** ...
+**Verify:** <commands and test names>
+
+## Small tasks (each = one commit, in order)
+- [ ] S1 <name> · Verify: <test name>
+  - [ ] M1a <micro step>
+    - [ ] N1a1 <nano check>
+```
+
+- One **small task** = one local commit + push after its Verify passes (workflow rule 19).
+- Caps: 8 small tasks per TASK; 6 micro per small task; 4 nano per micro task. Rule 13 caps apply per level.
+- Flip `**Status:**` and check boxes in the same commit that lands the work.
+
 ## Conventions
 
 - **Create an issue when useful**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies. Apply `type/*`, `comp/*`, and `P*` labels when known.

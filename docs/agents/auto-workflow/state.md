@@ -225,6 +225,8 @@ updated: 2026-10-02T05:54:51Z
 
 2026-10-02T10:09:32Z EVENT task 4/4: skill rule 17 — 2-pass reviews, docs-only spot-check; Phase 7 amended. dotfiles aaa4235.
 
+2026-10-02T10:28:31Z EVENT hierarchy adopted: rules 18-19 (task>small>micro>nano; commit per small task), Phase 4/5 rewritten, tracker format added. dotfiles 2429914, 4934735.
+
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
 status: running
