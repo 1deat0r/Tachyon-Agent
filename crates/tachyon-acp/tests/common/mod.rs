@@ -149,7 +149,7 @@ impl Adapter {
     /// (adapter closed stdout). `label` names what is being waited for;
     /// a timeout panics with the adapter's recent stderr so a hung
     /// frame fails the test loudly with its explaining log lines.
-    async fn read_line(&mut self, timeout: Duration, label: &str) -> Option<String> {
+    pub async fn read_line(&mut self, timeout: Duration, label: &str) -> Option<String> {
         let mut line = String::new();
         match tokio::time::timeout(timeout, self.stdout.read_line(&mut line)).await {
             Ok(Ok(0)) => None,
@@ -171,8 +171,9 @@ impl Adapter {
 
     /// Reads frames until the response for `id` arrives. Returns the
     /// raw non-response lines seen before it (streamed `session/update`
-    /// notifications) and the raw response line itself. A response for
-    /// any other id is a test bug and panics.
+    /// notifications and agent→client request frames) and the raw
+    /// response line itself. A response for any other id is a test bug
+    /// and panics.
     pub async fn read_until_response(
         &mut self,
         id: Value,
@@ -185,7 +186,7 @@ impl Adapter {
                 .await
                 .unwrap_or_else(|| panic!("adapter closed stdout before responding to {id}"));
             match classify(&line) {
-                AdapterFrame::Notification(_) => {
+                AdapterFrame::Notification(_) | AdapterFrame::Request(_) => {
                     notifications.push(line);
                 }
                 AdapterFrame::Response(frame) => {
@@ -230,13 +231,16 @@ impl Adapter {
     }
 }
 
-/// One stdout line classified: agent→client notification (no id) or a
+/// One stdout line classified: agent→client notification (no id), an
+/// agent→client REQUEST (method + id, the client must answer it), or a
 /// response (id-bearing, exactly one of result/error). Every line the
 /// adapter emits must pass this — stdout stays frame-pure.
 #[derive(Debug)]
 pub enum AdapterFrame {
     /// A notification frame (`session/update`).
     Notification(Value),
+    /// An id-bearing request frame (`session/request_permission`).
+    Request(Value),
     /// A response frame.
     Response(Value),
 }
@@ -247,11 +251,25 @@ pub fn classify(line: &str) -> AdapterFrame {
         .unwrap_or_else(|error| panic!("stdout line is not valid JSON: {line}: {error}"));
     assert_eq!(frame["jsonrpc"], "2.0", "not a JSON-RPC 2.0 frame: {line}");
     if frame.get("method").is_some() {
-        assert!(
-            frame.get("params").is_some(),
-            "notifications carry params: {line}"
-        );
-        AdapterFrame::Notification(frame)
+        if frame.get("id").is_some() {
+            // An agent→client request: id + method + params, and
+            // never a result/error (the client answers it).
+            assert!(
+                frame.get("result").is_none() && frame.get("error").is_none(),
+                "a request frame carries neither result nor error: {line}"
+            );
+            assert!(
+                frame.get("params").is_some(),
+                "request frames carry params: {line}"
+            );
+            AdapterFrame::Request(frame)
+        } else {
+            assert!(
+                frame.get("params").is_some(),
+                "notifications carry params: {line}"
+            );
+            AdapterFrame::Notification(frame)
+        }
     } else {
         assert!(frame.get("id").is_some(), "response carries no id: {line}");
         assert!(

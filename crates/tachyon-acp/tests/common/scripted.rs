@@ -72,15 +72,30 @@ pub struct Subscription {
     pub post: Vec<Step>,
 }
 
-/// The whole fixture script: one answer per `GetTask` call and one
-/// entry per `Subscribe` call, each consumed in order. Exhausting any
-/// script makes the fixture refuse with `script_exhausted` so a
-/// mis-sequenced test fails loudly instead of hanging.
+/// The script for ONE `Approve` command: the `{"task": …}` payload the
+/// response carries (mirroring the real gateway's `decide`, which
+/// answers with the post-decision task snapshot), then the frames
+/// pushed right after that response — the supervisor's journal reaction
+/// to the grant.
+pub struct ApproveAnswer {
+    /// The `task` object returned in the response payload.
+    pub task: Value,
+    /// Frames pushed after the response.
+    pub post: Vec<Step>,
+}
+
+/// The whole fixture script: one answer per `GetTask` call, one entry
+/// per `Subscribe` call, and one entry per `Approve` call, each consumed
+/// in order. Exhausting any script makes the fixture refuse with
+/// `script_exhausted` so a mis-sequenced test fails loudly instead of
+/// hanging.
 pub struct Script {
     /// `GetTask` answers in call order; each entry is the `task` object.
     pub get_tasks: Vec<Value>,
     /// `Subscribe` scripts in call order.
     pub subscribes: Vec<Subscription>,
+    /// `Approve` answers in call order.
+    pub approves: Vec<ApproveAnswer>,
 }
 
 /// A `task` snapshot with a non-terminal status (the fresh-state read
@@ -124,6 +139,10 @@ struct ScriptState {
     get_tasks: Mutex<VecDeque<Value>>,
     /// Unconsumed `Subscribe` scripts.
     subscribes: Mutex<VecDeque<Subscription>>,
+    /// Unconsumed `Approve` answers.
+    approves: Mutex<VecDeque<ApproveAnswer>>,
+    /// Every `Approve` observed, as `(task_id, approval_id)` in order.
+    approvals_seen: Mutex<Vec<(String, String)>>,
     /// `after_seq` of every `Subscribe` seen, in order.
     cursors: Mutex<Vec<i64>>,
     /// Total `GetTask` calls observed.
@@ -135,6 +154,8 @@ impl ScriptState {
         Self {
             get_tasks: Mutex::new(script.get_tasks.into()),
             subscribes: Mutex::new(script.subscribes.into()),
+            approves: Mutex::new(script.approves.into()),
+            approvals_seen: Mutex::new(Vec::new()),
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
         }
@@ -201,6 +222,18 @@ impl ScriptedGateway {
         self.state.get_task_calls.load(Ordering::SeqCst)
     }
 
+    /// Every `Approve` the adapter issued, as `(task_id, approval_id)`
+    /// in call order — the proof that a granted permission answer
+    /// reached the gateway with exactly the parked approval's identity.
+    #[must_use]
+    pub fn approvals_seen(&self) -> Vec<(String, String)> {
+        self.state
+            .approvals_seen
+            .lock()
+            .expect("approvals lock")
+            .clone()
+    }
+
     /// Stops accepting; connection handlers end on their own when the
     /// adapter's sockets close.
     pub fn shutdown(&self) {
@@ -221,8 +254,91 @@ fn refused(code: &str, message: &str) -> CommandResult {
     }
 }
 
+/// Answers one scripted command: the result plus the frames to push
+/// right after its response (the scripted reaction `Subscribe` and
+/// `Approve` carry).
+fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<Step>) {
+    let mut post: Vec<Step> = Vec::new();
+    let result = match command {
+        Command::Ping => ok(json!({
+            "pong": true,
+            "protocol_version": PROTOCOL_VERSION,
+        })),
+        Command::GetSession { session_id } => ok(json!({
+            "session_id": session_id.to_string(),
+            "workspace_root": "/tmp",
+        })),
+        Command::CreateTask { .. } => ok(json!({ "task_id": SCRIPT_TASK_ID })),
+        Command::GetTask { .. } => {
+            state.get_task_calls.fetch_add(1, Ordering::SeqCst);
+            match state.get_tasks.lock().expect("get-task lock").pop_front() {
+                Some(task) => ok(json!({ "task": task })),
+                None => refused(
+                    "script_exhausted",
+                    "no scripted GetTask answer left for this call",
+                ),
+            }
+        }
+        Command::StartRun { .. } => ok(json!({ "started": true })),
+        Command::Approve {
+            task_id,
+            approval_id,
+        } => {
+            state
+                .approvals_seen
+                .lock()
+                .expect("approvals lock")
+                .push((task_id.to_string(), approval_id.to_string()));
+            match state.approves.lock().expect("approve script").pop_front() {
+                Some(answer) => {
+                    post = answer.post;
+                    // The real gateway's `decide` answers with the
+                    // post-decision task snapshot: {"task": …}.
+                    ok(json!({ "task": answer.task }))
+                }
+                None => refused(
+                    "script_exhausted",
+                    "no scripted Approve answer left for this call",
+                ),
+            }
+        }
+        Command::Subscribe { after_seq, .. } => {
+            state.cursors.lock().expect("cursor lock").push(*after_seq);
+            let subscription = state.subscribes.lock().expect("subscribe lock").pop_front();
+            match subscription {
+                Some(subscription) => {
+                    post = subscription.post;
+                    let events: Vec<Value> =
+                        subscription.replay.iter().map(replay_row_json).collect();
+                    ok(json!({
+                        "subscribed": true,
+                        "task_id": SCRIPT_TASK_ID,
+                        "after_seq": after_seq,
+                        "last_seq": events
+                            .iter()
+                            .filter_map(|row| row.get("seq").and_then(Value::as_i64))
+                            .max()
+                            .unwrap_or(*after_seq),
+                        "events": events,
+                    }))
+                }
+                None => refused(
+                    "script_exhausted",
+                    "no scripted Subscribe left for this call",
+                ),
+            }
+        }
+        _ => refused(
+            "unexpected_command",
+            "fixture script did not cover this command",
+        ),
+    };
+    (result, post)
+}
+
 /// Serves one adapter connection: request/response over the real frame
-/// protocol, with scripted pushes injected after each `Subscribe` ack.
+/// protocol, with scripted pushes injected after each `Subscribe` ack
+/// and each `Approve` response.
 async fn serve_connection(mut stream: Stream, state: Arc<ScriptState>) -> std::io::Result<()> {
     loop {
         let Some(framed) = read_frame(&mut stream).await? else {
@@ -231,59 +347,7 @@ async fn serve_connection(mut stream: Stream, state: Arc<ScriptState>) -> std::i
         let (request, _): (RequestEnvelope, usize) =
             decode_frame(&framed).map_err(|error| std::io::Error::other(error.to_string()))?;
         let request_id = request.request_id;
-        let mut post: Vec<Step> = Vec::new();
-        let result = match &request.command {
-            Command::Ping => ok(json!({
-                "pong": true,
-                "protocol_version": PROTOCOL_VERSION,
-            })),
-            Command::GetSession { session_id } => ok(json!({
-                "session_id": session_id.to_string(),
-                "workspace_root": "/tmp",
-            })),
-            Command::CreateTask { .. } => ok(json!({ "task_id": SCRIPT_TASK_ID })),
-            Command::GetTask { .. } => {
-                state.get_task_calls.fetch_add(1, Ordering::SeqCst);
-                match state.get_tasks.lock().expect("get-task lock").pop_front() {
-                    Some(task) => ok(json!({ "task": task })),
-                    None => refused(
-                        "script_exhausted",
-                        "no scripted GetTask answer left for this call",
-                    ),
-                }
-            }
-            Command::StartRun { .. } => ok(json!({ "started": true })),
-            Command::Subscribe { after_seq, .. } => {
-                state.cursors.lock().expect("cursor lock").push(*after_seq);
-                let subscription = state.subscribes.lock().expect("subscribe lock").pop_front();
-                match subscription {
-                    Some(subscription) => {
-                        post = subscription.post;
-                        let events: Vec<Value> =
-                            subscription.replay.iter().map(replay_row_json).collect();
-                        ok(json!({
-                            "subscribed": true,
-                            "task_id": SCRIPT_TASK_ID,
-                            "after_seq": after_seq,
-                            "last_seq": events
-                                .iter()
-                                .filter_map(|row| row.get("seq").and_then(Value::as_i64))
-                                .max()
-                                .unwrap_or(*after_seq),
-                            "events": events,
-                        }))
-                    }
-                    None => refused(
-                        "script_exhausted",
-                        "no scripted Subscribe left for this call",
-                    ),
-                }
-            }
-            _ => refused(
-                "unexpected_command",
-                "fixture script did not cover this command",
-            ),
-        };
+        let (result, post) = script_answer(&state, &request.command);
         write_frame(
             &mut stream,
             &ServerFrame::Response(ResponseEnvelope {

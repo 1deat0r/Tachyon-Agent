@@ -121,6 +121,19 @@ pub enum Outbound {
         /// Notification params.
         params: Value,
     },
+    /// An agent-initiated REQUEST (id-bearing, the client answers it):
+    /// `session/request_permission` goes out through this variant. The
+    /// id is minted and its reply slot armed by the turn BEFORE the
+    /// frame is queued, and only the serve loop ever writes it — so a
+    /// client response can never arrive with nowhere to route.
+    Request {
+        /// Correlation id the client echoes in its response.
+        id: RpcId,
+        /// Request method (`session/request_permission`).
+        method: String,
+        /// Request params.
+        params: Value,
+    },
 }
 
 impl Outbound {
@@ -176,6 +189,17 @@ impl Outbound {
         }
     }
 
+    /// An id-bearing agent→client request frame (JSON-RPC 2.0 request):
+    /// the client answers it with a response echoing `id`.
+    #[must_use]
+    pub fn request(id: RpcId, method: impl Into<String>, params: Value) -> Self {
+        Self::Request {
+            id,
+            method: method.into(),
+            params,
+        }
+    }
+
     /// Encodes the frame as one compact JSON line (no trailing newline).
     #[must_use]
     pub fn to_line(&self) -> String {
@@ -213,6 +237,7 @@ impl Outbound {
                 method,
                 params,
             }),
+            Self::Request { id, method, params } => Ok(request_line(id, method, params)),
         };
         encoded.expect("JSON-RPC response serialization cannot fail")
     }
@@ -439,7 +464,7 @@ where
 mod tests {
     use std::time::Duration;
 
-    use serde_json::{Value, json};
+    use serde_json::{Number, Value, json};
     use tokio::io::AsyncWriteExt as _;
 
     use super::{INVALID_PARAMS, Outbound, Parsed, Peer, RpcId, parse_line};
@@ -742,6 +767,51 @@ mod tests {
         );
         // Notifications carry no id, ever.
         assert!(!update.to_line().contains("\"id\""));
+    }
+
+    /// The agent→client REQUEST frame (`session/request_permission`)
+    /// serializes as the four-field JSON-RPC request line with the id
+    /// echoed verbatim — golden-pinned so the permission request's wire
+    /// shape (id-bearing, method + params) cannot drift unnoticed, and
+    /// proven to classify back into a correlatable request.
+    #[test]
+    fn outbound_request_frames_are_golden_pinned() {
+        let request = Outbound::request(
+            RpcId::Number(Number::from(-1)),
+            "session/request_permission",
+            json!({
+                "sessionId": "01990f9e-1111-7000-8000-000000000000",
+                "toolCall": {"toolCallId": "approval-1", "title": "Approve it"},
+                "options": [
+                    {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "reject_once", "name": "Reject once", "kind": "reject_once"},
+                ],
+            }),
+        );
+        let line = request.to_line();
+        assert_eq!(
+            line,
+            r#"{"jsonrpc":"2.0","id":-1,"method":"session/request_permission","params":{"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow_once"},{"kind":"reject_once","name":"Reject once","optionId":"reject_once"}],"sessionId":"01990f9e-1111-7000-8000-000000000000","toolCall":{"title":"Approve it","toolCallId":"approval-1"}}}"#
+        );
+        // The line parses back into a request carrying the same id —
+        // the correlation key a client echoes in its response.
+        match parse_line(&line) {
+            Parsed::Request(parsed) => {
+                assert_eq!(parsed.id, RpcId::Number(Number::from(-1)));
+                assert_eq!(parsed.method, "session/request_permission");
+                assert_eq!(parsed.params, Some(request_params(&request)));
+            }
+            other => panic!("an outbound request must parse as a request, got {other:?}"),
+        }
+    }
+
+    /// The params of an [`Outbound::Request`] frame, as echoed back by
+    /// the parser (the golden test's round-trip assertion).
+    fn request_params(outbound: &Outbound) -> Value {
+        let Outbound::Request { params, .. } = outbound else {
+            panic!("expected an Outbound::Request");
+        };
+        params.clone()
     }
 
     /// Pure parse-classification seams used by the loop.

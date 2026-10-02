@@ -1,35 +1,39 @@
 //! The `session/new`, `session/prompt`, and `session/cancel` pipelines
-//! (acp-adapter-lifecycle tickets 02+03): ACP param validation, the
-//! adapter-local sequential turn guard, per-call idempotency keys,
-//! journal→`session/update` mapping, `stopReason` derivation, the
-//! gateway-backed prompt turn, the drain-awaiting cancel, the bounded
-//! resubscribe, and the typed `approval_required` refusal for a turn
-//! parked on a permission approval.
+//! (acp-adapter-lifecycle tickets 02+03, permission-bridge ticket 01):
+//! ACP param validation, the adapter-local sequential turn guard,
+//! per-call idempotency keys, journal→`session/update` mapping,
+//! `stopReason` derivation, the gateway-backed prompt turn, the
+//! drain-awaiting cancel, the bounded resubscribe, and the permission
+//! bridge (a journalled `approval_request` → `tool_call` announcement →
+//! `session/request_permission` → the client's answer → the gateway
+//! `Approve` → resume; an ask that never arrives falls back to the
+//! typed `approval_required` refusal).
 //!
 //! The adapter stays a pure gateway client (ADR-0005): every step below
 //! is a framed gateway round trip or a pure mapping — no driver, no
-//! tools, no execution, and no grant authority of its own: an approval
-//! park is refused typed instead of being resolved by the adapter.
+//! tools, no execution, and no grant authority of its own: a parked ask
+//! is forwarded to the ACP client and a granted answer becomes exactly
+//! one `Command::Approve` into the Supervisor's one-shot registry.
 //! Frame shapes follow the pinned ACP `schema-v1.23.0` artifact; where
 //! this slice extends an object the schema leaves open (the prompt
 //! response's `content` tail), the golden test pins the exact wire
 //! bytes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{Number, Value, json};
 use tachyon_protocol::{Command, GatewayEvent, ServerFrame};
-use tachyon_types::{EventId, SessionId, TaskId};
+use tachyon_types::{ApprovalId, EventId, SessionId, TaskId};
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 use crate::client::{Connector, GatewayCallError, GatewayConn, GatewayUnavailable};
 use crate::codec::{
-    GATEWAY_REFUSED, GATEWAY_UNAVAILABLE, INVALID_PARAMS, Outbound, RpcId, TURN_CONFLICT,
-    TURN_FAILED,
+    ErrorObject, GATEWAY_REFUSED, GATEWAY_UNAVAILABLE, INVALID_PARAMS, InboundResponse, Outbound,
+    RpcId, TURN_CONFLICT, TURN_FAILED,
 };
 
 /// Bound on one whole `session/prompt` turn (connect → final response).
@@ -49,6 +53,15 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(120);
 /// re-subscribe at the gateway-provided cursor; a second overflow fails
 /// the prompt typed (never a silent gap, never an unbounded loop).
 const MAX_RESUBSCRIBES: u32 = 1;
+
+/// Bound on the wait for an `approval_request` frame after a park is
+/// observed (the `status → WaitingApproval` journal is written BEFORE
+/// the ask, so a settlement read can see the park a moment before the
+/// request frame arrives). Past it the turn falls back to the typed
+/// `approval_required` orphan refusal — never a silent hang, never a
+/// request invented from a snapshot. Interim bound: the orphan-fallback
+/// slice (ticket 03) tightens and documents it.
+const APPROVAL_REQUEST_GRACE: Duration = Duration::from_secs(5);
 
 /// Overlap refusal message: ACP v1 turns are sequential and are never
 /// queued behind one another.
@@ -279,15 +292,19 @@ pub(crate) fn parse_cancel(params: Option<&Value>) -> Result<SessionId, HandlerE
 }
 
 /// The typed failure for a turn parked on a permission approval the
-/// adapter could not resolve: approvals are not answerable over ACP
-/// yet (the `session/request_permission` bridge is a later slice), so
-/// the prompt fails typed at the first read that observes the park —
-/// never hangs to the turn deadline, never guesses a verdict.
+/// adapter could not resolve: an orphan park (no `approval_request`
+/// frame arrived within [`APPROVAL_REQUEST_GRACE`], or the ask carried
+/// no usable id) or a request the client did not grant. The prompt
+/// fails typed at the first read that observes it — never hangs to the
+/// turn deadline, never guesses a verdict (the grant path is
+/// `session/request_permission`; deny settlement is the fail-closed
+/// slice's job).
 pub(crate) fn approval_parked() -> HandlerError {
     HandlerError::turn_failed(
         "approval_required",
         "turn is parked awaiting a permission approval the adapter could not resolve \
-         (no permission bridge ships this slice)",
+         (no approval_request frame arrived within the grace bound, or the client did \
+         not grant the requested permission)",
     )
 }
 
@@ -296,6 +313,364 @@ pub(crate) fn approval_parked() -> HandlerError {
 #[must_use]
 pub(crate) fn is_approval_parked(status: &str) -> bool {
     status == "WaitingApproval"
+}
+
+/// Reply slots for adapter-minted outbound requests (agent → client
+/// requests such as `session/request_permission`).
+///
+/// Ownership protocol — response-loss-free by construction:
+/// 1. the TURN mints the id and arms the slot here BEFORE queueing the
+///    frame, so a fast client response can never arrive with nowhere to
+///    route;
+/// 2. only the SERVE LOOP writes the frame (it is the sole holder of
+///    the peer — single-writer invariant preserved);
+/// 3. the serve loop's `Parsed::Response` arm routes the answer through
+///    [`OutboundRequests::route`]; an id with no armed slot is
+///    unsolicited and is ignored safely.
+///
+/// Id space: NEGATIVE integers from a dedicated counter, disjoint from
+/// `Peer`'s positive request counter and from the ids clients mint for
+/// their own requests — pinned by unit.
+#[derive(Debug, Default)]
+pub(crate) struct OutboundRequests {
+    inner: Mutex<OutboundRequestsInner>,
+}
+
+#[derive(Debug)]
+struct OutboundRequestsInner {
+    /// Next adapter-minted outbound id: −1, −2, … (never overlaps the
+    /// positive ids `Peer::send_request` mints or client request ids).
+    next_outbound: i64,
+    /// Armed reply slots by correlation id.
+    slots: HashMap<RpcId, oneshot::Sender<Result<Value, ErrorObject>>>,
+}
+
+impl Default for OutboundRequestsInner {
+    fn default() -> Self {
+        Self {
+            next_outbound: -1,
+            slots: HashMap::new(),
+        }
+    }
+}
+
+impl OutboundRequests {
+    /// Mints the next outbound id and arms its reply slot. The turn
+    /// holds the receiver until the client answers (or the slot is
+    /// cleared at EOF, which wakes it as a disconnect).
+    pub(crate) fn arm(&self) -> (RpcId, oneshot::Receiver<Result<Value, ErrorObject>>) {
+        let mut inner = self.inner.lock().expect("outbound-request lock poisoned");
+        let id = RpcId::Number(Number::from(inner.next_outbound));
+        inner.next_outbound -= 1;
+        let (sender, receiver) = oneshot::channel();
+        inner.slots.insert(id.clone(), sender);
+        (id, receiver)
+    }
+
+    /// Routes one client response to its waiting turn. Returns `false`
+    /// when no slot is armed for the id — an unsolicited or late
+    /// response, which the caller ignores safely.
+    pub(crate) fn route(&self, response: &InboundResponse) -> bool {
+        let slot = self
+            .inner
+            .lock()
+            .expect("outbound-request lock poisoned")
+            .slots
+            .remove(&response.id);
+        let Some(sender) = slot else {
+            return false;
+        };
+        let _ignored = sender.send(response.payload.clone());
+        true
+    }
+
+    /// Drops a slot whose waiter went away (the turn was abandoned
+    /// before the client answered).
+    fn disarm(&self, id: &RpcId) {
+        self.inner
+            .lock()
+            .expect("outbound-request lock poisoned")
+            .slots
+            .remove(id);
+    }
+
+    /// Drops every armed slot (client EOF): every waiting turn wakes as
+    /// disconnected instead of waiting out the turn deadline.
+    pub(crate) fn clear(&self) {
+        self.inner
+            .lock()
+            .expect("outbound-request lock poisoned")
+            .slots
+            .clear();
+    }
+
+    /// How many reply slots are armed — test seam.
+    #[cfg(test)]
+    pub(crate) fn armed(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("outbound-request lock poisoned")
+            .slots
+            .len()
+    }
+}
+
+/// RAII owner of one armed reply slot: disarms on every exit path
+/// (answer routed, turn failed, future dropped), so an abandoned ask
+/// never leaks its registry entry. Disarming an already-routed slot is
+/// a no-op.
+#[derive(Debug)]
+struct ArmedRequest {
+    state: Arc<SessionState>,
+    id: RpcId,
+}
+
+impl Drop for ArmedRequest {
+    fn drop(&mut self) {
+        self.state.requests().disarm(&self.id);
+    }
+}
+
+/// One permission exchange's progress within a turn. Transitions:
+/// `Idle → AwaitingRequest → Outstanding → Approving → Sent → Idle`;
+/// a later park in the same turn starts again from `Idle`.
+#[derive(Debug)]
+enum PermissionPhase {
+    /// No park observed (or the previous exchange settled).
+    Idle,
+    /// A park is observed but the `approval_request` frame has not
+    /// arrived yet — bounded by [`APPROVAL_REQUEST_GRACE`], then the
+    /// typed orphan refusal.
+    AwaitingRequest {
+        /// Instant after which the orphan fallback fires.
+        deadline: Instant,
+    },
+    /// The ask frame is queued: `tool_call` + `session/request_permission`
+    /// pushed, reply slot armed — waiting for the client's response.
+    Outstanding {
+        /// The client's answer, routed here by the serve loop.
+        receiver: oneshot::Receiver<Result<Value, ErrorObject>>,
+        /// Keeps the registry slot alive until the answer is routed.
+        armed: ArmedRequest,
+        /// Gateway approval id this exchange decides.
+        approval_id: String,
+        /// ACP tool call announced for this ask.
+        tool_call_id: String,
+    },
+    /// The client granted (`allow_once`): the gateway `Approve` waits
+    /// for the single settlement slot to free up.
+    Approving {
+        /// Gateway approval id to grant.
+        approval_id: String,
+        /// ACP tool call to close as `completed`.
+        tool_call_id: String,
+    },
+    /// `Approve` written; streaming resumes and the
+    /// `WaitingApproval → Executing` bounce settles benignly.
+    Sent,
+}
+
+/// The ask carried by one journalled `approval_request` payload: the
+/// approval id plus a human-readable title. The payload is the
+/// t/v-tagged `StateEvent::ApprovalRequest`
+/// (`{"t":"ApprovalRequest","v":{"request":{…}}}`); an untagged legacy
+/// payload is tolerated. `None` when no id is present — an approval is
+/// never invented from a snapshot (ADR-0005:47 binds every decision to
+/// the exact pending operation).
+fn approval_ask(payload: &Value) -> Option<(String, String)> {
+    let value = payload.get("v").unwrap_or(payload);
+    let request = value.get("request").unwrap_or(value);
+    let id = request.get("id").and_then(Value::as_str)?;
+    let title = request
+        .get("summary")
+        .or_else(|| request.get("operation"))
+        .or_else(|| request.get("description"))
+        .or_else(|| request.get("capability"))
+        .and_then(Value::as_str)
+        .unwrap_or("permission request");
+    Some((id.to_owned(), title.to_owned()))
+}
+
+/// The `session/update` `tool_call` announcement for one ask (ACP
+/// schema-v1.23.0 `SessionUpdate` → `ToolCall`: `toolCallId` + `title`
+/// required) — sent BEFORE the permission request frame.
+fn tool_call_announcement(session_id: &str, tool_call_id: &str, title: &str) -> Outbound {
+    Outbound::notification(
+        "session/update",
+        json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": tool_call_id,
+                "title": title,
+            },
+        }),
+    )
+}
+
+/// The `session/request_permission` params (ACP schema-v1.23.0
+/// `RequestPermissionRequest`: `sessionId`, `toolCall`, `options` —
+/// with EXACTLY the two one-shot options ADR-0005:48 allows, each
+/// carrying `optionId` + `name` + `kind`).
+fn permission_request_params(session_id: &str, tool_call_id: &str, title: &str) -> Value {
+    json!({
+        "sessionId": session_id,
+        "toolCall": {
+            "toolCallId": tool_call_id,
+            "title": title,
+        },
+        "options": [
+            {
+                "optionId": "allow_once",
+                "name": "Allow once",
+                "kind": "allow_once",
+            },
+            {
+                "optionId": "reject_once",
+                "name": "Reject once",
+                "kind": "reject_once",
+            },
+        ],
+    })
+}
+
+/// The `tool_call_update` frame closing an announced tool call (ACP
+/// schema-v1.23.0 `ToolCallUpdate`: `toolCallId` required; `status` ∈
+/// `pending|in_progress|completed|failed`).
+fn tool_call_status_update(session_id: &str, tool_call_id: &str, status: &str) -> Outbound {
+    Outbound::notification(
+        "session/update",
+        json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "status": status,
+            },
+        }),
+    )
+}
+
+/// The strict allow gate: `outcome: "selected"` with the offered
+/// `allow_once` option. Every other shape is NOT a grant here — deny
+/// and fail-closed settlement are the fail-closed slice's job; this
+/// ticket only ever grants on an exact match (ADR-0005:47-48).
+fn is_allow_once(response: &Value) -> bool {
+    response.get("outcome").and_then(Value::as_str) == Some("selected")
+        && response.get("optionId").and_then(Value::as_str) == Some("allow_once")
+}
+
+/// Permission-bridge state threaded through one stream loop: the
+/// exchange phase plus the approval ids already asked about, so a
+/// re-delivered replay row (after a re-subscribe) can never ask twice.
+#[derive(Debug)]
+struct PermissionBridge {
+    phase: PermissionPhase,
+    asked: HashSet<String>,
+}
+
+impl Default for PermissionBridge {
+    fn default() -> Self {
+        Self {
+            phase: PermissionPhase::Idle,
+            asked: HashSet::new(),
+        }
+    }
+}
+
+impl PermissionBridge {
+    /// Handles one journalled `approval_request`: emits the `tool_call`
+    /// announcement and the `session/request_permission` frame (both
+    /// through the writer channel, so stdout order holds), then arms the
+    /// reply slot — the exchange is journal-driven, never derived from a
+    /// `GetTask` snapshot. Returns typed errors only when the frames
+    /// could not be queued at all (the client is gone).
+    fn ask(
+        &mut self,
+        session_id: &str,
+        payload: &Value,
+        emit: &UnboundedSender<Outbound>,
+        state: &Arc<SessionState>,
+    ) -> Result<(), HandlerError> {
+        let Some((approval_id, title)) = approval_ask(payload) else {
+            tracing::warn!(
+                "approval_request journal carries no approval id; refusing to invent \
+                 an approval (orphan fallback applies)"
+            );
+            return Ok(());
+        };
+        if self.asked.contains(&approval_id) {
+            tracing::debug!(%approval_id, "approval already asked about; ignoring the replayed row");
+            return Ok(());
+        }
+        if !matches!(
+            self.phase,
+            PermissionPhase::Idle | PermissionPhase::AwaitingRequest { .. }
+        ) {
+            tracing::warn!(
+                %approval_id,
+                "another approval_request arrived while an exchange is in flight; ignoring it"
+            );
+            return Ok(());
+        }
+        self.asked.insert(approval_id.clone());
+        let tool_call_id = approval_id.clone();
+        // The announcement precedes the request frame on the writer
+        // channel, so stdout order is tool_call → request_permission.
+        if emit
+            .send(tool_call_announcement(session_id, &tool_call_id, &title))
+            .is_err()
+        {
+            return Err(HandlerError::turn_failed(
+                "client_disconnected",
+                "client went away before the permission request could be delivered",
+            ));
+        }
+        // Arm the reply slot BEFORE the request is queued (the serve
+        // loop writes it later): a response can never outrun its slot.
+        let (request_id, receiver) = state.requests().arm();
+        let armed = ArmedRequest {
+            state: Arc::clone(state),
+            id: request_id.clone(),
+        };
+        if emit
+            .send(Outbound::request(
+                request_id,
+                "session/request_permission",
+                permission_request_params(session_id, &tool_call_id, &title),
+            ))
+            .is_err()
+        {
+            return Err(HandlerError::turn_failed(
+                "client_disconnected",
+                "client went away before the permission request could be delivered",
+            ));
+        }
+        tracing::info!(
+            %approval_id,
+            %tool_call_id,
+            "approval parked; session/request_permission emitted (allow_once + reject_once)"
+        );
+        self.phase = PermissionPhase::Outstanding {
+            receiver,
+            armed,
+            approval_id,
+            tool_call_id,
+        };
+        Ok(())
+    }
+
+    /// A park was observed on a settlement read: wait (bounded) for the
+    /// `approval_request` journal instead of failing on the snapshot
+    /// alone — the ask journals AFTER the status row, so it normally
+    /// arrives moments later. A request already in flight is untouched.
+    fn on_parked(&mut self) {
+        if matches!(self.phase, PermissionPhase::Idle) {
+            self.phase = PermissionPhase::AwaitingRequest {
+                deadline: Instant::now() + APPROVAL_REQUEST_GRACE,
+            };
+        }
+    }
 }
 
 /// Adapter-wide state shared by the serve loop and its spawned turns:
@@ -309,9 +684,17 @@ pub(crate) struct SessionState {
     active: Mutex<HashMap<String, watch::Sender<Option<TaskId>>>>,
     /// Request id → idempotency key.
     calls: Mutex<HashMap<RpcId, String>>,
+    /// Reply slots for adapter-minted outbound requests (the serve loop
+    /// routes client answers through these).
+    requests: OutboundRequests,
 }
 
 impl SessionState {
+    /// The outbound-request reply registry shared by turns and the
+    /// serve loop.
+    pub(crate) fn requests(&self) -> &OutboundRequests {
+        &self.requests
+    }
     /// Takes the session's turn slot, or the overlap refusal when one
     /// is active. Callable only from the serve loop's request handler —
     /// requests are read strictly sequentially, so the first caller
@@ -488,19 +871,21 @@ fn is_settlement_signal(kind: &str) -> bool {
 
 /// One `session/prompt` turn end to end.
 ///
-/// [`TURN_TIMEOUT`]-bounded. `emit` receives the `session/update`
-/// notification frames streamed while the turn runs; the returned value
-/// is the final `session/prompt` result.
+/// [`TURN_TIMEOUT`]-bounded — including any wait on a human's
+/// permission answer (timeout suspension is a later slice). `emit`
+/// receives the `session/update` notification frames streamed while the
+/// turn runs; the returned value is the final `session/prompt` result.
 pub(crate) async fn run_prompt<C: Connector>(
     connector: &C,
     params: PromptParams,
     idempotency_key: String,
     emit: &UnboundedSender<Outbound>,
     notice: watch::Sender<Option<TaskId>>,
+    state: &Arc<SessionState>,
 ) -> Result<Value, HandlerError> {
     let outcome = tokio::time::timeout(
         TURN_TIMEOUT,
-        prompt_turn(connector, params, idempotency_key, emit, notice),
+        prompt_turn(connector, params, idempotency_key, emit, notice, state),
     )
     .await;
     match outcome {
@@ -522,6 +907,7 @@ async fn prompt_turn<C: Connector>(
     idempotency_key: String,
     emit: &UnboundedSender<Outbound>,
     notice: watch::Sender<Option<TaskId>>,
+    state: &Arc<SessionState>,
 ) -> Result<Value, HandlerError> {
     let PromptParams {
         session_id,
@@ -592,8 +978,9 @@ async fn prompt_turn<C: Connector>(
     }
     if is_approval_parked(current_status) {
         // A replayed turn already parked before this prompt ever
-        // subscribed: no permission exchange can run without a journal
-        // stream, and none ships this slice — the park stays typed.
+        // subscribed: there is no journal stream here to carry the
+        // `approval_request` ask, so the park stays typed (orphan path;
+        // the bridge only ever answers an ask it has actually seen).
         return Err(approval_parked());
     }
 
@@ -612,7 +999,7 @@ async fn prompt_turn<C: Connector>(
         })
         .await
         .map_err(|error| HandlerError::unavailable(&error))?;
-    stream_turn(&mut conn, subscribe_id, task_id, session_id, emit).await
+    stream_turn(&mut conn, subscribe_id, task_id, session_id, emit, state).await
 }
 
 /// One `session/cancel` end to end, [`CANCEL_TIMEOUT`]-bounded:
@@ -725,13 +1112,16 @@ async fn send_frame(conn: &mut GatewayConn, command: Command) -> Result<EventId,
 
 /// The verdict of one settlement `GetTask` read: `Ok(Some(result))`
 /// when the turn has a final answer, `Err` for the typed refusal of an
-/// ambiguous verification tail or of an approval park, `Ok(None)` to
-/// keep streaming.
+/// ambiguous verification tail, `Ok(None)` to keep streaming — including
+/// while a permission park resolves (the ask is journal-driven: a park
+/// observed here arms the bounded wait for the `approval_request`
+/// frame instead of failing on the snapshot alone).
 fn settlement_verdict(
     task: &Value,
     task_id: TaskId,
     trigger: Option<&str>,
     settlement: Option<&str>,
+    bridge: &mut PermissionBridge,
 ) -> Result<Option<Value>, HandlerError> {
     let status = task
         .get("status")
@@ -741,11 +1131,12 @@ fn settlement_verdict(
         return final_prompt_result(task).map(Some);
     }
     if is_approval_parked(status) {
-        // Parked on a permission approval: no bridge ships this slice,
-        // so the prompt fails typed at the first read that observes the
-        // park — never hangs to the turn deadline, never guesses a
-        // verdict.
-        return Err(approval_parked());
+        // Parked on a permission approval: wait for the journal-driven
+        // ask (bounded by APPROVAL_REQUEST_GRACE; the orphan fallback
+        // fails typed past it) — never hang to the turn deadline, never
+        // guess a verdict, never read the ask from this snapshot.
+        bridge.on_parked();
+        return Ok(None);
     }
     if trigger == Some("verification_finished") || settlement == Some("verification_finished") {
         // The verification tail settled at a non-terminal status:
@@ -762,15 +1153,19 @@ fn settlement_verdict(
 }
 
 /// Reads the subscription: forwards `agent_message` journals as
-/// `session/update` frames, watches the settlement signals, fetches
+/// `session/update` frames, drives the permission exchange when an
+/// `approval_request` journals (announce `tool_call` → send
+/// `session/request_permission` → await the client's answer → issue the
+/// gateway `Approve` through the single settlement slot → close the tool
+/// call → resume streaming), watches the settlement signals, fetches
 /// `GetTask` when one fires, and answers with the final response (or a
-/// typed error for an ambiguous status / approval park / persistent
-/// resync / transport loss). On `ResyncRequired` it re-subscribes once
-/// at the gateway-provided cursor (the ack's replay restores
-/// continuity) and fails typed if the subscription overflows again —
-/// never a silent gap.
-// One narrative: settle → read → dispatch, kept together for its
-// ordering proofs.
+/// typed error for an ambiguous status / unresolved approval park /
+/// persistent resync / transport loss). On `ResyncRequired` it
+/// re-subscribes once at the gateway-provided cursor (the ack's replay
+/// restores continuity) and fails typed if the subscription overflows
+/// again — never a silent gap.
+// One narrative: settle → permission exchange → read → dispatch, kept
+// together for its ordering proofs.
 #[allow(clippy::too_many_lines)]
 async fn stream_turn(
     conn: &mut GatewayConn,
@@ -778,6 +1173,7 @@ async fn stream_turn(
     task_id: TaskId,
     session_id: SessionId,
     emit: &UnboundedSender<Outbound>,
+    state: &Arc<SessionState>,
 ) -> Result<Value, HandlerError> {
     let session_id = session_id.to_string();
     let mut awaiting: Option<EventId> = Some(subscribe_id);
@@ -792,8 +1188,119 @@ async fn stream_turn(
     // re-check status right after the replay so the turn cannot stall
     // on a signal the replay did not re-deliver.
     let mut recheck = false;
+    // The permission exchange (journal-driven ask → client answer →
+    // Approve sequenced around the settlement slot).
+    let mut bridge = PermissionBridge::default();
     loop {
-        // 1. Settlement read.
+        // 1. The granted decision: written only when the single
+        //    settlement slot is free, so the `Approve` response can
+        //    never interleave with an in-flight `GetTask`.
+        let approving = if awaiting.is_none() {
+            match &bridge.phase {
+                PermissionPhase::Approving {
+                    approval_id,
+                    tool_call_id,
+                } => Some((approval_id.clone(), tool_call_id.clone())),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((approval_id, tool_call_id)) = approving {
+            let approval: ApprovalId = approval_id.parse().map_err(|_| {
+                HandlerError::turn_failed(
+                    "gateway_payload_invalid",
+                    "the journalled approval id does not parse as an approval id",
+                )
+            })?;
+            let approve_id = send_frame(
+                conn,
+                Command::Approve {
+                    task_id,
+                    approval_id: approval,
+                },
+            )
+            .await?;
+            // The tool call closes only now: the decision reached the
+            // gateway (schema `ToolCallUpdate.status = completed`).
+            if emit
+                .send(tool_call_status_update(
+                    &session_id,
+                    &tool_call_id,
+                    "completed",
+                ))
+                .is_err()
+            {
+                tracing::warn!("client went away; dropping tool_call_update");
+            }
+            awaiting = Some(approve_id);
+            awaiting_subscribe = false;
+            bridge.phase = PermissionPhase::Sent;
+            tracing::info!(
+                %approval_id,
+                %task_id,
+                "permission granted; Approve issued through the settlement slot"
+            );
+            continue;
+        }
+        // 2. The client's answer, awaited only when no gateway request
+        //    is in flight — the exchange never occupies the settlement
+        //    slot while it waits on a human.
+        if awaiting.is_none() && matches!(bridge.phase, PermissionPhase::Outstanding { .. }) {
+            let taken = std::mem::replace(&mut bridge.phase, PermissionPhase::Idle);
+            let (receiver, armed, approval_id, tool_call_id) = match taken {
+                PermissionPhase::Outstanding {
+                    receiver,
+                    armed,
+                    approval_id,
+                    tool_call_id,
+                } => (receiver, armed, approval_id, tool_call_id),
+                other => {
+                    // Defensive: the phase changed under the matches!
+                    // guard above — restore it and keep serving.
+                    bridge.phase = other;
+                    continue;
+                }
+            };
+            let granted = match receiver.await {
+                Ok(Ok(value)) if is_allow_once(&value) => true,
+                Ok(Ok(value)) => {
+                    // Not a grant: fail closed. The deny/fail-closed
+                    // settlement of non-allow answers is a later slice.
+                    tracing::warn!(
+                        response = %value,
+                        "permission response is not selected/allow_once; refusing the \
+                         park (fail-closed)"
+                    );
+                    false
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        ?error,
+                        "client answered the permission request with an error frame; \
+                         refusing the park (fail-closed)"
+                    );
+                    false
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "permission request slot closed before an answer arrived \
+                         (client gone or EOF); refusing the park"
+                    );
+                    false
+                }
+            };
+            drop(armed); // already routed (or abandoned): disarm is a no-op
+            if !granted {
+                return Err(approval_parked());
+            }
+            bridge.phase = PermissionPhase::Approving {
+                approval_id,
+                tool_call_id,
+            };
+            continue;
+        }
+        // 3. Settlement read.
         if awaiting.is_none()
             && let Some(kind) = settlement.take()
         {
@@ -801,11 +1308,28 @@ async fn stream_turn(
             awaiting = Some(send_frame(conn, Command::GetTask { task_id }).await?);
             awaiting_subscribe = false;
         }
-        // 2. Read the next gateway frame.
-        let frame = conn
-            .read_frame()
-            .await
-            .map_err(|error| HandlerError::unavailable(&error))?;
+        // 4. Read the next gateway frame. While a park waits for its
+        //    `approval_request` frame the read is bounded by the orphan
+        //    grace, so a park that never carries an ask fails typed
+        //    instead of hanging (the buffered ask still wins: the poll
+        //    runs before the timer).
+        let grace = match &bridge.phase {
+            PermissionPhase::AwaitingRequest { deadline } => Some(*deadline),
+            _ => None,
+        };
+        let frame = match grace {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(left, conn.read_frame()).await {
+                    Ok(frame) => frame.map_err(|error| HandlerError::unavailable(&error))?,
+                    Err(_) => return Err(approval_parked()),
+                }
+            }
+            None => conn
+                .read_frame()
+                .await
+                .map_err(|error| HandlerError::unavailable(&error))?,
+        };
         match frame {
             ServerFrame::Response(response) if Some(response.request_id) == awaiting => {
                 awaiting = None;
@@ -822,7 +1346,14 @@ async fn stream_turn(
                 };
                 if awaiting_subscribe {
                     awaiting_subscribe = false;
-                    process_replay(&payload, &session_id, emit, &mut settlement);
+                    process_replay(
+                        &payload,
+                        &session_id,
+                        emit,
+                        &mut settlement,
+                        &mut bridge,
+                        state,
+                    )?;
                     if std::mem::take(&mut recheck) {
                         // The settlement read that was in flight when the
                         // subscription dropped: re-issue it after the replay.
@@ -839,19 +1370,42 @@ async fn stream_turn(
                         task_id,
                         trigger.as_deref(),
                         settlement.as_deref(),
+                        &mut bridge,
                     )? {
                         return Ok(result);
                     }
-                    // A non-terminal bounce: keep streaming; any signal
-                    // that arrived mid-round-trip serves next loop.
+                    // A non-terminal bounce (including the benign
+                    // `WaitingApproval → Executing` after our Approve,
+                    // whose response payload this may be): keep
+                    // streaming; any signal that arrived mid-round-trip
+                    // serves next loop.
+                    if matches!(bridge.phase, PermissionPhase::Sent) {
+                        // The `Approve` response just settled benignly:
+                        // the exchange is over, a later park may start anew.
+                        bridge.phase = PermissionPhase::Idle;
+                    }
                 }
             }
             ServerFrame::Response(_) => {
+                if matches!(bridge.phase, PermissionPhase::Sent) {
+                    // The `Approve` response whose slot a re-subscribe
+                    // re-armed: release the exchange so a later park in
+                    // this turn can start anew.
+                    bridge.phase = PermissionPhase::Idle;
+                }
                 tracing::debug!("ignoring a response for another request id mid-turn");
             }
             ServerFrame::Event(envelope) => match envelope.event {
                 GatewayEvent::Journal { kind, payload } => {
-                    handle_journal(&kind, &payload, &session_id, emit, &mut settlement);
+                    handle_journal(
+                        &kind,
+                        &payload,
+                        &session_id,
+                        emit,
+                        &mut settlement,
+                        &mut bridge,
+                        state,
+                    )?;
                 }
                 GatewayEvent::ResyncRequired { after_seq, .. } => {
                     resyncs += 1;
@@ -890,14 +1444,18 @@ async fn stream_turn(
 
 /// Consumes the subscribe acknowledgement's replayed journal rows
 /// (payloads arrive as JSON strings there, live frames as objects).
+/// A replayed `approval_request` produces the same request emission as
+/// a live one — the ask is never read from a `GetTask` snapshot.
 fn process_replay(
     payload: &Value,
     session_id: &str,
     emit: &UnboundedSender<Outbound>,
     settlement: &mut Option<String>,
-) {
+    bridge: &mut PermissionBridge,
+    state: &Arc<SessionState>,
+) -> Result<(), HandlerError> {
     let Some(rows) = payload.get("events").and_then(Value::as_array) else {
-        return;
+        return Ok(());
     };
     for row in rows {
         let Some(kind) = row.get("kind").and_then(Value::as_str) else {
@@ -908,20 +1466,25 @@ fn process_replay(
             Some(other) => other.clone(),
             None => Value::Null,
         };
-        handle_journal(kind, &value, session_id, emit, settlement);
+        handle_journal(kind, &value, session_id, emit, settlement, bridge, state)?;
     }
+    Ok(())
 }
 
 /// Forwards one journalled event (kind + raw payload) as ACP output:
-/// `agent_message` → a `session/update` chunk, settlement kinds arm the
-/// `GetTask` read, every other kind is omitted.
+/// `agent_message` → a `session/update` chunk, `approval_request` →
+/// the permission exchange (`tool_call` announcement + request frame),
+/// settlement kinds arm the `GetTask` read, every other kind is
+/// omitted.
 fn handle_journal(
     kind: &str,
     payload: &Value,
     session_id: &str,
     emit: &UnboundedSender<Outbound>,
     settlement: &mut Option<String>,
-) {
+    bridge: &mut PermissionBridge,
+    state: &Arc<SessionState>,
+) -> Result<(), HandlerError> {
     if let Some(update) = agent_chunk(kind, payload) {
         let params = json!({ "sessionId": session_id, "update": update });
         if emit
@@ -931,21 +1494,33 @@ fn handle_journal(
             tracing::warn!("client went away; dropping session/update chunk");
         }
     }
+    if kind == "approval_request" {
+        bridge.ask(session_id, payload, emit, state)?;
+    }
     if is_settlement_signal(kind) {
         *settlement = Some(kind.to_owned());
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+    use tachyon_types::TaskId;
+    use tokio::sync::mpsc;
 
     use super::{
-        HandlerError, SessionState, agent_chunk, approval_parked, final_prompt_result,
-        is_approval_parked, is_settlement_signal, is_terminal_status, parse_cancel, parse_prompt,
-        parse_session_new, stop_reason,
+        APPROVAL_REQUEST_GRACE, HandlerError, OutboundRequests, PermissionBridge, PermissionPhase,
+        SessionState, agent_chunk, approval_ask, approval_parked, final_prompt_result,
+        is_allow_once, is_approval_parked, is_settlement_signal, is_terminal_status, parse_cancel,
+        parse_prompt, parse_session_new, permission_request_params, settlement_verdict,
+        stop_reason, tool_call_announcement, tool_call_status_update,
     };
-    use crate::codec::{INVALID_PARAMS, RpcId, TURN_CONFLICT, TURN_FAILED};
+    use crate::codec::{
+        INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
+    };
 
     #[test]
     fn only_status_and_verification_events_can_settle_a_turn() {
@@ -1324,5 +1899,326 @@ mod tests {
         let failed = HandlerError::turn_failed("turn_timed_out", "too slow");
         assert_eq!(failed.code, TURN_FAILED);
         assert_eq!(failed.data, json!("turn_timed_out"));
+    }
+
+    /// The `approval_request` payload shape (t/v-tagged `StateEvent`)
+    /// yields `(approval id, title)`; an untagged legacy row still
+    /// parses; a payload without an id yields `None` — the bridge never
+    /// invents an approval from a snapshot (ADR-0005:47).
+    #[test]
+    fn approval_ask_reads_only_the_journalled_ask() {
+        let tagged = json!({
+            "t": "ApprovalRequest",
+            "v": {"request": {
+                "id": "01990f9e-5555-7000-8000-000000000000",
+                "capability": "mutation.patch",
+                "scope": "workspace",
+                "operation_hash": "abc123",
+                "summary": "Apply patch to src/lib.rs",
+            }},
+        });
+        assert_eq!(
+            approval_ask(&tagged),
+            Some((
+                "01990f9e-5555-7000-8000-000000000000".to_owned(),
+                "Apply patch to src/lib.rs".to_owned(),
+            ))
+        );
+        // Untagged (legacy) row: same extraction, capability fallback.
+        assert_eq!(
+            approval_ask(&json!({"id": "x-1", "summary": "do it"})),
+            Some(("x-1".to_owned(), "do it".to_owned()))
+        );
+        assert_eq!(
+            approval_ask(&json!({"id": "x-2", "capability": "fs.write"})),
+            Some(("x-2".to_owned(), "fs.write".to_owned()))
+        );
+        // No id ⇒ no ask.
+        assert_eq!(approval_ask(&json!({"summary": "no id"})), None);
+        assert_eq!(
+            approval_ask(&json!({"t": "ApprovalRequest", "v": {"request": {}}})),
+            None
+        );
+        assert_eq!(approval_ask(&Value::Null), None);
+    }
+
+    /// The outgoing permission frames are byte-pinned against the ACP
+    /// schema-v1.23.0 shapes: `ToolCall` (`toolCallId` + `title`
+    /// required), `ToolCallUpdate` (`toolCallId` + a legal status), and
+    /// `RequestPermissionRequest` params carrying EXACTLY the two
+    /// one-shot options ADR-0005:48 allows.
+    #[test]
+    fn permission_frames_are_golden_pinned_to_the_schema_shapes() {
+        let session = "01990f9e-1111-7000-8000-000000000000";
+        let tool_call = "01990f9e-5555-7000-8000-000000000000";
+        let title = "Apply patch to src/lib.rs";
+
+        let announce = tool_call_announcement(session, tool_call, title);
+        assert_eq!(
+            announce.to_line(),
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","update":{"sessionUpdate":"tool_call","title":"Apply patch to src/lib.rs","toolCallId":"01990f9e-5555-7000-8000-000000000000"}}}"#
+        );
+
+        let close = tool_call_status_update(session, tool_call, "completed");
+        assert_eq!(
+            close.to_line(),
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","update":{"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"01990f9e-5555-7000-8000-000000000000"}}}"#
+        );
+
+        let params = permission_request_params(session, tool_call, title);
+        assert_eq!(
+            params,
+            json!({
+                "sessionId": session,
+                "toolCall": {"toolCallId": tool_call, "title": title},
+                "options": [
+                    {"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "reject_once", "name": "Reject once", "kind": "reject_once"},
+                ],
+            })
+        );
+        // Schema contract: required keys present, exactly two options,
+        // each a full `PermissionOption` (optionId + name + kind), and
+        // never a persistent-grant kind (ADR-0005:48).
+        assert!(params.get("sessionId").is_some_and(Value::is_string));
+        assert!(params.get("toolCall").is_some_and(Value::is_object));
+        let options = params["options"].as_array().expect("options array");
+        assert_eq!(options.len(), 2, "exactly two one-shot options");
+        let offered: Vec<&str> = options
+            .iter()
+            .map(|option| option["optionId"].as_str().expect("optionId"))
+            .collect();
+        assert_eq!(offered, ["allow_once", "reject_once"]);
+        for option in options {
+            assert!(option.get("optionId").is_some_and(Value::is_string));
+            assert!(option.get("name").is_some_and(Value::is_string));
+            assert!(option.get("kind").is_some_and(Value::is_string));
+            let kind = option["kind"].as_str().expect("kind");
+            assert!(
+                matches!(kind, "allow_once" | "reject_once"),
+                "only one-shot kinds are offered, got {kind}"
+            );
+        }
+        assert!(
+            !params.to_string().contains("always"),
+            "no persistent-grant option may ever appear: {params}"
+        );
+    }
+
+    /// Adapter-minted outbound ids come from a dedicated NEGATIVE
+    /// counter (disjoint from client ids and `Peer`'s positive request
+    /// counter), and a response only ever reaches the slot armed for
+    /// ITS id: an unsolicited response routes nowhere.
+    #[tokio::test]
+    async fn outbound_request_slots_arm_negative_ids_and_route_only_theirs() {
+        let requests = OutboundRequests::default();
+        let (first, mut first_rx) = requests.arm();
+        let (second, mut second_rx) = requests.arm();
+        assert_eq!(first, RpcId::Number((-1).into()));
+        assert_eq!(second, RpcId::Number((-2).into()));
+        assert_ne!(first, second, "every request mints a fresh id");
+        assert_eq!(requests.armed(), 2);
+
+        // Unsolicited response: no slot ⇒ ignored, nothing routed.
+        let unsolicited = InboundResponse {
+            id: RpcId::Number(99.into()),
+            payload: Ok(json!("junk")),
+        };
+        assert!(!requests.route(&unsolicited), "unsolicited must not route");
+        assert_eq!(requests.armed(), 2);
+        assert!(
+            first_rx.try_recv().is_err(),
+            "an unsolicited response may never reach a waiter"
+        );
+
+        // The right id routes to ITS waiter (arm order ≠ route order).
+        let answer = InboundResponse {
+            id: second.clone(),
+            payload: Ok(json!("granted")),
+        };
+        assert!(requests.route(&answer));
+        assert_eq!(second_rx.try_recv().unwrap().unwrap(), json!("granted"));
+        assert_eq!(requests.armed(), 1);
+        assert!(
+            first_rx.try_recv().is_err(),
+            "the other waiter is untouched"
+        );
+
+        // EOF clearing: every armed slot closes and its waiter wakes.
+        requests.clear();
+        assert_eq!(requests.armed(), 0);
+        assert!(first_rx.try_recv().is_err());
+    }
+
+    /// A park seen on a settlement read arms the bounded wait for the
+    /// journal-driven ask instead of failing typed; a request already
+    /// in flight (or a written Approve) keeps streaming untouched, and
+    /// terminal / ambiguous verdicts keep their existing meaning.
+    #[test]
+    fn settlement_verdict_waits_for_the_ask_on_a_park() {
+        let task_id: TaskId = "01990f9e-4444-7000-8000-000000000000"
+            .parse()
+            .expect("task id");
+        let parked = json!({"status": "WaitingApproval", "conversation": []});
+
+        let mut bridge = PermissionBridge::default();
+        assert_eq!(
+            settlement_verdict(&parked, task_id, None, None, &mut bridge).expect("park is benign"),
+            None
+        );
+        let PermissionPhase::AwaitingRequest { deadline } = bridge.phase else {
+            panic!("an observed park arms the bounded wait: {:?}", bridge.phase);
+        };
+        let now = std::time::Instant::now();
+        assert!(
+            deadline > now && deadline <= now + APPROVAL_REQUEST_GRACE,
+            "the wait is bounded by the orphan grace"
+        );
+
+        // An exchange already in flight: repeat observations are benign.
+        let state = Arc::new(SessionState::default());
+        let (id, receiver) = state.requests().arm();
+        bridge.phase = PermissionPhase::Outstanding {
+            receiver,
+            armed: super::ArmedRequest {
+                state: Arc::clone(&state),
+                id,
+            },
+            approval_id: "a".to_owned(),
+            tool_call_id: "t".to_owned(),
+        };
+        assert_eq!(
+            settlement_verdict(&parked, task_id, None, None, &mut bridge).expect("in flight"),
+            None
+        );
+        assert!(matches!(bridge.phase, PermissionPhase::Outstanding { .. }));
+
+        // A written Approve keeps the phase (its own response payload
+        // may show WaitingApproval for a beat) — never a re-ask.
+        bridge.phase = PermissionPhase::Sent;
+        assert_eq!(
+            settlement_verdict(&parked, task_id, None, None, &mut bridge).expect("sent"),
+            None
+        );
+        assert!(matches!(bridge.phase, PermissionPhase::Sent));
+
+        // Existing verdicts unchanged: terminal answers, the
+        // verification tail at a non-terminal status stays ambiguous.
+        let completed = json!({"status": "Completed", "conversation": []});
+        let mut fresh = PermissionBridge::default();
+        assert!(
+            settlement_verdict(&completed, task_id, None, None, &mut fresh)
+                .expect("terminal answers")
+                .is_some()
+        );
+        let executing = json!({"status": "Executing", "conversation": []});
+        let error = settlement_verdict(
+            &executing,
+            task_id,
+            Some("verification_finished"),
+            None,
+            &mut fresh,
+        )
+        .expect_err("ambiguous tail stays typed");
+        assert_eq!(error.data, json!("ambiguous_task_status"));
+    }
+
+    /// The strict allow gate: only `selected` + the offered
+    /// `allow_once` grants; every other shape — reject, unknown option,
+    /// cancelled, malformed — is NOT a grant.
+    #[test]
+    fn only_selected_allow_once_grants() {
+        assert!(is_allow_once(
+            &json!({"outcome": "selected", "optionId": "allow_once"})
+        ));
+        for response in [
+            json!({"outcome": "selected", "optionId": "reject_once"}),
+            json!({"outcome": "selected", "optionId": "allow_always"}),
+            json!({"outcome": "selected", "optionId": "nope"}),
+            json!({"outcome": "selected"}),
+            json!({"optionId": "allow_once"}),
+            json!({"outcome": "cancelled"}),
+            json!({"outcome": "rejected"}),
+            json!("allow_once"),
+            json!(null),
+            json!(42),
+        ] {
+            assert!(
+                !is_allow_once(&response),
+                "{response} must never grant an approval"
+            );
+        }
+    }
+
+    /// The ask emission: `tool_call` announcement FIRST, then the
+    /// `session/request_permission` frame — both queued on the writer
+    /// channel (stdout order holds), the reply slot armed BEFORE the
+    /// request is queued, phase `Outstanding` — and a re-delivered row
+    /// never asks twice.
+    #[tokio::test]
+    async fn bridge_ask_emits_tool_call_then_request_and_arms_once() {
+        let state = Arc::new(SessionState::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut bridge = PermissionBridge::default();
+        let session = "01990f9e-1111-7000-8000-000000000000";
+        let tool_call = "01990f9e-5555-7000-8000-000000000000";
+        let ask = json!({
+            "t": "ApprovalRequest",
+            "v": {"request": {
+                "id": tool_call,
+                "capability": "mutation.patch",
+                "scope": "workspace",
+                "operation_hash": "abc",
+                "summary": "Apply patch to src/lib.rs",
+            }},
+        });
+
+        bridge
+            .ask(session, &ask, &tx, &state)
+            .expect("a well-formed ask emits");
+        let announcement = rx.try_recv().expect("tool_call queued first");
+        let request = rx.try_recv().expect("request follows");
+        assert!(rx.try_recv().is_err(), "exactly two frames per ask");
+
+        let Outbound::Notification { method, params } = announcement else {
+            panic!("the announcement is a notification: {announcement:?}");
+        };
+        assert_eq!(method, "session/update");
+        assert_eq!(params["sessionId"], session);
+        assert_eq!(params["update"]["sessionUpdate"], "tool_call");
+        assert_eq!(params["update"]["toolCallId"], tool_call);
+        assert_eq!(params["update"]["title"], "Apply patch to src/lib.rs");
+
+        let Outbound::Request { id, method, params } = request else {
+            panic!("the ask is an id-bearing request: {request:?}");
+        };
+        assert_eq!(method, "session/request_permission");
+        assert_eq!(id, RpcId::Number((-1).into()), "first minted id");
+        assert_eq!(
+            params,
+            permission_request_params(session, tool_call, "Apply patch to src/lib.rs")
+        );
+        assert!(matches!(bridge.phase, PermissionPhase::Outstanding { .. }));
+        assert_eq!(state.requests().armed(), 1, "the reply slot is armed");
+
+        // A re-delivered row (replay after a re-subscribe) never asks twice.
+        bridge
+            .ask(session, &ask, &tx, &state)
+            .expect("a duplicate is a silent no-op");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(state.requests().armed(), 1, "no second slot");
+
+        // A row without an approval id: no frames, no phase change.
+        let mut fresh = PermissionBridge::default();
+        fresh
+            .ask(
+                session,
+                &json!({"t": "ApprovalRequest", "v": {"request": {}}}),
+                &tx,
+                &state,
+            )
+            .expect("an id-less ask is refused without error");
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(fresh.phase, PermissionPhase::Idle));
     }
 }

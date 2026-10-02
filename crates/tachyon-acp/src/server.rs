@@ -88,8 +88,19 @@ where
                     Parsed::Notification(notification) => {
                         handler.handle_notification(notification).await;
                     }
-                    Parsed::Response(_) => {
-                        tracing::debug!("ignoring unsolicited response frame");
+                    Parsed::Response(response) => {
+                        // An answer to an adapter-minted outbound request
+                        // (`session/request_permission`) goes to the turn
+                        // waiting on its armed slot; anything else is
+                        // unsolicited and is ignored safely.
+                        if handler.state.requests().route(&response) {
+                            tracing::debug!(
+                                id = ?response.id,
+                                "routed an outbound request response to its waiting turn"
+                            );
+                        } else {
+                            tracing::debug!("ignoring unsolicited response frame");
+                        }
                     }
                     Parsed::Failure(failure) => {
                         peer.write_line(&failure.to_line()).await?;
@@ -104,10 +115,14 @@ where
             }
         }
     }
-    // EOF (or read error): release the loop's sender, then drain every
-    // frame an in-flight turn still owes the client, bounded by the turn
-    // deadline; then reap the turn tasks.
+    // EOF (or read error): release the loop's sender, wake every turn
+    // waiting on an outstanding permission request (no client is left
+    // to answer it), then drain every frame an in-flight turn still
+    // owes the client, bounded by the turn deadline; then reap the
+    // turn tasks.
+    let state = Arc::clone(&handler.state);
     drop(handler);
+    state.requests().clear();
     while let Some(outbound) = rx.recv().await {
         if let Err(error) = peer.write_line(&outbound.to_line()).await {
             outcome = outcome.and(Err(error));
@@ -335,10 +350,11 @@ where
     ) {
         let connector = self.connector.clone();
         let tx = self.tx.clone();
+        let state = Arc::clone(&self.state);
         let notice = guard.notice();
         turns.spawn(async move {
             let _guard = guard;
-            let outcome = run_prompt(&connector, params, key, &tx, notice).await;
+            let outcome = run_prompt(&connector, params, key, &tx, notice, &state).await;
             let outbound = match outcome {
                 Ok(result) => Outbound::success(id, result),
                 Err(error) => error_outbound(id, error),
