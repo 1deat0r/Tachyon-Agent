@@ -25,6 +25,10 @@ async-trait = { workspace = true }
 blake3 = { workspace = true }
 tachyon-models = { path = "../tachyon-models" }
 tachyon-tools = { path = "../tachyon-tools" }
+# `test-util` powers the paused-clock turn-timeout proof
+# (`turn_timeout_is_suspended_during_an_outstanding_request` crosses
+# the 300 s window in virtual time); dev-only, never in build ships.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

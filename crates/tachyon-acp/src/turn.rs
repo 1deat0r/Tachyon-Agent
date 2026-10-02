@@ -20,6 +20,7 @@
 //! bytes.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,8 +40,49 @@ use crate::codec::{
 /// Bound on one whole `session/prompt` turn (connect → final response).
 /// A run that dies without ever journalling a terminal status would
 /// otherwise hang the client forever; the deadline converts that into a
-/// typed error instead of a guessed verdict.
+/// typed error instead of a guessed verdict. The budget is SUSPENDED
+/// while a permission request is outstanding (human-paced — see
+/// [`TurnBudgetState`]); `session/cancel` and client disconnect remain
+/// the unblock paths there.
 const TURN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// One turn's deadline state, shared between the deadline wrapper
+/// ([`run_prompt`]) and the permission bridge that suspends it:
+/// `suspended` freezes the budget for as long as a
+/// `session/request_permission` is outstanding (M3a — a human may take
+/// minutes; the deadline must never mistake that for a dead run), and
+/// RESOLVING the request grants the full [`TURN_TIMEOUT`] budget again
+/// ("resume with full remaining budget"). [`TurnBudgetState::running`]
+/// is the initial and the resumed state.
+#[derive(Clone, Copy, Debug)]
+struct TurnBudgetState {
+    /// Instant at which the deadline fires while running.
+    deadline: tokio::time::Instant,
+    /// `true` while a permission request is outstanding: no deadline
+    /// timer is armed, nothing can time out, cancel/disconnect end the
+    /// wait from inside the turn.
+    suspended: bool,
+}
+
+impl TurnBudgetState {
+    /// A running budget: full [`TURN_TIMEOUT`] from now.
+    fn running() -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + TURN_TIMEOUT,
+            suspended: false,
+        }
+    }
+
+    /// Pauses the budget, preserving the remaining time (it is never
+    /// consumed while suspended; the resume starts fresh anyway).
+    #[must_use]
+    fn suspend(self) -> Self {
+        Self {
+            suspended: true,
+            ..self
+        }
+    }
+}
 
 /// Bound on one whole `session/cancel`: waiting for the active turn to
 /// publish its task id, the `CancelTask` drain acknowledgement, or the
@@ -797,11 +839,16 @@ fn answer_action(
 
 /// Permission-bridge state threaded through one stream loop: the
 /// exchange phase plus the approval ids already asked about, so a
-/// re-delivered replay row (after a re-subscribe) can never ask twice.
+/// re-delivered replay row (after a re-subscribe) can never ask twice —
+/// plus the turn budget handle an outstanding request suspends (M3a).
 #[derive(Debug)]
 struct PermissionBridge {
     phase: PermissionPhase,
     asked: HashSet<String>,
+    /// The shared turn-deadline state. `Some` in production (the
+    /// wrapper's watch sender); `None` for units that drive the bridge
+    /// directly and have no deadline to suspend.
+    budget: Option<watch::Sender<TurnBudgetState>>,
 }
 
 impl Default for PermissionBridge {
@@ -809,11 +856,20 @@ impl Default for PermissionBridge {
         Self {
             phase: PermissionPhase::Idle,
             asked: HashSet::new(),
+            budget: None,
         }
     }
 }
 
 impl PermissionBridge {
+    /// The production bridge, wired to the turn's deadline wrapper.
+    fn new(budget: watch::Sender<TurnBudgetState>) -> Self {
+        Self {
+            phase: PermissionPhase::Idle,
+            asked: HashSet::new(),
+            budget: Some(budget),
+        }
+    }
     /// Handles one journalled `approval_request`: emits the `tool_call`
     /// announcement and the `session/request_permission` frame (both
     /// through the writer channel, so stdout order holds), then arms the
@@ -902,6 +958,17 @@ impl PermissionBridge {
                 %approval_id,
                 "session/cancel marked before the ask armed; the request resolved \
                  locally as cancelled"
+            );
+        }
+        // M3a: the request is human-paced — SUSPEND the turn budget
+        // now; the wrapper arms no deadline until the exchange resolves
+        // (cancel, answer, or EOF), which resumes with a full budget.
+        if let Some(budget) = &self.budget {
+            let current = *budget.borrow();
+            budget.send_replace(current.suspend());
+            tracing::info!(
+                %approval_id,
+                "permission request outstanding; the turn deadline is suspended"
             );
         }
         self.phase = PermissionPhase::Outstanding {
@@ -1229,10 +1296,12 @@ fn is_settlement_signal(kind: &str) -> bool {
 
 /// One `session/prompt` turn end to end.
 ///
-/// [`TURN_TIMEOUT`]-bounded — including any wait on a human's
-/// permission answer (timeout suspension is a later slice). `emit`
-/// receives the `session/update` notification frames streamed while the
-/// turn runs; the returned value is the final `session/prompt` result.
+/// [`TURN_TIMEOUT`]-bounded — EXCEPT while a permission request is
+/// outstanding, where the budget is suspended for that human-paced
+/// window (M3a) and `session/cancel` / client disconnect remain the
+/// unblock paths. `emit` receives the `session/update` notification
+/// frames streamed while the turn runs; the returned value is the
+/// final `session/prompt` result.
 pub(crate) async fn run_prompt<C: Connector>(
     connector: &C,
     params: PromptParams,
@@ -1241,20 +1310,71 @@ pub(crate) async fn run_prompt<C: Connector>(
     notice: watch::Sender<Option<TaskId>>,
     state: &Arc<SessionState>,
 ) -> Result<Value, HandlerError> {
-    let outcome = tokio::time::timeout(
-        TURN_TIMEOUT,
-        prompt_turn(connector, params, idempotency_key, emit, notice, state),
+    let (budget, budget_rx) = watch::channel(TurnBudgetState::running());
+    turn_deadline(
+        prompt_turn(
+            connector,
+            params,
+            idempotency_key,
+            emit,
+            notice,
+            state,
+            budget,
+        ),
+        budget_rx,
     )
-    .await;
-    match outcome {
-        Ok(result) => result,
-        Err(_) => Err(HandlerError::turn_failed(
+    .await
+}
+
+/// The turn-deadline wrapper around any turn future — the budget
+/// logic of [`run_prompt`] factored out as the unit seam for the
+/// paused-clock suspension proof.
+///
+/// `timeout_at` polls the turn first, so a turn completing in the same
+/// wakeup as its deadline still wins. A suspend landing mid-wait does
+/// not wake the running branch — the fired deadline re-reads the
+/// budget: suspended ⇒ the paused branch (no timer at all); a resumed
+/// (later) deadline ⇒ re-arm; unchanged ⇒ timed out. The budget
+/// SENDER lives inside the turn future (the bridge writes through it),
+/// so `budget_rx.changed()` fires on every bridge update and can only
+/// close when the turn has already completed.
+async fn turn_deadline<F>(
+    turn: F,
+    mut budget_rx: watch::Receiver<TurnBudgetState>,
+) -> Result<Value, HandlerError>
+where
+    F: Future<Output = Result<Value, HandlerError>>,
+{
+    tokio::pin!(turn);
+    loop {
+        let snapshot = *budget_rx.borrow_and_update();
+        if snapshot.suspended {
+            // No deadline exists while a request is outstanding: only
+            // the turn finishing (a cancel resolves the request, EOF
+            // closes the slot) or a budget change ends this wait.
+            tokio::select! {
+                result = &mut turn => break result,
+                changed = budget_rx.changed() => {
+                    let _ = changed;
+                    continue;
+                }
+            };
+        }
+        // Running: wait for the deadline or the turn.
+        if let Ok(result) = tokio::time::timeout_at(snapshot.deadline, &mut turn).await {
+            break result;
+        }
+        let current = *budget_rx.borrow_and_update();
+        if current.suspended || current.deadline > snapshot.deadline {
+            continue;
+        }
+        break Err(HandlerError::turn_failed(
             "turn_timed_out",
             format!(
                 "turn did not reach a terminal task status within {}s",
                 TURN_TIMEOUT.as_secs()
             ),
-        )),
+        ));
     }
 }
 
@@ -1266,6 +1386,7 @@ async fn prompt_turn<C: Connector>(
     emit: &UnboundedSender<Outbound>,
     notice: watch::Sender<Option<TaskId>>,
     state: &Arc<SessionState>,
+    budget: watch::Sender<TurnBudgetState>,
 ) -> Result<Value, HandlerError> {
     let PromptParams {
         session_id,
@@ -1357,7 +1478,16 @@ async fn prompt_turn<C: Connector>(
         })
         .await
         .map_err(|error| HandlerError::unavailable(&error))?;
-    stream_turn(&mut conn, subscribe_id, task_id, session_id, emit, state).await
+    stream_turn(
+        &mut conn,
+        subscribe_id,
+        task_id,
+        session_id,
+        emit,
+        state,
+        budget,
+    )
+    .await
 }
 
 /// One `session/cancel` end to end, [`CANCEL_TIMEOUT`]-bounded:
@@ -1550,6 +1680,7 @@ async fn stream_turn(
     session_id: SessionId,
     emit: &UnboundedSender<Outbound>,
     state: &Arc<SessionState>,
+    budget: watch::Sender<TurnBudgetState>,
 ) -> Result<Value, HandlerError> {
     let session_id = session_id.to_string();
     let mut awaiting: Option<EventId> = Some(subscribe_id);
@@ -1565,8 +1696,9 @@ async fn stream_turn(
     // on a signal the replay did not re-deliver.
     let mut recheck = false;
     // The permission exchange (journal-driven ask → client answer →
-    // Approve sequenced around the settlement slot).
-    let mut bridge = PermissionBridge::default();
+    // Approve sequenced around the settlement slot) plus the turn
+    // budget it suspends/resumes around each outstanding request.
+    let mut bridge = PermissionBridge::new(budget);
     loop {
         // 1. The decision (grant or refuse): written only when the
         //    single settlement slot is free, so the `Approve`/`Deny`
@@ -1718,6 +1850,12 @@ async fn stream_turn(
             // cancel path to find (its local resolution already ran, or
             // this was the client's own answer).
             state.clear_outstanding(&session_id);
+            // M3a resume: the human-paced window closed — the turn
+            // gets its FULL budget again from now.
+            if let Some(budget) = &bridge.budget {
+                budget.send_replace(TurnBudgetState::running());
+                tracing::info!("permission request resolved; the turn deadline resumes");
+            }
             let cancelled = matches!(
                 &raw,
                 Ok(Ok(value)) if value.get("outcome").and_then(Value::as_str) == Some("cancelled")
@@ -2002,19 +2140,21 @@ fn handle_journal(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use serde_json::{Value, json};
     use tachyon_types::TaskId;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
 
     use super::{
         APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE,
         HandlerError, OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase,
-        ReadExpiry, SessionState, agent_chunk, answer_action, approval_ask, approval_parked,
-        classify_permission_answer, final_prompt_result, is_allow_once, is_approval_parked,
-        is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel, parse_prompt,
-        parse_session_new, permission_request_params, read_bound, refusal_prompt_result,
-        settlement_verdict, stop_reason, tool_call_announcement, tool_call_status_update,
+        ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
+        approval_parked, classify_permission_answer, final_prompt_result, is_allow_once,
+        is_approval_parked, is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel,
+        parse_prompt, parse_session_new, permission_request_params, read_bound,
+        refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
+        tool_call_status_update, turn_deadline,
     };
     use crate::codec::{
         INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
@@ -3026,5 +3166,98 @@ mod tests {
         assert!(cancelled, "the local resolution carries cancelled");
         assert!(state.take_cancel_resolution(session));
         assert!(matches!(answer_action(raw, true), ClientAnswer::NoDecision));
+    }
+
+    /// S3 Verify + N3a1 (bound crossing under a paused clock): a
+    /// permission request held PAST the 300 s window does not time the
+    /// turn out — the budget is suspended while the request is
+    /// outstanding, so the only armed timer is the holder's own sleep;
+    /// virtual time crosses t+300 s and the turn still answers its
+    /// result instead of `turn_timed_out`.
+    #[tokio::test(start_paused = true)]
+    async fn turn_timeout_is_suspended_during_an_outstanding_request() {
+        let (budget, budget_rx) = watch::channel(TurnBudgetState::running());
+        let turn = async move {
+            // What `PermissionBridge::ask` does when the request arms:
+            let current = *budget.borrow();
+            budget.send_replace(current.suspend());
+            // A human holds the request beyond the whole deadline
+            // window (N3a1: 301 s > TURN_TIMEOUT's 300 s).
+            tokio::time::sleep(Duration::from_secs(301)).await;
+            // What the exchange resolution does (step 2): full budget.
+            budget.send_replace(TurnBudgetState::running());
+            Ok(json!({ "stopReason": "cancelled", "content": [] }))
+        };
+        let outcome = turn_deadline(turn, budget_rx).await;
+        let result = outcome.expect("a held request never surfaces turn_timed_out");
+        assert_eq!(result["stopReason"], "cancelled");
+    }
+
+    /// S3 (M3a resume): a budget RESUMED mid-turn gets a FULL window
+    /// again — the original deadline fires, the wrapper re-arms at the
+    /// resumed deadline, and a turn finishing 540 s in (past the
+    /// original 300 s) still answers normally.
+    #[tokio::test(start_paused = true)]
+    async fn a_resumed_turn_budget_gets_a_full_window() {
+        let (budget, budget_rx) = watch::channel(TurnBudgetState::running());
+        let turn = async move {
+            let current = *budget.borrow();
+            budget.send_replace(current.suspend());
+            tokio::time::sleep(Duration::from_secs(250)).await;
+            budget.send_replace(TurnBudgetState::running());
+            tokio::time::sleep(Duration::from_secs(290)).await;
+            Ok(json!({ "stopReason": "end_turn", "content": [] }))
+        };
+        let result = turn_deadline(turn, budget_rx)
+            .await
+            .expect("the resumed window covers the turn's tail");
+        assert_eq!(result["stopReason"], "end_turn");
+    }
+
+    /// S3 negative control: a turn that never suspends its budget
+    /// still times out at the deadline with the typed `turn_timed_out`
+    /// error — suspension is what disables the timer, nothing else
+    /// (this is the exact failure the suspension mutation produces).
+    #[tokio::test(start_paused = true)]
+    async fn an_unsuspended_turn_still_times_out() {
+        let (_budget, budget_rx) = watch::channel(TurnBudgetState::running());
+        let turn = async {
+            tokio::time::sleep(Duration::from_secs(301)).await;
+            Ok(json!({ "stopReason": "end_turn", "content": [] }))
+        };
+        let error = turn_deadline(turn, budget_rx)
+            .await
+            .expect_err("an unsuspended turn hits its deadline");
+        assert_eq!(error.data, json!("turn_timed_out"));
+    }
+
+    /// S3 wiring (M3a pause): arming a request through the production
+    /// bridge suspends the shared budget — the transition
+    /// `turn_timeout_is_suspended_during_an_outstanding_request`
+    /// relies on, observed on the real `ask` path.
+    #[tokio::test]
+    async fn arming_a_request_suspends_the_bridge_budget() {
+        let (budget, budget_rx) = watch::channel(TurnBudgetState::running());
+        assert!(!budget_rx.borrow().suspended, "a fresh budget runs");
+        let state = Arc::new(SessionState::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let session = "01990f9e-1111-7000-8000-000000000000";
+        let ask = json!({
+            "t": "ApprovalRequest",
+            "v": {"request": {"id": "01990f9e-5555-7000-8000-000000000000", "summary": "Apply"}},
+        });
+        let mut bridge = PermissionBridge::new(budget);
+        bridge
+            .ask(session, &ask, &tx, &state)
+            .expect("the ask arms");
+        assert!(
+            budget_rx.borrow().suspended,
+            "an outstanding request suspends the turn deadline"
+        );
+        let _announcement = rx.try_recv().expect("tool_call queued");
+        let _request = rx.try_recv().expect("request queued");
+        // The full cycle: resolution runs `running()` (step 2's call).
+        let resumed = TurnBudgetState::running();
+        assert!(!resumed.suspended, "resolution resumes with a full budget");
     }
 }

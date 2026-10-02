@@ -215,6 +215,17 @@ async fn cancel_resolves_the_pending_request_locally_then_reports_cancelled() {
         stderr.contains("no decision issued"),
         "the zero-decision outcome is logged: {stderr}"
     );
+    // S3 wiring (M3a) proven in the production pipeline: the request
+    // armed ⇒ the deadline suspended; the local resolution ⇒ it
+    // resumed (with a full budget) before the prompt settled.
+    assert!(
+        stderr.contains("the turn deadline is suspended"),
+        "an outstanding request suspends the turn deadline: {stderr}"
+    );
+    assert!(
+        stderr.contains("the turn deadline resumes"),
+        "the resolution resumes the turn deadline: {stderr}"
+    );
 }
 
 /// S2 (M2a): a `session/request_permission` answer that arrives AFTER

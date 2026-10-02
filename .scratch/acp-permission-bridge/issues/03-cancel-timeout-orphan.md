@@ -15,10 +15,10 @@
   - [x] M1c No deadlock: inline cancel never awaits the client answer it just invalidated
 - [x] S2 Delayed client answer after cancel ⇒ ignored locally · Verify: `late_permission_answer_after_cancel_is_ignored`
   - [x] M2a Response arriving for a disarmed id drops with a log line; no panic, no gateway call
-- [ ] S3 TURN_TIMEOUT suspended while a request is outstanding · Verify: `turn_timeout_is_suspended_during_an_outstanding_request`
-  - [ ] M3a Pause the deadline when a request arms; resume with full remaining budget after resolution
-    - [ ] N3a1 Bound-crossing test: held request outlives 300 s window without `turn_timed_out`
-  - [ ] M3b Document the suspension in the capability doc
+- [x] S3 TURN_TIMEOUT suspended while a request is outstanding · Verify: `turn_timeout_is_suspended_during_an_outstanding_request`
+  - [x] M3a Pause the deadline when a request arms; resume with full remaining budget after resolution
+    - [x] N3a1 Bound-crossing test: held request outlives 300 s window without `turn_timed_out`
+  - [x] M3b Document the suspension in the capability doc
 - [ ] S4 Orphan fallback: WaitingApproval with no ask frame within the bound ⇒ typed `approval_required` · Verify: `orphaned_park_falls_back_to_approval_required`
   - [ ] M4a Tighten the interim grace into the orphan bound; keep the request-less stub test green
   - [ ] M4b Emit no false request when no frame ever arrives
