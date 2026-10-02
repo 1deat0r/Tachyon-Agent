@@ -1,0 +1,30 @@
+[package]
+name = "tachyon-acp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "tachyon-acp"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tachyon-gateway = { workspace = true }
+tachyon-protocol = { workspace = true }
+tachyon-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+tachyon-models = { path = "../tachyon-models" }
+tachyon-tools = { path = "../tachyon-tools" }
+
+[lints]
+workspace = true

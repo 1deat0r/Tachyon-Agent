@@ -30,6 +30,7 @@ Use one Cargo workspace. Crate responsibilities:
 - `tachyon-gateway`: local IPC and optional remote transport adapters.
 - `tachyon-tui`: Ratatui client state/render/input only.
 - `tachyon-app`: CLI/binary bootstrap and command dispatch.
+- `tachyon-acp`: ACP v1 stdio adapter binary — newline-delimited JSON-RPC lifecycle, capability negotiation, and a pure gateway client (ADR-0005).
 
 Dependency rule: lower-level crates never import `tachyon-core`, gateway or UI crates. Provider implementation types do not cross into core/IR.
 

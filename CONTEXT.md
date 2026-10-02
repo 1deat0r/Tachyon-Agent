@@ -16,6 +16,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | **Task** | Executable unit of work with a durable status machine. |
 | **CLI** | `tachyon` binary (`tachyon-app`). Argument parsing, config, output. No decision logic. |
 | **TUI** | Ratatui client (`tachyon-tui`). Pure gateway client (AD-014): display + input only. |
+| **ACP adapter** | Newline-delimited JSON-RPC v1 agent process (`tachyon-acp`) launched by an ACP client over stdio. A pure gateway client: negotiates capabilities, maps `session/*` methods to gateway commands, streams `session/update`, and executes nothing itself — never a second driver, tool path, or approval owner (ADR-0005). |
 | **Shared driver** | The ONE run path spawned by the gateway (`StartRun` → `drive`). CLI/TUI never spawn their own. Runs are never respawned at gateway boot without **driver re-entry**. |
 
 ## Execution and state
@@ -71,7 +72,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 
 ## Repo / crates (shorthand)
 
-Use crate names when the boundary matters: `tachyon-core` (supervisor/state), `tachyon-gateway` (IPC), `tachyon-ir`, `tachyon-intent`, `tachyon-store`, `tachyon-policy`, `tachyon-tools`, `tachyon-scheduler`, `tachyon-verify`, `tachyon-models`, `tachyon-judgment`, `tachyon-router`, `tachyon-tui`, `tachyon-app`.
+Use crate names when the boundary matters: `tachyon-core` (supervisor/state), `tachyon-gateway` (IPC), `tachyon-ir`, `tachyon-intent`, `tachyon-store`, `tachyon-policy`, `tachyon-tools`, `tachyon-scheduler`, `tachyon-verify`, `tachyon-models`, `tachyon-judgment`, `tachyon-router`, `tachyon-tui`, `tachyon-app`, `tachyon-acp` (ACP stdio adapter).
 
 **Dependency rule:** lower-level crates never import `tachyon-core`, gateway, or UI. Provider types do not leak into core/IR.
 

@@ -21,6 +21,7 @@ members = [
     "crates/tachyon-gateway",
     "crates/tachyon-tui",
     "crates/tachyon-app",
+    "crates/tachyon-acp",
 ]
 
 [workspace.package]

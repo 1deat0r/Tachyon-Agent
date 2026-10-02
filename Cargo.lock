@@ -2517,6 +2517,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tachyon-acp"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tachyon-gateway",
+ "tachyon-models",
+ "tachyon-protocol",
+ "tachyon-tools",
+ "tachyon-types",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tachyon-app"
 version = "0.0.1"
 dependencies = [
