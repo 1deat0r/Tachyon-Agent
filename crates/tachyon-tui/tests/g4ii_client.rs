@@ -41,6 +41,7 @@ async fn seed(client: &CommandClient) -> (TaskId, String) {
         .call(Command::CreateTask {
             session_id,
             objective: "gate objective".to_owned(),
+            idempotency_key: None,
         })
         .await
         .expect("CreateTask");

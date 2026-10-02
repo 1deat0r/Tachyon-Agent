@@ -101,6 +101,7 @@ async fn registered_key_is_scrubbed_before_any_client_can_read_it() {
         Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "redaction probe".to_owned(),
+            idempotency_key: None,
         },
     )
     .await;

@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 serde = { workspace = true }
+# CreateTask idempotency (issue #57 ticket 01): the store formats the
+# stored Ok-response JSON in the same transaction as the task row.
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }

@@ -355,6 +355,7 @@ fn run_run(
                 Command::CreateTask {
                     session_id: session_id.parse()?,
                     objective,
+                    idempotency_key: None,
                 },
             )
             .await,
@@ -558,6 +559,7 @@ fn task_command(action: TaskAction) -> Result<Command> {
         TaskAction::Create { session, objective } => Ok(Command::CreateTask {
             session_id: parse_session(&session)?,
             objective,
+            idempotency_key: None,
         }),
         TaskAction::List { session } => Ok(Command::ListTasks {
             session_id: session.map(|raw| parse_session(&raw)).transpose()?,

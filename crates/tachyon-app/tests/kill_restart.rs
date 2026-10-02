@@ -169,6 +169,7 @@ fn kill_restart_gateway_bin_gates_recovers_task_and_continues() {
         ProtoCommand::CreateTask {
             session_id,
             objective: "kill_restart gate".to_owned(),
+            idempotency_key: None,
         },
     );
     assert_eq!(t_status, 200, "CreateTask: {t_payload}");

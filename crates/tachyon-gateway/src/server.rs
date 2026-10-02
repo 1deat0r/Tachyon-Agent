@@ -17,7 +17,8 @@ use tachyon_core::driver::{
 };
 use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds};
 use tachyon_core::{
-    CoreError, SupervisorHandle, TaskStatus, create_task, project_task_state, recover_task,
+    CoreError, SupervisorHandle, TaskStatus, create_task, create_task_with_idempotency,
+    project_task_state, recover_task,
 };
 use tachyon_models::ModelProvider;
 use tachyon_policy::Policy;
@@ -25,7 +26,7 @@ use tachyon_protocol::{
     Command, CommandResult, EventEnvelope, GatewayEvent, PROTOCOL_VERSION, RequestEnvelope,
     ResponseEnvelope, ServerFrame, check_version, decode_frame, encode_server_frame,
 };
-use tachyon_store::{CommitNotice, StoreWriter};
+use tachyon_store::{CommitNotice, IdempotencyRow, StoreWriter};
 use tachyon_tools::workspace::WorkspaceLease;
 use tachyon_tools::{ToolsContext, artifact::ArtifactSpool, credential::CredentialBroker};
 use tachyon_types::{ApprovalId, EventId, SessionId, TaskId, Timestamp, WorkspaceId};
@@ -1109,7 +1110,16 @@ async fn handle_command(state: &Arc<GatewayState>, command: &Command) -> Command
         Command::CreateTask {
             session_id,
             objective,
-        } => create_supervised(state, *session_id, objective.clone()).await,
+            idempotency_key,
+        } => {
+            create_supervised(
+                state,
+                *session_id,
+                objective.clone(),
+                idempotency_key.clone(),
+            )
+            .await
+        }
         Command::ListTasks { session_id } => {
             let filter = session_id.map(|id| id.to_string());
             match state.store.list_tasks(filter.as_deref()).await {
@@ -1277,11 +1287,87 @@ async fn finish_run_preparation(
     finished.send_replace(Some(RunExit::NotStarted));
 }
 
+/// Maximum size of a client **Idempotency key** in bytes (issue #57
+/// ticket 01): keys are opaque and bounded, so the key channel cannot
+/// store unbounded data per record.
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+
+/// Validates a supplied idempotency key before any state is touched:
+/// non-empty and at most [`MAX_IDEMPOTENCY_KEY_BYTES`] bytes, opaque
+/// (no semantic parsing). `Err` carries the typed refusal to return.
+fn check_idempotency_key(key: &str) -> Result<(), CommandResult> {
+    if key.is_empty() || key.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        return Err(fail(
+            "invalid_idempotency_key",
+            format!(
+                "idempotency key must be 1..={MAX_IDEMPOTENCY_KEY_BYTES} bytes, got {}",
+                key.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Deterministic request fingerprint for idempotent `CreateTask` replay
+/// (spec: canonical request identity, no wall-clock, no ordering
+/// dependence): BLAKE3 (hex) over `session_id`, a newline separator,
+/// then `objective`. Session ids are gateway-generated and never
+/// contain the separator, so each identity pair has exactly one
+/// canonical string, and the digest survives restarts.
+fn request_fingerprint(session_id: &SessionId, objective: &str) -> String {
+    blake3::hash(format!("{session_id}\n{objective}").as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// The `CreateTask` success payload. Single construction site for the
+/// fresh-create response; the store's same-transaction record stores the
+/// identical field set, so replayed responses are byte-identical.
+fn create_task_payload(task_id: &TaskId, status: &str, turn_seq: i64) -> Value {
+    json!({
+        "task_id": task_id.to_string(),
+        "status": status,
+        "turn_seq": turn_seq,
+    })
+}
+
+/// Answers an already-committed idempotency key (issue #57 ticket 01):
+/// identical fingerprint → the stored success response VERBATIM — a pure
+/// read, no task, no turn, no supervisor, no model; different
+/// fingerprint → typed `idempotency_key_conflict` with no state change.
+fn idempotent_replay(row: &IdempotencyRow, fingerprint: &str) -> CommandResult {
+    if row.fingerprint != fingerprint {
+        return fail(
+            "idempotency_key_conflict",
+            "idempotency key already recorded in this session with a different request".to_owned(),
+        );
+    }
+    match serde_json::from_str::<Value>(&row.response_json) {
+        Ok(payload) => ok(payload),
+        Err(err) => fail(
+            "internal",
+            format!("stored idempotent response unreadable: {err}"),
+        ),
+    }
+}
+
+/// Creates a supervised task under `session_id` honoring the optional
+/// **Idempotency key** (CONTEXT.md glossary): key validation precedes
+/// any state touch, a committed key replays/refuses before any create
+/// is attempted, and a keyed create that loses the `UNIQUE
+/// (session_id, key)` race re-reads the winner's record instead of
+/// surfacing the rolled-back store error. Absent key → legacy path.
 async fn create_supervised(
     state: &Arc<GatewayState>,
     session_id: SessionId,
     objective: String,
+    idempotency_key: Option<String>,
 ) -> CommandResult {
+    if let Some(key) = &idempotency_key
+        && let Err(result) = check_idempotency_key(key)
+    {
+        return result;
+    }
     if !state
         .store
         .session_exists(&session_id.to_string())
@@ -1290,6 +1376,19 @@ async fn create_supervised(
     {
         return fail("unknown_session", format!("no session {session_id}"));
     }
+    match idempotency_key {
+        Some(key) => create_supervised_keyed(state, session_id, objective, &key).await,
+        None => create_supervised_keyless(state, session_id, objective).await,
+    }
+}
+
+/// Legacy keyless create: exactly the pre-key semantics — every send
+/// mints a new task — plus the additive `turn_seq` in the response.
+async fn create_supervised_keyless(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    objective: String,
+) -> CommandResult {
     match create_task(
         session_id,
         WorkspaceId::generate(),
@@ -1298,13 +1397,74 @@ async fn create_supervised(
     )
     .await
     {
-        Ok(handle) => {
-            let task_id = handle.task_id();
-            let status = TaskStatus::Created;
-            state.supervisors.lock().await.insert(task_id, handle);
-            ok(json!({"task_id": task_id.to_string(), "status": status.name()}))
-        }
+        Ok(handle) => finish_created(state, handle).await,
         Err(err) => core_err(&err),
+    }
+}
+
+/// Keyed create: look up first (hit → replay or conflict, a pure read),
+/// otherwise create with the key row committed in the same transaction
+/// as the task + journal event. On failure, re-read: a concurrent
+/// winner's record turns the lost race into a replay/conflict answer;
+/// only a failure with no record propagates as-is.
+async fn create_supervised_keyed(
+    state: &Arc<GatewayState>,
+    session_id: SessionId,
+    objective: String,
+    key: &str,
+) -> CommandResult {
+    let fingerprint = request_fingerprint(&session_id, &objective);
+    match state
+        .store
+        .lookup_idempotency(&session_id.to_string(), key)
+        .await
+    {
+        Ok(Some(row)) => return idempotent_replay(&row, &fingerprint),
+        Ok(None) => {}
+        Err(err) => return fail("internal", err.to_string()),
+    }
+    let outcome = create_task_with_idempotency(
+        session_id,
+        WorkspaceId::generate(),
+        objective,
+        state.store.clone(),
+        tachyon_store::IdempotencyCreate {
+            key,
+            fingerprint: &fingerprint,
+        },
+    )
+    .await;
+    match outcome {
+        Ok(handle) => finish_created(state, handle).await,
+        Err(err) => match state
+            .store
+            .lookup_idempotency(&session_id.to_string(), key)
+            .await
+        {
+            Ok(Some(row)) => idempotent_replay(&row, &fingerprint),
+            Ok(None) => core_err(&err),
+            Err(lookup_err) => fail("internal", lookup_err.to_string()),
+        },
+    }
+}
+
+/// Registers the freshly created supervisor and assembles the success
+/// payload with the durable `turn_seq` minted by the create transaction
+/// (the same stamp `GetSession` reports for the turn).
+async fn finish_created(state: &Arc<GatewayState>, handle: SupervisorHandle) -> CommandResult {
+    let task_id = handle.task_id();
+    state.supervisors.lock().await.insert(task_id, handle);
+    match state.store.task_turn_seq(&task_id.to_string()).await {
+        Ok(Some(turn_seq)) => ok(create_task_payload(
+            &task_id,
+            TaskStatus::Created.name(),
+            turn_seq,
+        )),
+        Ok(None) => fail(
+            "internal",
+            format!("task {task_id} has no turn after create"),
+        ),
+        Err(err) => fail("internal", err.to_string()),
     }
 }
 
@@ -2125,6 +2285,7 @@ mod stale_supervisor_tests {
                 &Command::CreateTask {
                     session_id,
                     objective: "stale handle probe".to_owned(),
+                    idempotency_key: None,
                 },
             )
             .await,
@@ -2184,6 +2345,7 @@ mod stale_supervisor_tests {
                 &Command::CreateTask {
                     session_id,
                     objective: "cancel admission race probe".to_owned(),
+                    idempotency_key: None,
                 },
             )
             .await,
@@ -2251,6 +2413,7 @@ mod stale_supervisor_tests {
                 &Command::CreateTask {
                     session_id,
                     objective: "cancel preflight admission race probe".to_owned(),
+                    idempotency_key: None,
                 },
             )
             .await,
@@ -2320,6 +2483,7 @@ mod stale_supervisor_tests {
                 &Command::CreateTask {
                     session_id,
                     objective: "recovery race probe".to_owned(),
+                    idempotency_key: None,
                 },
             )
             .await,
@@ -2412,6 +2576,7 @@ mod stale_supervisor_tests {
                 &Command::CreateTask {
                     session_id,
                     objective: "pin wedge probe".to_owned(),
+                    idempotency_key: None,
                 },
             )
             .await,
@@ -2525,6 +2690,7 @@ mod stale_supervisor_tests {
                 &Command::CreateTask {
                     session_id,
                     objective: "preserve the public API".to_owned(),
+                    idempotency_key: None,
                 },
             )
             .await,

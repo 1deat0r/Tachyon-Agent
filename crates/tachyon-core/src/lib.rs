@@ -1172,6 +1172,33 @@ pub async fn create_task(
     objective: String,
     store: Arc<StoreWriter>,
 ) -> Result<SupervisorHandle, CoreError> {
+    create_task_inner(session_id, workspace_id, objective, store, None).await
+}
+
+/// Same create as [`create_task`], additionally recording one
+/// **Idempotency key** (CONTEXT.md glossary) row in the SAME store
+/// transaction as the task row + seq-0 journal event: the key row
+/// commits iff the task commits, so a retry after a crash between
+/// commit and response replays instead of duplicating. Ownership,
+/// validation, and spawn behavior are unchanged; the store rejects a
+/// duplicate `(session_id, key)` by rolling back the whole create.
+pub async fn create_task_with_idempotency(
+    session_id: SessionId,
+    workspace_id: WorkspaceId,
+    objective: String,
+    store: Arc<StoreWriter>,
+    idem: tachyon_store::IdempotencyCreate<'_>,
+) -> Result<SupervisorHandle, CoreError> {
+    create_task_inner(session_id, workspace_id, objective, store, Some(idem)).await
+}
+
+async fn create_task_inner(
+    session_id: SessionId,
+    workspace_id: WorkspaceId,
+    objective: String,
+    store: Arc<StoreWriter>,
+    idem: Option<tachyon_store::IdempotencyCreate<'_>>,
+) -> Result<SupervisorHandle, CoreError> {
     let now = Timestamp::now();
     let task_id = TaskId::generate();
     let ownership = TaskOwnership::acquire(store.database_path(), task_id)?;
@@ -1215,17 +1242,35 @@ pub async fn create_task(
     let created = serde_json::to_string(&StateEvent::Created {
         state: Box::new(state.clone()),
     })?;
-    store
-        .create_task(
-            &task_id.to_string(),
-            &session_id.to_string(),
-            &workspace_id.to_string(),
-            &objective,
-            TaskStatus::Created.name(),
-            &snapshot,
-            &created,
-        )
-        .await?;
+    match idem {
+        Some(idem) => {
+            store
+                .create_task_with_idempotency(
+                    &task_id.to_string(),
+                    &session_id.to_string(),
+                    &workspace_id.to_string(),
+                    &objective,
+                    TaskStatus::Created.name(),
+                    &snapshot,
+                    &created,
+                    idem,
+                )
+                .await?;
+        }
+        None => {
+            store
+                .create_task(
+                    &task_id.to_string(),
+                    &session_id.to_string(),
+                    &workspace_id.to_string(),
+                    &objective,
+                    TaskStatus::Created.name(),
+                    &snapshot,
+                    &created,
+                )
+                .await?;
+        }
+    }
     Ok(spawn(state, 0, Some(0), store, ownership))
 }
 

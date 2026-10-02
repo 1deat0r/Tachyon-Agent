@@ -70,6 +70,7 @@ async fn get_session_lists_turns_in_strict_sequence_order() {
             Command::CreateTask {
                 session_id: session_id.parse().unwrap(),
                 objective: format!("turn {i}"),
+                idempotency_key: None,
             },
         )
         .await;
@@ -89,6 +90,7 @@ async fn get_session_lists_turns_in_strict_sequence_order() {
                 Command::CreateTask {
                     session_id: sid.parse().unwrap(),
                     objective: format!("racing turn {i}"),
+                    idempotency_key: None,
                 },
             )
             .await;
@@ -171,6 +173,7 @@ async fn session_turn_order_survives_gateway_restart() {
             Command::CreateTask {
                 session_id: session_id.parse().unwrap(),
                 objective: format!("durable turn {i}"),
+                idempotency_key: None,
             },
         )
         .await;

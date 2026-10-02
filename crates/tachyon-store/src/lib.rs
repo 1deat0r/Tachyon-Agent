@@ -155,6 +155,30 @@ pub enum ApprovalOutcome {
     Denied,
 }
 
+/// Inputs for recording one **Idempotency key** row (CONTEXT.md
+/// glossary) in the same transaction as its task row + seq-0 journal
+/// event. The key row commits iff the task commits; the gateway owns
+/// fingerprint computation and replay policy, the store only persists.
+#[derive(Clone, Copy, Debug)]
+pub struct IdempotencyCreate<'a> {
+    /// Client-supplied idempotency key (validated 1..=128 bytes
+    /// gateway-side before it reaches the store).
+    pub key: &'a str,
+    /// Deterministic fingerprint of the canonical request identity
+    /// (`session_id` + `objective`), hex-encoded BLAKE3.
+    pub fingerprint: &'a str,
+}
+
+/// One stored **Idempotency key** record: the fingerprint the key was
+/// first seen with plus the byte-identical success response to replay.
+#[derive(Clone, Debug, PartialEq, Eq, FromRow)]
+pub struct IdempotencyRow {
+    /// Fingerprint recorded when the key was first committed.
+    pub fingerprint: String,
+    /// Stored `Ok` payload JSON for the original successful create.
+    pub response_json: String,
+}
+
 /// One row of `tasks`, including the optional opaque snapshot.
 #[derive(Clone, Debug, FromRow)]
 pub struct TaskRow {
@@ -354,6 +378,65 @@ impl StoreWriter {
         snapshot_json: &str,
         created_payload: &str,
     ) -> Result<(), StoreError> {
+        self.create_task_inner(
+            task_id,
+            session_id,
+            workspace_id,
+            objective,
+            status,
+            snapshot_json,
+            created_payload,
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Same atomic task + journal create as [`StoreWriter::create_task`],
+    /// additionally recording one **Idempotency key** row in the SAME
+    /// transaction. The stored response JSON mirrors the gateway's
+    /// `CreateTask` success payload (`task_id`, `status`, `turn_seq`) so a
+    /// retry can replay it byte-identically. A duplicate
+    /// `UNIQUE (session_id, "key")` fails the whole transaction: the task
+    /// row never lands without its key row, nor the key row without its
+    /// task. Returns the minted `turn_seq`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_task_with_idempotency(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        workspace_id: &str,
+        objective: &str,
+        status: &str,
+        snapshot_json: &str,
+        created_payload: &str,
+        idem: IdempotencyCreate<'_>,
+    ) -> Result<i64, StoreError> {
+        self.create_task_inner(
+            task_id,
+            session_id,
+            workspace_id,
+            objective,
+            status,
+            snapshot_json,
+            created_payload,
+            Some(idem),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_task_inner(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        workspace_id: &str,
+        objective: &str,
+        status: &str,
+        snapshot_json: &str,
+        created_payload: &str,
+        idem: Option<IdempotencyCreate<'_>>,
+    ) -> Result<i64, StoreError> {
         let _guard = self.write.lock().await;
         let now = Timestamp::now().as_micros();
         let mut tx = self.pool.begin().await?;
@@ -386,9 +469,62 @@ impl StoreWriter {
         .bind(now)
         .execute(&mut *tx)
         .await?;
+        let turn_seq: i64 = sqlx::query_scalar("SELECT turn_seq FROM tasks WHERE id = ?")
+            .bind(task_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if let Some(idem) = idem {
+            let response_json = serde_json::json!({
+                "task_id": task_id,
+                "status": status,
+                "turn_seq": turn_seq,
+            })
+            .to_string();
+            sqlx::query(
+                "INSERT INTO create_task_idempotency
+                 (session_id, \"key\", fingerprint, response_json, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(idem.key)
+            .bind(idem.fingerprint)
+            .bind(response_json)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         self.notify_commit(task_id, 0);
-        Ok(())
+        Ok(turn_seq)
+    }
+
+    /// Looks up one **Idempotency key** record; `None` means this
+    /// `(session_id, key)` has never been committed. Read-only.
+    pub async fn lookup_idempotency(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Result<Option<IdempotencyRow>, StoreError> {
+        Ok(sqlx::query_as::<_, IdempotencyRow>(
+            "SELECT fingerprint, response_json
+             FROM create_task_idempotency
+             WHERE session_id = ? AND \"key\" = ?",
+        )
+        .bind(session_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Reads one task's durable per-session turn stamp (minted once at
+    /// create, never rewritten). `None` for an unknown task.
+    pub async fn task_turn_seq(&self, task_id: &str) -> Result<Option<i64>, StoreError> {
+        Ok(
+            sqlx::query_scalar("SELECT turn_seq FROM tasks WHERE id = ?")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
 
     /// Appends one journal event; returns its per-task sequence number.
@@ -1032,7 +1168,7 @@ async fn effect_transition_error_in_tx(
 
 #[cfg(test)]
 mod tests {
-    use super::{EffectMutation, SessionTurn, StoreWriter, TransitionState};
+    use super::{EffectMutation, IdempotencyCreate, SessionTurn, StoreWriter, TransitionState};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -1688,6 +1824,202 @@ mod tests {
         );
 
         pool.close().await;
+    }
+
+    // ---- ACP slice b (issue #57 ticket 01): CreateTask idempotency ----
+
+    /// Same-transaction record: the key row (fingerprint + stored Ok
+    /// response) lands iff the task + seq-0 journal event land, and the
+    /// stored response mirrors the gateway success payload exactly.
+    #[tokio::test]
+    async fn create_task_with_idempotency_records_response_atomically() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        let turn = store
+            .create_task_with_idempotency(
+                "t1",
+                "s",
+                "w",
+                "obj",
+                "Created",
+                "{}",
+                "{}",
+                IdempotencyCreate {
+                    key: "k1",
+                    fingerprint: "fp1",
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(turn, 1, "the minted turn stamp is returned");
+
+        let row = store
+            .lookup_idempotency("s", "k1")
+            .await
+            .unwrap()
+            .expect("key row committed with the task");
+        assert_eq!(row.fingerprint, "fp1");
+        let payload: serde_json::Value = serde_json::from_str(&row.response_json).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({"task_id": "t1", "status": "Created", "turn_seq": 1}),
+            "stored response mirrors the gateway CreateTask payload"
+        );
+        assert_eq!(store.task_turn_seq("t1").await.unwrap(), Some(1));
+        assert!(
+            store
+                .lookup_idempotency("s", "never-seen")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Unique race at the store seam: a duplicate `(session_id, key)`
+    /// fails the WHOLE create — the racer's task row rolls back — and
+    /// the winner's record stays byte-stable for replay.
+    #[tokio::test]
+    async fn duplicate_idempotency_key_rolls_back_the_entire_create() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .create_task_with_idempotency(
+                "t1",
+                "s",
+                "w",
+                "obj",
+                "Created",
+                "{}",
+                "{}",
+                IdempotencyCreate {
+                    key: "k",
+                    fingerprint: "fp1",
+                },
+            )
+            .await
+            .unwrap();
+        let clash = store
+            .create_task_with_idempotency(
+                "t2",
+                "s",
+                "w",
+                "obj2",
+                "Created",
+                "{}",
+                "{}",
+                IdempotencyCreate {
+                    key: "k",
+                    fingerprint: "fp1",
+                },
+            )
+            .await;
+        assert!(clash.is_err(), "UNIQUE (session_id, key) rejects the racer");
+        assert_eq!(
+            store.task_turn_seq("t2").await.unwrap(),
+            None,
+            "no half-created task row survives"
+        );
+        assert_eq!(store.load_session_turns("s").await.unwrap().len(), 1);
+        let row = store.lookup_idempotency("s", "k").await.unwrap().unwrap();
+        assert_eq!(row.fingerprint, "fp1");
+        let payload: serde_json::Value = serde_json::from_str(&row.response_json).unwrap();
+        assert_eq!(
+            payload["task_id"], "t1",
+            "the winner's stored response is untouched"
+        );
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Same key, different fingerprint: the store still refuses the whole
+    /// create (it cannot tell fingerprints apart — the gateway maps this
+    /// to `idempotency_key_conflict`) and keeps the ORIGINAL record.
+    #[tokio::test]
+    async fn fingerprint_mismatch_under_same_key_leaves_original_intact() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .create_task_with_idempotency(
+                "t1",
+                "s",
+                "w",
+                "first",
+                "Created",
+                "{}",
+                "{}",
+                IdempotencyCreate {
+                    key: "k",
+                    fingerprint: "fp1",
+                },
+            )
+            .await
+            .unwrap();
+        let mismatch = store
+            .create_task_with_idempotency(
+                "t2",
+                "s",
+                "w",
+                "second",
+                "Created",
+                "{}",
+                "{}",
+                IdempotencyCreate {
+                    key: "k",
+                    fingerprint: "fp2",
+                },
+            )
+            .await;
+        assert!(mismatch.is_err(), "the mismatched create never commits");
+        assert_eq!(store.task_turn_seq("t2").await.unwrap(), None);
+        let row = store.lookup_idempotency("s", "k").await.unwrap().unwrap();
+        assert_eq!(
+            row.fingerprint, "fp1",
+            "the first-committed fingerprint is what a replay compares against"
+        );
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Crash-recovery atomicity at the store seam: after close + reopen
+    /// the record replays with byte-identical response JSON.
+    #[tokio::test]
+    async fn idempotency_record_survives_store_reopen_for_replay() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .create_task_with_idempotency(
+                "t1",
+                "s",
+                "w",
+                "obj",
+                "Created",
+                "{}",
+                "{}",
+                IdempotencyCreate {
+                    key: "k",
+                    fingerprint: "fp1",
+                },
+            )
+            .await
+            .unwrap();
+        let before = store.lookup_idempotency("s", "k").await.unwrap().unwrap();
+        store.close().await;
+
+        let reopened = StoreWriter::open(&dir).await.unwrap();
+        let after = reopened
+            .lookup_idempotency("s", "k")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before, after, "replay bytes survive the restart");
+        assert_eq!(reopened.task_turn_seq("t1").await.unwrap(), Some(1));
+        reopened.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ---- M11 D4: approval row machine (5-column schema, no migration) ----

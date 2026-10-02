@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# CreateTask idempotency (issue #57 ticket 01): deterministic BLAKE3
+# fingerprint over the canonical request identity; already in the tree.
+blake3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tachyon-core = { workspace = true }

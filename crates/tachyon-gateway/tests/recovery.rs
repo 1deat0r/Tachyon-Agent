@@ -64,6 +64,7 @@ async fn restart_recovers_task_and_continues() {
         Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "gate probe".to_owned(),
+            idempotency_key: None,
         },
     )
     .await;

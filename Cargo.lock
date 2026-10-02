@@ -2566,6 +2566,7 @@ name = "tachyon-gateway"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "blake3",
  "serde",
  "serde_json",
  "tachyon-core",
@@ -2728,6 +2729,7 @@ name = "tachyon-store"
 version = "0.0.1"
 dependencies = [
  "serde",
+ "serde_json",
  "sqlx",
  "tachyon-types",
  "thiserror 2.0.20",

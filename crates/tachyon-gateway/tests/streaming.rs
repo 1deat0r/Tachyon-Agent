@@ -174,6 +174,7 @@ async fn seeded_task(client: &mut Client, messages: u32) -> (String, String) {
         .call(Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "stream probe".to_owned(),
+            idempotency_key: None,
         })
         .await;
     let task_id = task["task_id"].as_str().unwrap().to_owned();

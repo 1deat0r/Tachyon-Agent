@@ -72,6 +72,7 @@ async fn rooted_session_with_history(socket: &Path, ws: &Path) -> (String, Vec<S
             Command::CreateTask {
                 session_id: session_id.parse().unwrap(),
                 objective: format!("history turn {i}"),
+                idempotency_key: None,
             },
         )
         .await;
@@ -257,6 +258,7 @@ async fn session_history_fetch_is_read_only_and_mints_no_state() {
         Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "read-only probe".to_owned(),
+            idempotency_key: None,
         },
     )
     .await;

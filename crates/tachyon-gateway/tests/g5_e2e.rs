@@ -183,6 +183,7 @@ async fn g5_run_reaches_durable_completed_with_live_events_and_untouched_fixture
         Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: OBJECTIVE.to_owned(),
+            idempotency_key: None,
         },
     )
     .await;

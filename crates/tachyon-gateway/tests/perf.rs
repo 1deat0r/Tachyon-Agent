@@ -131,6 +131,7 @@ async fn seeded_task(client: &mut Client) -> String {
         .call(Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "m13 perf task".to_owned(),
+            idempotency_key: None,
         })
         .await;
     task["task_id"].as_str().unwrap().to_owned()
@@ -282,6 +283,7 @@ async fn e2e_create_task_to_first_replayed_entry() {
             .call(Command::CreateTask {
                 session_id,
                 objective: "m15 ttfr warmup".to_owned(),
+                idempotency_key: None,
             })
             .await;
         let task_id: tachyon_types::TaskId = task["task_id"].as_str().unwrap().parse().unwrap();
@@ -298,6 +300,7 @@ async fn e2e_create_task_to_first_replayed_entry() {
             command: Command::CreateTask {
                 session_id,
                 objective: "m15 ttfr measured task".to_owned(),
+                idempotency_key: None,
             },
         };
         let create_bytes = encode_frame(&create_request).expect("encode CreateTask request");

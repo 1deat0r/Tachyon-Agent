@@ -268,6 +268,7 @@ async fn get_session_is_read_only() {
         Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "work after fetch".to_owned(),
+            idempotency_key: None,
         },
     )
     .await;

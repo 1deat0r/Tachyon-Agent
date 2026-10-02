@@ -97,6 +97,7 @@ pub async fn new_task(socket: &Path) -> String {
         Command::CreateTask {
             session_id: session_id.parse().unwrap(),
             objective: "gateway test task".to_owned(),
+            idempotency_key: None,
         },
     )
     .await;

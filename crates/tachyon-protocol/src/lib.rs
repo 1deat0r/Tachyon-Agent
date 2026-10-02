@@ -135,6 +135,17 @@ pub enum Command {
         session_id: SessionId,
         /// User's objective in plain text.
         objective: String,
+        /// Optional **Idempotency key** (CONTEXT.md glossary): opaque,
+        /// 1..=128 bytes, scoped to `(session_id, key)`. When present, a
+        /// retry with the same key and an identical request replays the
+        /// stored success response verbatim (no duplicate task or turn);
+        /// reuse with a different request fails with the typed
+        /// `idempotency_key_conflict`. An empty or oversized key fails
+        /// with `invalid_idempotency_key`. Absent (`None`) keeps legacy
+        /// behavior: every send creates a new task. Distinct from
+        /// effect-level idempotency (spec §19 `Idempotency`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     /// List tasks, optionally restricted to one session.
     ListTasks {
@@ -411,6 +422,7 @@ mod tests {
             command: Command::CreateTask {
                 session_id: SessionId::generate(),
                 objective: "Where is refreshToken defined and used?".to_owned(),
+                idempotency_key: None,
             },
         }
     }
