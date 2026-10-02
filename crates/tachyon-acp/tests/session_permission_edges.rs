@@ -216,3 +216,57 @@ async fn cancel_resolves_the_pending_request_locally_then_reports_cancelled() {
         "the zero-decision outcome is logged: {stderr}"
     );
 }
+
+/// S2 (M2a): a `session/request_permission` answer that arrives AFTER
+/// the cancel resolved its slot finds no armed slot — it drops with a
+/// log line, never panics, never reaches the gateway (zero Approve),
+/// and the prompt still settles `cancelled`.
+#[tokio::test]
+async fn late_permission_answer_after_cancel_is_ignored() {
+    let dir = test_dir();
+    let fixture = ScriptedGateway::start(&dir, cancel_during_request_script());
+    let mut adapter = Adapter::spawn(&dir);
+
+    let request = park_until_request(&mut adapter).await;
+    adapter.send(&cancel_line(2)).await;
+    let (_pre_cancel, cancel_reply) = adapter.read_until_response(json!(2), WAIT).await;
+    assert_eq!(cancel_reply, r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+
+    // The LATE answer: `allow_once` for the slot the cancel already
+    // resolved. It must find nothing to route to.
+    adapter
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{},"result":{{"outcome":"selected","optionId":"allow_once"}}}}"#,
+            request["id"]
+        ))
+        .await;
+
+    let (post_cancel, prompt_reply) = adapter.read_until_response(json!(1), WAIT).await;
+    assert!(
+        post_cancel.is_empty(),
+        "the late answer must emit nothing: {post_cancel:?}"
+    );
+    let prompt = parse_frame(&prompt_reply);
+    assert_eq!(
+        prompt["result"]["stopReason"], "cancelled",
+        "a late allow can never change the verdict: {prompt_reply}"
+    );
+
+    // No gateway call: the dropped answer never became a decision.
+    assert!(
+        fixture.approvals_seen().is_empty(),
+        "a late answer must never grant: {:?}",
+        fixture.approvals_seen()
+    );
+    assert!(fixture.denies_seen().is_empty());
+    assert_eq!(fixture.cancels_seen(), [SCRIPT_TASK_ID.to_owned()]);
+    fixture.shutdown();
+
+    adapter.close_stdin();
+    let (_rest, stderr, exit_ok) = adapter.finish().await;
+    assert!(exit_ok, "a dropped late answer never panics: {exit_ok}");
+    assert!(
+        stderr.contains("response frame has no armed slot"),
+        "the drop is logged at info level: {stderr}"
+    );
+}

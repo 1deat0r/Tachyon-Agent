@@ -91,15 +91,22 @@ where
                     Parsed::Response(response) => {
                         // An answer to an adapter-minted outbound request
                         // (`session/request_permission`) goes to the turn
-                        // waiting on its armed slot; anything else is
-                        // unsolicited and is ignored safely.
+                        // waiting on its armed slot; anything else — a
+                        // LATE answer after a cancel resolved its slot,
+                        // or a purely unsolicited frame — is dropped
+                        // locally at info level: no panic, no gateway
+                        // call, never routed to a different waiter.
                         if handler.state.requests().route(&response) {
                             tracing::debug!(
                                 id = ?response.id,
                                 "routed an outbound request response to its waiting turn"
                             );
                         } else {
-                            tracing::debug!("ignoring unsolicited response frame");
+                            tracing::info!(
+                                id = ?response.id,
+                                "response frame has no armed slot; dropping it \
+                                 (late or unsolicited)"
+                            );
                         }
                     }
                     Parsed::Failure(failure) => {

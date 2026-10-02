@@ -13,8 +13,8 @@
     - [x] N1a1 Byte-pin: zero Approve/Deny frames appear between cancel and prompt reply
     - [x] N1a2 Regression: `cancel_mid_turn_awaits_the_drain_ack...` from task 03 of the adapter slice still green
   - [x] M1c No deadlock: inline cancel never awaits the client answer it just invalidated
-- [ ] S2 Delayed client answer after cancel ⇒ ignored locally · Verify: `late_permission_answer_after_cancel_is_ignored`
-  - [ ] M2a Response arriving for a disarmed id drops with a log line; no panic, no gateway call
+- [x] S2 Delayed client answer after cancel ⇒ ignored locally · Verify: `late_permission_answer_after_cancel_is_ignored`
+  - [x] M2a Response arriving for a disarmed id drops with a log line; no panic, no gateway call
 - [ ] S3 TURN_TIMEOUT suspended while a request is outstanding · Verify: `turn_timeout_is_suspended_during_an_outstanding_request`
   - [ ] M3a Pause the deadline when a request arms; resume with full remaining budget after resolution
     - [ ] N3a1 Bound-crossing test: held request outlives 300 s window without `turn_timed_out`
