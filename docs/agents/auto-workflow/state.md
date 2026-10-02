@@ -212,6 +212,11 @@ updated: 2026-10-02T05:54:51Z
 
 2026-10-02T08:31:15Z EVENT commit 31852c0 (feat(acp): ACP v1 stdio adapter: initialize, session lifecycle, prompt turns, cancel (#57)) pre-verified cargo verify exit 0 (staged-tree worktree: tachyon-acp 55/55, docs_freshness 10/10), pushed
 
+2026-10-02T08:39:31Z EVENT commit 09cfe18 (feat(acp): session/request_permission permission bridge: journal-driven ask and allow path (#57)) pre-verified cargo verify exit 0 (working tree == index: tachyon-acp 65/65, docs_freshness 10/10), pushed
+
+2026-10-02T09:28:20Z EVENT task: AGENTS.md token trim — 4 duplication spots removed (dup sentence, halved Local-first prose, 3 subsections -> References bullets); 670->579 words (-13.6%); ISSUE_TEMPLATE section-name references preserved
+2026-10-02T09:28:20Z EVENT incident (root-caused, FIXED): first post-trim verify failed on tachyon-repo projection (NotFound on own source) — cause: backlog rounds built verify-worktree artifacts into the SHARED repo target/, baking deleted /tmp/opencode CARGO_MANIFEST_DIR paths into test binaries (grep confirmed /tmp/opencode in projection-23e2106a + others); NOT AGENTS.md-related; cargo clean removed 188.7GiB contaminated target, fresh cargo verify exit 0 with 137 ok suites; lesson for any future worktree-verify: use an ISOLATED CARGO_TARGET_DIR, never the repo's
+
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
 status: running

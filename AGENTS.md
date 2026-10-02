@@ -4,9 +4,7 @@ This repository implements Tachyon. These instructions apply to all coding agent
 
 ## Architecture and context
 
-Architecture-level requirements are defined by `docs/01_ARCHITECTURE_FREEZE.md`, the implementation contract by `docs/02_IMPLEMENTATION_SPEC.md`, and milestone dependencies by `docs/04_IMPLEMENTATION_PLAN.md`. Consult the relevant sections and ADRs for the change; do not silently reinterpret architecture-level requirements or read unrelated documents by default.
-
-Do not silently reinterpret architecture-level requirements.
+Architecture requirements: `docs/01_ARCHITECTURE_FREEZE.md`; implementation contract: `docs/02_IMPLEMENTATION_SPEC.md`; milestone dependencies: `docs/04_IMPLEMENTATION_PLAN.md`. Consult the relevant sections and ADRs for the change; never silently reinterpret architecture-level requirements or read unrelated documents by default.
 
 ## Priority order
 
@@ -80,19 +78,13 @@ Implement these only after the MVP exit gate or an approved ADR.
 
 ## Local-first development
 
-Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the default local loop, verification tiers, and atomic commits. For routine work, implement in the current working tree, run `cargo verify`, inspect the diff, and commit directly to `main` — **atomically**: one logical change per commit, every commit compiling and `--locked`-clean on its own (the `post-commit` hook pushes each one to `1deat0r/Tachyon-Agent` immediately, so an intermediate commit is a published commit). Never end a session with verified work left uncommitted, and never squash unrelated changes together to save a round trip. Pull requests and GitHub CI are retired: this repository lands every verified change as a direct commit to `main`, gated only by local `cargo verify`. Do not add an Issue, branch, PR, hook, or CI wait — by convention or otherwise. Skills may provide planning, implementation, TDD, review, and debugging techniques, but their default process steps do not override this repository policy.
+Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the local loop, verification tiers, and atomic commits. Routine work: implement in the working tree, run `cargo verify`, inspect the diff, commit directly to `main` — one logical change per commit, each compiling and `--locked`-clean on its own. The `post-commit` hook pushes every commit to `1deat0r/Tachyon-Agent` immediately, so an intermediate commit is a published commit; never end a session with verified work uncommitted, and never squash unrelated changes. Pull requests and GitHub CI are retired — direct commits to `main`, gated only by local `cargo verify`; add no Issue, branch, PR, hook, or CI wait. Skill process steps never override this policy.
 
-### Optional GitHub tracking
+### References
 
-The canonical remote is `1deat0r/Tachyon-Agent`. Use GitHub Issues and Wayfinder maps only when persistent shared tracking materially helps; see [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
-
-### Triage labels
-
-Canonical roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`; plus `type/*`, `comp/*`, `P0`–`P3`, `needs-repro`, and `wayfinder:*`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-This is a single-context repo: consult root `CONTEXT.md` and relevant ADRs when domain language or decisions are involved. Architecture references remain authoritative where applicable. See [`docs/agents/domain.md`](docs/agents/domain.md).
+- Canonical remote `1deat0r/Tachyon-Agent`; GitHub Issues/Wayfinder maps only when persistent shared tracking materially helps — [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+- Triage label vocabulary: [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+- Single-context repo: consult `CONTEXT.md` and relevant ADRs for domain language/decisions — [`docs/agents/domain.md`](docs/agents/domain.md).
 
 ## Runtime behavior
 
