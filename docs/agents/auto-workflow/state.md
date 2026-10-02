@@ -223,6 +223,8 @@ updated: 2026-10-02T05:54:51Z
 
 2026-10-02T10:09:27Z EVENT task 3/4: skill rule 16 — LOG events <=40 words + evidence path. dotfiles ca07f03.
 
+2026-10-02T10:09:32Z EVENT task 4/4: skill rule 17 — 2-pass reviews, docs-only spot-check; Phase 7 amended. dotfiles aaa4235.
+
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
 status: running
