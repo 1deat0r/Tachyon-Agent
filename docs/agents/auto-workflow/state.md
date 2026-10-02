@@ -219,6 +219,8 @@ updated: 2026-10-02T05:54:51Z
 
 2026-10-02T10:08:59Z EVENT task 1/4: skill rule 14 — subagent reports write to evidence/, return verdict+path only. dotfiles 1f9c9b5.
 
+2026-10-02T10:09:04Z EVENT task 2/4: skill rule 15 — scout output persists to evidence/, briefs cite paths. dotfiles 363e285.
+
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
 status: running
