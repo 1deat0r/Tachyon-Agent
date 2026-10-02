@@ -1,7 +1,7 @@
 # TASK 03: Cancel interaction, timeout suspension, orphan fallback
 
-**Status:** pending (blocked by 02)
-**Blocked by:** 02
+**Status:** done
+**Blocked by:** None (02 complete)
 **What to build:** Three contracts that keep the bridge honest under stress. (1) `session/cancel` while a permission request is outstanding: resolve the request locally as `cancelled` with zero decision frames (the gateway expires the parked row before its terminal journal; a late Approve would typed-fail), then the drain-ack ordering re-pins: cancel reply → prompt `stopReason: cancelled`. Inline cancel must not deadlock against a pending client response. (2) `TURN_TIMEOUT` suspended while a request is outstanding; cancel and disconnect remain the unblock paths; document it. (3) Orphan fallback: a park observed with no `approval_request` frame after a bound ⇒ typed `approval_required` (never a silent hang, never a false request).
 **Verify:** cancel-during-request ordering test; timeout-suspension proof; orphan fallback test; `cargo verify` exit 0 at task end.
 
@@ -22,6 +22,6 @@
 - [x] S4 Orphan fallback: WaitingApproval with no ask frame within the bound ⇒ typed `approval_required` · Verify: `orphaned_park_falls_back_to_approval_required`
   - [x] M4a Tighten the interim grace into the orphan bound; keep the request-less stub test green
   - [x] M4b Emit no false request when no frame ever arrives
-- [ ] S5 Capability doc final pass + full regression · Verify: `cargo verify` exit 0; all acp suites green
-  - [ ] M5a Cancellation, retry, timeout, fallback sections match shipped behavior with real test names
-  - [ ] M5b Full suite: tasks 01+02 tests unmodified and green
+- [x] S5 Capability doc final pass + full regression · Verify: `cargo verify` exit 0; all acp suites green
+  - [x] M5a Cancellation, retry, timeout, fallback sections match shipped behavior with real test names
+  - [x] M5b Full suite: tasks 01+02 tests unmodified and green
