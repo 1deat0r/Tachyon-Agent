@@ -74,6 +74,13 @@ const DENY_SETTLE_GRACE: Duration = Duration::from_secs(5);
 /// names the ACP client as the refusing party (ADR-0005:47).
 const DENY_REASON_REJECTED: &str = "the ACP client rejected the permission request (reject_once)";
 
+/// The `Command::Deny` reason for a STANDALONE `outcome: cancelled`
+/// answer (no `session/cancel` in flight): there is no approval to
+/// grant, so the exchange fails closed, naming the ACP client
+/// (ADR-0005:49 — `cancelled` belongs to the cancel contract).
+const DENY_REASON_CANCELLED: &str =
+    "the ACP client answered cancelled with no session/cancel in flight; no approval granted";
+
 /// Overlap refusal message: ACP v1 turns are sequential and are never
 /// queued behind one another.
 const TURN_IN_PROGRESS: &str = "Turn already active for this session; prompts run sequentially";
@@ -531,11 +538,15 @@ enum PendingDecision {
 enum ClientAnswer {
     /// `selected` + `allow_once`: grant through `Command::Approve`.
     Grant,
-    /// `selected` + `reject_once`: refuse through `Command::Deny`,
-    /// carrying the reason that names the ACP client.
+    /// `selected` + `reject_once`, or an invalid shape: refuse through
+    /// `Command::Deny`, carrying a reason that names the ACP client.
     Deny(String),
-    /// Error frame, dropped slot, or an unvalidated shape: no verdict
-    /// from here — the turn fails typed (fail closed).
+    /// A session/cancel owns this exchange: decide NOTHING — no
+    /// Approve, no Deny (the cancel path resolves the request locally;
+    /// the turn settles from the gateway's terminal journal).
+    NoDecision,
+    /// Error frame or dropped slot: no verdict from here — the turn
+    /// fails typed (fail closed).
     Unresolved,
 }
 
@@ -716,12 +727,14 @@ fn classify_permission_answer(response: &Value) -> PermissionAnswer {
 
 /// Maps one received permission response onto the loop's action — the
 /// single funnel every client answer passes through before any Approve
-/// path: allow → grant, reject → `Deny`, invalid shape → fail-closed
-/// `Deny` + log (ADR-0005:47), `cancelled` → unresolved here (its
-/// cancel-in-flight contract decides it), and error frames / dropped
-/// slots → unresolved (typed refusal, never a verdict).
+/// path: allow → grant, reject/invalid shape → fail-closed `Deny` +
+/// log (ADR-0005:47), `cancelled` → standalone `Deny` + log when NO
+/// session/cancel owns the exchange, `NoDecision` when one does (the
+/// cancel path owns it — zero decision frames, never a double-decide),
+/// and error frames / dropped slots → unresolved (typed refusal).
 fn answer_action(
     response: Result<Result<Value, ErrorObject>, oneshot::error::RecvError>,
+    cancel_owns: bool,
 ) -> ClientAnswer {
     match response {
         Ok(Ok(value)) => match classify_permission_answer(&value) {
@@ -733,13 +746,24 @@ fn answer_action(
                 );
                 ClientAnswer::Deny(DENY_REASON_REJECTED.to_owned())
             }
+            PermissionAnswer::Cancelled if cancel_owns => {
+                tracing::info!(
+                    response = %value,
+                    "session/cancel owns this exchange; resolving the request locally, \
+                     no Approve/Deny issued"
+                );
+                ClientAnswer::NoDecision
+            }
             PermissionAnswer::Cancelled => {
+                // Standalone `cancelled`: no approval exists to grant,
+                // no cancel resolves this request — fail closed as a
+                // deny (ADR-0005:49; spec "Response contract").
                 tracing::warn!(
                     response = %value,
-                    "permission response is cancelled; no verdict from this branch — \
-                     the cancel contract resolves it"
+                    "standalone cancelled outcome with no session/cancel in flight; \
+                     no-approval ⇒ Deny (ADR-0005:49)"
                 );
-                ClientAnswer::Unresolved
+                ClientAnswer::Deny(DENY_REASON_CANCELLED.to_owned())
             }
             PermissionAnswer::Invalid { reason } => {
                 tracing::warn!(
@@ -898,6 +922,11 @@ pub(crate) struct SessionState {
     /// Reply slots for adapter-minted outbound requests (the serve loop
     /// routes client answers through these).
     requests: OutboundRequests,
+    /// Sessions whose `session/cancel` targeted the active turn and has
+    /// not yet been consumed by that turn's `cancelled` answer — the
+    /// route guard that keeps the turn from deciding an exchange the
+    /// cancel path owns (ADR-0005:49: zero decision frames on cancel).
+    cancels_in_flight: Mutex<HashSet<String>>,
 }
 
 impl SessionState {
@@ -905,6 +934,29 @@ impl SessionState {
     /// serve loop.
     pub(crate) fn requests(&self) -> &OutboundRequests {
         &self.requests
+    }
+    /// Marks that a `session/cancel` for `session_id` targeted the
+    /// active turn — called by the cancel pipeline before it awaits the
+    /// drain ack, so the turn's `cancelled` answer (routed afterwards)
+    /// finds the mark set. One mark per session; consumed by
+    /// [`SessionState::take_cancel_resolution`].
+    pub(crate) fn arm_cancel_resolution(&self, session_id: &str) {
+        self.cancels_in_flight
+            .lock()
+            .expect("cancel-mark lock")
+            .insert(session_id.to_owned());
+    }
+    /// Consumes the cancel mark: `true` when a `session/cancel` owns
+    /// the `cancelled` answer about to be decided (the turn sends no
+    /// decision), `false` for a standalone answer (fail closed as a
+    /// deny). First read wins — the mark is removed, so a later
+    /// spontaneous answer can never inherit it (no stale guard, no
+    /// missed deny).
+    pub(crate) fn take_cancel_resolution(&self, session_id: &str) -> bool {
+        self.cancels_in_flight
+            .lock()
+            .expect("cancel-mark lock")
+            .remove(session_id)
     }
     /// Takes the session's turn slot, or the overlap refusal when one
     /// is active. Callable only from the serve loop's request handler —
@@ -920,6 +972,12 @@ impl SessionState {
         if active.contains_key(session_id) {
             return Err(HandlerError::turn_in_progress());
         }
+        // A fresh turn inherits no cancel mark: any mark a prior turn
+        // left unconsumed belonged to that turn's exchange.
+        self.cancels_in_flight
+            .lock()
+            .expect("cancel-mark lock")
+            .remove(session_id);
         let (notice, _) = watch::channel(None);
         active.insert(session_id.to_owned(), notice.clone());
         drop(active);
@@ -1279,6 +1337,11 @@ async fn cancel_pipeline<C: Connector>(
         .await
         .map_err(|error| HandlerError::unavailable(&error))?;
     if let Some(task_id) = target {
+        // The cancel targets this session's active turn: mark it BEFORE
+        // anything is awaited, so the turn's `cancelled` answer (whenever
+        // it routes) finds the mark and sends zero decision frames
+        // (ADR-0005:49; the guard the permission bridge consults).
+        state.arm_cancel_resolution(&session_id.to_string());
         match conn.call(Command::CancelTask { task_id }).await {
             Ok(payload) => {
                 let status = payload
@@ -1554,9 +1617,16 @@ async fn stream_turn(
             // The single validation funnel (M2b): classified before
             // ANY branch can reach the Approve path — reject and
             // invalid shapes both become `Deny`, a dropped slot or an
-            // error frame stays a typed refusal, and `cancelled` waits
-            // for its cancel-contract branch.
-            let answer = answer_action(receiver.await);
+            // error frame stays a typed refusal, and `cancelled` is
+            // decided against the cancel mark: owned ⇒ no decision at
+            // all, standalone ⇒ fail-closed `Deny`.
+            let raw = receiver.await;
+            let cancelled = matches!(
+                &raw,
+                Ok(Ok(value)) if value.get("outcome").and_then(Value::as_str) == Some("cancelled")
+            );
+            let cancel_owns = cancelled && state.take_cancel_resolution(&session_id);
+            let answer = answer_action(raw, cancel_owns);
             drop(armed); // already routed (or abandoned): disarm is a no-op
             match answer {
                 ClientAnswer::Grant => {
@@ -1571,6 +1641,16 @@ async fn stream_turn(
                         tool_call_id,
                         reason,
                     };
+                }
+                ClientAnswer::NoDecision => {
+                    // The cancel path owns this exchange: it resolves
+                    // the request locally; this turn sends NO Approve
+                    // and NO Deny and keeps serving (the gateway's own
+                    // terminal journal settles the prompt).
+                    tracing::info!(
+                        %approval_id,
+                        "cancelled answer resolved by session/cancel; no decision issued"
+                    );
                 }
                 ClientAnswer::Unresolved => return Err(approval_parked()),
             }
@@ -2635,7 +2715,7 @@ mod tests {
                 ),
                 "{response} must classify invalid"
             );
-            let action = answer_action(Ok(Ok(response.clone())));
+            let action = answer_action(Ok(Ok(response.clone())), false);
             match action {
                 ClientAnswer::Deny(reason) => {
                     assert!(
@@ -2666,15 +2746,62 @@ mod tests {
             PermissionAnswer::Cancelled
         );
         assert!(matches!(
-            answer_action(Ok(Ok(json!({"outcome": "selected", "optionId": "allow_once"})))),
+            answer_action(Ok(Ok(json!({"outcome": "selected", "optionId": "allow_once"}))), false),
             ClientAnswer::Grant
         ));
-        // `cancelled` is a VALID shape: it is not an invalid-shape
-        // deny (its standalone/cancel-in-flight decision is the next
-        // small task's branch) — and it never grants.
+        // `cancelled` is a VALID shape: never an invalid-shape deny,
+        // and never a grant — its standalone/cancel-owned decision is
+        // the cancel contract's branch (S3).
         assert!(!matches!(
-            answer_action(Ok(Ok(json!({"outcome": "cancelled"})))),
-            ClientAnswer::Grant | ClientAnswer::Deny(_)
+            answer_action(Ok(Ok(json!({"outcome": "cancelled"}))), false),
+            ClientAnswer::Grant
         ));
+    }
+
+    /// S3 (M3a + M3b): a STANDALONE `cancelled` answer fails closed as
+    /// a `Deny` naming the ACP client (no approval exists to grant);
+    /// the same answer while a `session/cancel` owns the exchange
+    /// decides NOTHING (`NoDecision` — the cancel path resolves the
+    /// request locally, zero decision frames). The cancel mark is
+    /// per-session and consumed on first read, so a stale mark can
+    /// never suppress a later standalone deny.
+    #[test]
+    fn standalone_cancelled_denies_but_a_cancel_mark_blocks_a_decision() {
+        let standalone = answer_action(Ok(Ok(json!({"outcome": "cancelled"}))), false);
+        match standalone {
+            ClientAnswer::Deny(reason) => {
+                assert!(
+                    reason.contains("ACP client"),
+                    "the deny reason names the ACP client: {reason}"
+                );
+                assert!(
+                    reason.contains("cancelled"),
+                    "the deny reason says what happened: {reason}"
+                );
+            }
+            other => panic!("standalone cancelled must fail closed as Deny, got {other:?}"),
+        }
+
+        let owned = answer_action(Ok(Ok(json!({"outcome": "cancelled"}))), true);
+        assert!(
+            matches!(owned, ClientAnswer::NoDecision),
+            "a cancel-owned exchange sends no decision at all: {owned:?}"
+        );
+
+        // The mark itself: per-session, consumed once (first read wins).
+        let state = SessionState::default();
+        state.arm_cancel_resolution("s1");
+        assert!(
+            state.take_cancel_resolution("s1"),
+            "the cancel path's mark is found by its own session"
+        );
+        assert!(
+            !state.take_cancel_resolution("s1"),
+            "the mark is consumed; a later standalone answer can never inherit it"
+        );
+        assert!(
+            !state.take_cancel_resolution("s2"),
+            "marks are per-session"
+        );
     }
 }

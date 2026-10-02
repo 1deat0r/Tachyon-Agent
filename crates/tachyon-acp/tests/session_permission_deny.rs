@@ -216,3 +216,68 @@ async fn deny_settles_the_prompt_as_refusal() {
     let (rest, _stderr, exit_ok) = adapter.finish().await;
     assert!(exit_ok, "the refused turn ends cleanly: {rest:?}");
 }
+
+/// S3 — a STANDALONE `outcome: cancelled` (no `session/cancel` in
+/// flight) is a no-approval answer: it fails closed as exactly one
+/// gateway `Deny` (reason names the ACP client and the standalone
+/// cancelled outcome), the tool call closes `failed`, and the prompt
+/// settles `refusal` through the same bounded grace. Zero `Approve`.
+#[tokio::test]
+async fn standalone_cancelled_outcome_denies() {
+    let dir = test_dir();
+    let fixture = ScriptedGateway::start(&dir, deny_script());
+    let mut adapter = Adapter::spawn(&dir);
+    let started = Instant::now();
+
+    let request_id = park_until_request(&mut adapter).await;
+
+    // The client answers `cancelled` — but sent NO session/cancel.
+    adapter
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{request_id},"result":{{"outcome":"cancelled"}}}}"#
+        ))
+        .await;
+
+    let (updates, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        updates.len(),
+        1,
+        "only the tool_call_update failed precedes the response: {updates:?}"
+    );
+    assert_eq!(updates[0], golden_tool_call_failed());
+
+    let response = parse_frame(&response_line);
+    assert_eq!(
+        response["result"]["stopReason"], "refusal",
+        "a standalone cancelled answer settles refusal: {response_line}"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(4),
+        "the refusal comes from the grace default: {elapsed:?}"
+    );
+
+    // THE decision pin: exactly one `Deny`, parked identity, reason
+    // names the ACP client AND the standalone cancelled outcome;
+    // zero `Approve`.
+    let denies = fixture.denies_seen();
+    assert_eq!(denies.len(), 1, "exactly one Deny: {denies:?}");
+    assert_eq!(denies[0].0, SCRIPT_TASK_ID);
+    assert_eq!(denies[0].1, APPROVAL_ID);
+    assert!(
+        denies[0].2.contains("ACP client") && denies[0].2.contains("cancelled"),
+        "the reason names the client and the outcome: {}",
+        denies[0].2
+    );
+    assert!(
+        fixture.approvals_seen().is_empty(),
+        "a cancelled answer must never Approve"
+    );
+    assert_eq!(fixture.get_task_calls(), 3, "fresh + park + post-deny reads");
+    fixture.shutdown();
+
+    adapter.close_stdin();
+    let (rest, _stderr, exit_ok) = adapter.finish().await;
+    assert!(exit_ok, "the refused turn ends cleanly: {rest:?}");
+}
