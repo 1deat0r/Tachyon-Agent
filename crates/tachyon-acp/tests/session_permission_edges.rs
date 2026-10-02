@@ -13,7 +13,7 @@
 //!   `turn_timeout_is_suspended_during_an_outstanding_request` (S3),
 //!   and `orphaned_park_falls_back_to_approval_required` (S4) follow.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -279,5 +279,86 @@ async fn late_permission_answer_after_cancel_is_ignored() {
     assert!(
         stderr.contains("response frame has no armed slot"),
         "the drop is logged at info level: {stderr}"
+    );
+}
+
+/// S4 (M4a + M4b): an ORPHANED park — the ask frame arrives but
+/// carries no approval id, so the adapter refuses to invent one —
+/// emits ZERO frames (never a false request) and fails typed
+/// `-32004 approval_required` inside the tightened 2 s orphan bound:
+/// the bound actually waits (>= 1.5 s) and is tight (< 4.5 s, below
+/// the old 5 s interim grace); never a silent hang, never a guess.
+#[tokio::test]
+async fn orphaned_park_falls_back_to_approval_required() {
+    let dir = test_dir();
+    let script = Script {
+        get_tasks: vec![task_status("Executing"), task_status("WaitingApproval")],
+        subscribes: vec![Subscription {
+            replay: vec![],
+            post: vec![
+                Step::Journal {
+                    seq: 1,
+                    kind: "status",
+                    payload: status_payload("WaitingApproval"),
+                },
+                // The ask arrives but carries NO approval id: the
+                // adapter must never invent an approval from it.
+                Step::Journal {
+                    seq: 2,
+                    kind: "approval_request",
+                    payload: json!({"t": "ApprovalRequest", "v": {"request": {}}}),
+                },
+            ],
+        }],
+        approves: vec![],
+    };
+    let fixture = ScriptedGateway::start(&dir, script);
+    let mut adapter = Adapter::spawn(&dir);
+    let started = Instant::now();
+    adapter.send(&prompt_line(1)).await;
+    let (updates, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        updates.is_empty(),
+        "an id-less ask must never emit a false request: {updates:?}"
+    );
+    let response = parse_frame(&response_line);
+    assert!(
+        response.get("result").is_none(),
+        "an orphaned park fails typed, never guesses a verdict: {response_line}"
+    );
+    assert_eq!(response["error"]["code"], -32004, "reply: {response_line}");
+    assert_eq!(
+        response["error"]["data"],
+        json!("approval_required"),
+        "the parked-on-approval marker: {response_line}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(1500),
+        "the orphan bound actually waits: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(4500),
+        "the tightened 2 s orphan bound fires, not the old 5 s interim grace: {elapsed:?}"
+    );
+    assert!(
+        fixture.approvals_seen().is_empty(),
+        "an orphaned park decides nothing: {:?}",
+        fixture.approvals_seen()
+    );
+    assert!(fixture.denies_seen().is_empty());
+    assert_eq!(fixture.subscribe_cursors(), [0], "no resync involved");
+    fixture.shutdown();
+
+    adapter.close_stdin();
+    let (_rest, stderr, exit_ok) = adapter.finish().await;
+    assert!(
+        exit_ok,
+        "an orphaned park fails typed, not fatally: {exit_ok}"
+    );
+    assert!(
+        stderr.contains("carries no approval id"),
+        "the refused invention is logged: {stderr}"
     );
 }

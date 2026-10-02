@@ -19,9 +19,9 @@
   - [x] M3a Pause the deadline when a request arms; resume with full remaining budget after resolution
     - [x] N3a1 Bound-crossing test: held request outlives 300 s window without `turn_timed_out`
   - [x] M3b Document the suspension in the capability doc
-- [ ] S4 Orphan fallback: WaitingApproval with no ask frame within the bound ⇒ typed `approval_required` · Verify: `orphaned_park_falls_back_to_approval_required`
-  - [ ] M4a Tighten the interim grace into the orphan bound; keep the request-less stub test green
-  - [ ] M4b Emit no false request when no frame ever arrives
+- [x] S4 Orphan fallback: WaitingApproval with no ask frame within the bound ⇒ typed `approval_required` · Verify: `orphaned_park_falls_back_to_approval_required`
+  - [x] M4a Tighten the interim grace into the orphan bound; keep the request-less stub test green
+  - [x] M4b Emit no false request when no frame ever arrives
 - [ ] S5 Capability doc final pass + full regression · Verify: `cargo verify` exit 0; all acp suites green
   - [ ] M5a Cancellation, retry, timeout, fallback sections match shipped behavior with real test names
   - [ ] M5b Full suite: tasks 01+02 tests unmodified and green

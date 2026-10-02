@@ -96,14 +96,17 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(120);
 /// the prompt typed (never a silent gap, never an unbounded loop).
 const MAX_RESUBSCRIBES: u32 = 1;
 
-/// Bound on the wait for an `approval_request` frame after a park is
-/// observed (the `status → WaitingApproval` journal is written BEFORE
-/// the ask, so a settlement read can see the park a moment before the
-/// request frame arrives). Past it the turn falls back to the typed
-/// `approval_required` orphan refusal — never a silent hang, never a
-/// request invented from a snapshot. Interim bound: the orphan-fallback
-/// slice (ticket 03) tightens and documents it.
-const APPROVAL_REQUEST_GRACE: Duration = Duration::from_secs(5);
+/// THE orphan bound: how long a park may wait for its
+/// `approval_request` frame after the park is observed (the
+/// `status → WaitingApproval` journal is written BEFORE the ask, so a
+/// settlement read can see the park a moment before the request frame
+/// arrives). Tightened to 2 s by the orphan-fallback slice (ticket 03):
+/// the ask journals in the SAME supervisor command as the status —
+/// milliseconds in practice — so this is orders of magnitude above the
+/// real gap while keeping the typed fallback fast. Past it the turn
+/// falls back to the typed `approval_required` orphan refusal — never a
+/// silent hang, never a request invented from a snapshot.
+const APPROVAL_REQUEST_GRACE: Duration = Duration::from_secs(2);
 
 /// Bound on the settle wait after a written `Deny`: a terminal status
 /// may journal moments later; when none arrives (the gateway journals no
@@ -3259,5 +3262,21 @@ mod tests {
         // The full cycle: resolution runs `running()` (step 2's call).
         let resumed = TurnBudgetState::running();
         assert!(!resumed.suspended, "resolution resumes with a full budget");
+    }
+
+    /// S4 (M4a): the orphan bound is TIGHTENED to 2 s and is the one
+    /// documented bound — a park with no usable ask fails typed there
+    /// (the request-less stub test pins it end-to-end from inside the
+    /// bound; this unit pins the value the docs promise).
+    #[test]
+    fn the_orphan_bound_is_tightened_to_two_seconds() {
+        assert_eq!(APPROVAL_REQUEST_GRACE, Duration::from_secs(2));
+        let now = std::time::Instant::now();
+        let orphan = PermissionPhase::AwaitingRequest {
+            deadline: now + APPROVAL_REQUEST_GRACE,
+        };
+        let (deadline, expiry) = read_bound(&orphan).expect("a parked ask is bounded");
+        assert_eq!(expiry, ReadExpiry::Orphan);
+        assert!(deadline <= now + Duration::from_secs(2));
     }
 }
