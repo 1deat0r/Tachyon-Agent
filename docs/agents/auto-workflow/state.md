@@ -8,15 +8,16 @@ phase: 5
 fixed_point: 8c23b6e8a4fe7ec4e70d16829ef9147595a38d39
 spec: .scratch/acp-permission-bridge/spec.md
 baseline: 8c23b6e8a4fe7ec4e70d16829ef9147595a38d39 + dirty (57 porcelain entries; five verified slices uncommitted in tree: reconciliation + MCP stdio + cancellation-drain + env/secret + ACP adapter lifecycle)
-tickets: 01=ready 02=pending 03=pending
+tickets: 01=done 02=done 03=ready
 edges: 01->02 02->03 (direction: blocker->blocked)
-attempts: 01=1
+attempts: 01=1 02=1 03=1
 phase_entries: 2=1 3=1 4=1 5=1
 exec_count: 49
 polls: 0
 skills_pin: none
-updated: 2026-10-02T05:54:51Z
+updated: 2026-10-02T11:25:00Z
 ## LOG
+2026-10-02T11:25:00Z EVENT TASK 02 done as 5 small-task commits (b62dfce..dd5ae93), verify exit 0, 831 tests; evidence/phase5-2-ticket02.md. TASK 03 attempt 1 started.
 2026-10-01T21:06:02Z EVENT Phase 6 GREEN for ticket 01: cargo verify exit 0 (orchestrator full gate; implementer gate + red-green seam proof + neighbor suites independently confirmed: lib mcp_descriptor 4/4, mcp_pinned 4/4, mcp_gated_launch 17/17, mcp_env_isolation 1/1, mcp_mediated_call 10/10, secret_env_allowlist 1/1)
 2026-10-01T21:06:02Z EVENT ticket 01 -> done; frontier flip: 02 pending->ready (blocker 01 done); ticket 02 attempt 1 started (attempts: 02=1); frontier: 01=done 02=ready(in-progress) 03=ready
 2026-10-01T21:06:02Z EXEC 22 phase-5 (ticket 02)
