@@ -20,7 +20,7 @@
 - [x] S3 Standalone `cancelled` outcome ⇒ Deny + log · Verify: `standalone_cancelled_outcome_denies` (scripted)
   - [x] M3a Branch: `outcome: cancelled` with no cancel in flight ⇒ no-approval ⇒ Deny + log
   - [x] M3b Route guard: when session/cancel IS in flight, do not decide (ticket 03 owns that wiring); no double-decide
-- [ ] S4 Race pin: `approval {granted:false}` with no outstanding request ⇒ no panic, no double-settle · Verify: `late_deny_journal_with_no_request_is_handled` (scripted)
+- [x] S4 Race pin: `approval {granted:false}` with no outstanding request ⇒ no panic, no double-settle · Verify: `late_deny_journal_with_no_request_is_handled` (scripted)
 - [ ] S5 Capability doc wording + full regression (allow path + prior suites green) · Verify: `cargo verify` exit 0; docs test-name list updated
   - [ ] M5a Update docs/agents/acp-adapter-capability.md deny/refusal/fail-closed sections + test names
   - [ ] M5b Full suite: ticket 01 tests unmodified and green

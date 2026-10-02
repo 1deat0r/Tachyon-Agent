@@ -23,7 +23,8 @@ use serde_json::json;
 
 mod common;
 use common::scripted::{
-    SCRIPT_TASK_ID, Script, ScriptedGateway, Step, Subscription, status_payload, task_status,
+    SCRIPT_TASK_ID, Script, ScriptedGateway, Step, Subscription, status_payload, task_completed,
+    task_status,
 };
 use common::{Adapter, AdapterFrame, classify, parse_frame, test_dir};
 
@@ -280,4 +281,91 @@ async fn standalone_cancelled_outcome_denies() {
     adapter.close_stdin();
     let (rest, _stderr, exit_ok) = adapter.finish().await;
     assert!(exit_ok, "the refused turn ends cleanly: {rest:?}");
+}
+
+/// S4 — the race pin: a journalled `approval {granted:false}` arrives
+/// when NO permission request is (or ever was) outstanding. The
+/// adapter observes it (explicit log line), decides NOTHING — zero
+/// `Deny`, zero `Approve`, no panic — and the turn still settles from
+/// the journal's own status row: `end_turn` with the conversation tail,
+/// exactly one settlement read. No double-settle by construction:
+/// decisions come only from a validated client answer.
+#[tokio::test]
+async fn late_deny_journal_with_no_request_is_handled() {
+    let dir = test_dir();
+    let script = Script {
+        // Fresh-state read, then ONE settlement read after the status
+        // row the deny journal never affects.
+        get_tasks: vec![task_status("Executing"), task_completed("final answer")],
+        subscribes: vec![Subscription {
+            replay: vec![],
+            post: vec![
+                // The race: a deny decision journal with no request
+                // armed and no exchange in flight at all.
+                Step::Journal {
+                    seq: 1,
+                    kind: "approval",
+                    payload: json!({
+                        "t": "Approval",
+                        "v": {
+                            "approval": APPROVAL_ID,
+                            "granted": false,
+                            "reason": "the ACP client rejected the permission request (reject_once)",
+                        },
+                    }),
+                },
+                Step::Journal {
+                    seq: 2,
+                    kind: "status",
+                    payload: status_payload("Completed"),
+                },
+            ],
+        }],
+        approves: vec![],
+    };
+    let fixture = ScriptedGateway::start(&dir, script);
+    let mut adapter = Adapter::spawn(&dir);
+
+    adapter.send(&prompt_line(1)).await;
+    let (updates, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+
+    // The turn settles from the status row, exactly as if the deny
+    // journal never existed — the journal drove nothing.
+    assert!(
+        updates.is_empty(),
+        "a deny journal emits no ACP frames: {updates:?}"
+    );
+    let response = parse_frame(&response_line);
+    assert_eq!(
+        response["result"]["stopReason"], "end_turn",
+        "the late deny journal must not redirect the settlement: {response_line}"
+    );
+    assert_eq!(
+        response["result"]["content"][0]["text"], "final answer",
+        "reply: {response_line}"
+    );
+
+    // ZERO decisions: no double-settle, no panic, nothing issued.
+    assert!(
+        fixture.denies_seen().is_empty(),
+        "an observed deny journal must never mint a second Deny"
+    );
+    assert!(
+        fixture.approvals_seen().is_empty(),
+        "no Approve either"
+    );
+    assert_eq!(
+        fixture.get_task_calls(),
+        2,
+        "fresh read + one settlement read; the deny journal arms no read"
+    );
+    fixture.shutdown();
+
+    adapter.close_stdin();
+    let (rest, stderr, exit_ok) = adapter.finish().await;
+    assert!(
+        stderr.contains("journalled deny observed"),
+        "the deny journal is observed and logged, not acted on: {stderr}"
+    );
+    assert!(exit_ok, "the turn ends cleanly: {rest:?}");
 }

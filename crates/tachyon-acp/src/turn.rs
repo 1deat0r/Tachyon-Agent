@@ -1838,11 +1838,40 @@ fn process_replay(
     Ok(())
 }
 
+/// One journalled `approval` decision row: OBSERVATION ONLY — the
+/// adapter never decides from a journal (decisions come only from the
+/// client's validated answer through the single settlement slot). A
+/// late deny row arriving with no outstanding request therefore changes
+/// nothing: no panic, no second decision, no double-settle; the status
+/// journals that follow drive settlement as always.
+fn observe_approval_journal(payload: &Value) {
+    let value = payload.get("v").unwrap_or(payload);
+    let approval = value
+        .get("approval")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    match value.get("granted").and_then(Value::as_bool) {
+        Some(true) => tracing::debug!(
+            %approval,
+            "journalled grant observed; the adapter never decides from a journal"
+        ),
+        Some(false) => tracing::info!(
+            %approval,
+            "journalled deny observed; the adapter never decides from a journal \
+             (no double-settle)"
+        ),
+        None => tracing::debug!(
+            %approval,
+            "approval journal carries no granted flag; ignored"
+        ),
+    }
+}
+
 /// Forwards one journalled event (kind + raw payload) as ACP output:
 /// `agent_message` → a `session/update` chunk, `approval_request` →
 /// the permission exchange (`tool_call` announcement + request frame),
-/// settlement kinds arm the `GetTask` read, every other kind is
-/// omitted.
+/// `approval` → observation only (never a decision), settlement kinds
+/// arm the `GetTask` read, every other kind is omitted.
 fn handle_journal(
     kind: &str,
     payload: &Value,
@@ -1863,6 +1892,9 @@ fn handle_journal(
     }
     if kind == "approval_request" {
         bridge.ask(session_id, payload, emit, state)?;
+    }
+    if kind == "approval" {
+        observe_approval_journal(payload);
     }
     if is_settlement_signal(kind) {
         *settlement = Some(kind.to_owned());
