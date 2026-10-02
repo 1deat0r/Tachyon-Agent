@@ -146,10 +146,19 @@ struct ScriptState {
     /// Every `Deny` observed, as `(task_id, approval_id, reason)` in
     /// order — the fail-closed settlement pin (ticket 02).
     denies_seen: Mutex<Vec<(String, String, String)>>,
+    /// Every `CancelTask` observed, as task ids in order — the
+    /// drain-ack pin for a cancel during an outstanding permission
+    /// request (ticket 03).
+    cancels_seen: Mutex<Vec<String>>,
     /// `after_seq` of every `Subscribe` seen, in order.
     cursors: Mutex<Vec<i64>>,
     /// Total `GetTask` calls observed.
     get_task_calls: AtomicUsize,
+    /// One frame queue per live connection: the real gateway journals
+    /// to EVERY subscriber (the turn's subscription lives on a
+    /// different connection than a `CancelTask`), so fixture frames
+    /// that model a broadcast fan out through these queues.
+    fans: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<ServerFrame>>>,
 }
 
 impl ScriptState {
@@ -160,8 +169,23 @@ impl ScriptState {
             approves: Mutex::new(script.approves.into()),
             approvals_seen: Mutex::new(Vec::new()),
             denies_seen: Mutex::new(Vec::new()),
+            cancels_seen: Mutex::new(Vec::new()),
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
+            fans: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Pushes `frames` to every live connection (closed queues are
+    /// pruned first). The adapter sees exactly what a real gateway's
+    /// journal broadcast delivers to each subscriber.
+    fn broadcast(&self, frames: &[ServerFrame]) {
+        let mut fans = self.fans.lock().expect("fan lock");
+        fans.retain(|queue| !queue.is_closed());
+        for frame in frames {
+            for queue in fans.iter() {
+                let _ignored = queue.send(frame.clone());
+            }
         }
     }
 }
@@ -245,6 +269,18 @@ impl ScriptedGateway {
     #[must_use]
     pub fn denies_seen(&self) -> Vec<(String, String, String)> {
         self.state.denies_seen.lock().expect("denies lock").clone()
+    }
+
+    /// Every `CancelTask` the adapter issued, as task ids in call
+    /// order — proof the cancel pipeline reached the gateway's drain
+    /// acknowledgement with the active turn's task (ticket 03).
+    #[must_use]
+    pub fn cancels_seen(&self) -> Vec<String> {
+        self.state
+            .cancels_seen
+            .lock()
+            .expect("cancels lock")
+            .clone()
     }
 
     /// Stops accepting; connection handlers end on their own when the
@@ -361,6 +397,25 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             post = deny_post;
             result
         }
+        Command::CancelTask { task_id } => {
+            state
+                .cancels_seen
+                .lock()
+                .expect("cancels lock")
+                .push(task_id.to_string());
+            // The real supervisor journals the terminal `Cancelled`
+            // status to EVERY live subscriber — the turn's subscription
+            // is a different connection than this cancel — so the
+            // fixture BROADCASTS it (no `post` on this connection: one
+            // copy per subscriber, never doubled). The response itself
+            // is the drain acknowledgement.
+            state.broadcast(&[step_frame(Step::Journal {
+                seq: 6,
+                kind: "status",
+                payload: status_payload("Cancelled"),
+            })]);
+            ok(json!({ "task": task_status("Cancelled") }))
+        }
         Command::Subscribe { after_seq, .. } => {
             state.cursors.lock().expect("cursor lock").push(*after_seq);
             let subscription = state.subscribes.lock().expect("subscribe lock").pop_front();
@@ -397,18 +452,51 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
 
 /// Serves one adapter connection: request/response over the real frame
 /// protocol, with scripted pushes injected after each `Subscribe` ack
-/// and each `Approve` response.
-async fn serve_connection(mut stream: Stream, state: Arc<ScriptState>) -> std::io::Result<()> {
+/// and each `Approve` response, plus BROADCAST frames (the real gateway
+/// journals to every subscriber — a `CancelTask`'s terminal status
+/// reaches the turn's connection, not just the cancel's) delivered by a
+/// dedicated writer task, so a push can never corrupt an in-flight
+/// read. Reads stay with this task only; every write serializes
+/// through the shared writer.
+async fn serve_connection(stream: Stream, state: Arc<ScriptState>) -> std::io::Result<()> {
+    let (rd, wr) = tokio::io::split(stream);
+    let wr = Arc::new(tokio::sync::Mutex::new(wr));
+    let (fan_out, mut fan_in) = tokio::sync::mpsc::unbounded_channel::<ServerFrame>();
+    state.fans.lock().expect("fan lock").push(fan_out);
+    let fan_writer = Arc::clone(&wr);
+    let fan_task = tokio::spawn(async move {
+        while let Some(frame) = fan_in.recv().await {
+            let mut writer = fan_writer.lock().await;
+            if write_frame(&mut *writer, &frame).await.is_err() {
+                break;
+            }
+        }
+    });
+    let outcome = serve_requests(rd, &wr, &state).await;
+    fan_task.abort();
+    outcome
+}
+
+/// The sequential read side: each request is answered as ONE atomic
+/// write batch (response + scripted `post` frames hold the writer lock
+/// together), so a concurrent broadcast can never interleave mid-frame
+/// or mid-reaction.
+async fn serve_requests(
+    mut rd: tokio::io::ReadHalf<Stream>,
+    wr: &Arc<tokio::sync::Mutex<tokio::io::WriteHalf<Stream>>>,
+    state: &Arc<ScriptState>,
+) -> std::io::Result<()> {
     loop {
-        let Some(framed) = read_frame(&mut stream).await? else {
+        let Some(framed) = read_frame(&mut rd).await? else {
             return Ok(()); // adapter closed the connection
         };
         let (request, _): (RequestEnvelope, usize) =
             decode_frame(&framed).map_err(|error| std::io::Error::other(error.to_string()))?;
         let request_id = request.request_id;
-        let (result, post) = script_answer(&state, &request.command);
+        let (result, post) = script_answer(state, &request.command);
+        let mut writer = wr.lock().await;
         write_frame(
-            &mut stream,
+            &mut *writer,
             &ServerFrame::Response(ResponseEnvelope {
                 protocol_version: PROTOCOL_VERSION,
                 request_id,
@@ -417,32 +505,36 @@ async fn serve_connection(mut stream: Stream, state: Arc<ScriptState>) -> std::i
         )
         .await?;
         for step in post {
-            let frame = match step {
-                Step::Journal { seq, kind, payload } => ServerFrame::Event(EventEnvelope {
-                    seq,
-                    event_id: EventId::generate(),
-                    schema_version: PROTOCOL_VERSION,
-                    task_id: task_id(),
-                    timestamp: Timestamp::now(),
-                    event: GatewayEvent::Journal {
-                        kind: kind.to_owned(),
-                        payload,
-                    },
-                }),
-                Step::Resync { after_seq } => ServerFrame::Event(EventEnvelope {
-                    seq: after_seq,
-                    event_id: EventId::generate(),
-                    schema_version: PROTOCOL_VERSION,
-                    task_id: task_id(),
-                    timestamp: Timestamp::now(),
-                    event: GatewayEvent::ResyncRequired {
-                        task_id: task_id(),
-                        after_seq,
-                    },
-                }),
-            };
-            write_frame(&mut stream, &frame).await?;
+            write_frame(&mut *writer, &step_frame(step)).await?;
         }
+    }
+}
+
+/// One scripted step as the wire frame it pushes.
+fn step_frame(step: Step) -> ServerFrame {
+    match step {
+        Step::Journal { seq, kind, payload } => ServerFrame::Event(EventEnvelope {
+            seq,
+            event_id: EventId::generate(),
+            schema_version: PROTOCOL_VERSION,
+            task_id: task_id(),
+            timestamp: Timestamp::now(),
+            event: GatewayEvent::Journal {
+                kind: kind.to_owned(),
+                payload,
+            },
+        }),
+        Step::Resync { after_seq } => ServerFrame::Event(EventEnvelope {
+            seq: after_seq,
+            event_id: EventId::generate(),
+            schema_version: PROTOCOL_VERSION,
+            task_id: task_id(),
+            timestamp: Timestamp::now(),
+            event: GatewayEvent::ResyncRequired {
+                task_id: task_id(),
+                after_seq,
+            },
+        }),
     }
 }
 
@@ -451,7 +543,9 @@ fn task_id() -> TaskId {
 }
 
 /// Reads one length-prefixed frame; `None` at a clean EOF.
-async fn read_frame(stream: &mut Stream) -> std::io::Result<Option<Vec<u8>>> {
+async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
+) -> std::io::Result<Option<Vec<u8>>> {
     let mut prefix = [0_u8; FRAME_PREFIX_LEN];
     match stream.read_exact(&mut prefix).await {
         Ok(_) => {}
@@ -471,7 +565,10 @@ async fn read_frame(stream: &mut Stream) -> std::io::Result<Option<Vec<u8>>> {
     Ok(Some(framed))
 }
 
-async fn write_frame(stream: &mut Stream, frame: &ServerFrame) -> std::io::Result<()> {
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut W,
+    frame: &ServerFrame,
+) -> std::io::Result<()> {
     let bytes =
         encode_server_frame(frame).map_err(|error| std::io::Error::other(error.to_string()))?;
     stream.write_all(&bytes).await?;

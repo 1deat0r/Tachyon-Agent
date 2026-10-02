@@ -868,6 +868,10 @@ impl PermissionBridge {
             state: Arc::clone(state),
             id: request_id.clone(),
         };
+        // Register the session's outstanding request before the frame
+        // is queued: a `session/cancel` resolving locally looks the id
+        // up by session, and one landing in this window must find it.
+        state.mark_outstanding(session_id, request_id.clone());
         if emit
             .send(Outbound::request(
                 request_id,
@@ -886,6 +890,20 @@ impl PermissionBridge {
             %tool_call_id,
             "approval parked; session/request_permission emitted (allow_once + reject_once)"
         );
+        // Arm-time race: a cancel that marked this session BEFORE the
+        // ask armed will never get an answer from that client — resolve
+        // the fresh slot locally right now (the mark stays for the turn
+        // to consume as the cancel-owned guard). The reply slot's
+        // receiver buffers the payload until the turn awaits it, so the
+        // phase can be set after this.
+        if state.cancel_marked(session_id) {
+            state.resolve_outstanding_locally(session_id);
+            tracing::info!(
+                %approval_id,
+                "session/cancel marked before the ask armed; the request resolved \
+                 locally as cancelled"
+            );
+        }
         self.phase = PermissionPhase::Outstanding {
             receiver,
             armed,
@@ -927,6 +945,12 @@ pub(crate) struct SessionState {
     /// route guard that keeps the turn from deciding an exchange the
     /// cancel path owns (ADR-0005:49: zero decision frames on cancel).
     cancels_in_flight: Mutex<HashSet<String>>,
+    /// Session → the reply-slot id its turn currently has OUTSTANDING
+    /// (`session/request_permission` awaiting the client). The cancel
+    /// path resolves this slot locally through
+    /// [`SessionState::resolve_outstanding_locally`] — it never waits
+    /// for an answer the cancelling client will not send.
+    outstanding: Mutex<HashMap<String, RpcId>>,
 }
 
 impl SessionState {
@@ -958,6 +982,55 @@ impl SessionState {
             .expect("cancel-mark lock")
             .remove(session_id)
     }
+    /// Whether a `session/cancel` mark is set for `session_id` WITHOUT
+    /// consuming it — the arm-time race check: a request that arms
+    /// AFTER the cancel mark exists must resolve itself immediately
+    /// (its cancelling client will never answer it).
+    pub(crate) fn cancel_marked(&self, session_id: &str) -> bool {
+        self.cancels_in_flight
+            .lock()
+            .expect("cancel-mark lock")
+            .contains(session_id)
+    }
+    /// Registers the reply-slot id the session's turn now waits on.
+    pub(crate) fn mark_outstanding(&self, session_id: &str, id: RpcId) {
+        self.outstanding
+            .lock()
+            .expect("outstanding-request lock")
+            .insert(session_id.to_owned(), id);
+    }
+    /// Forgets the session's outstanding request (its exchange ended:
+    /// the answer arrived, or the slot resolved locally). A no-op when
+    /// nothing is registered.
+    pub(crate) fn clear_outstanding(&self, session_id: &str) {
+        self.outstanding
+            .lock()
+            .expect("outstanding-request lock")
+            .remove(session_id);
+    }
+    /// Resolves the session's outstanding permission request LOCALLY as
+    /// `{"outcome":"cancelled"}` and disarms its reply slot — the
+    /// cancel path's answer to M1a: no client round trip, no
+    /// Approve/Deny, no deadlock against an answer the cancelling
+    /// client will never send. Returns `true` when a slot was resolved
+    /// (idempotent: a second call finds nothing).
+    pub(crate) fn resolve_outstanding_locally(&self, session_id: &str) -> bool {
+        let id = self
+            .outstanding
+            .lock()
+            .expect("outstanding-request lock")
+            .remove(session_id);
+        let Some(id) = id else {
+            return false;
+        };
+        let cancelled = InboundResponse {
+            id,
+            payload: Ok(json!({ "outcome": "cancelled" })),
+        };
+        // `route` drops the slot as it delivers: resolving and
+        // disarming are one operation.
+        self.requests.route(&cancelled)
+    }
     /// Takes the session's turn slot, or the overlap refusal when one
     /// is active. Callable only from the serve loop's request handler —
     /// requests are read strictly sequentially, so the first caller
@@ -973,10 +1046,16 @@ impl SessionState {
             return Err(HandlerError::turn_in_progress());
         }
         // A fresh turn inherits no cancel mark: any mark a prior turn
-        // left unconsumed belonged to that turn's exchange.
+        // left unconsumed belonged to that turn's exchange. The same
+        // holds for a stale outstanding-request registration (its slot
+        // died with that turn; resolving it later would find nothing).
         self.cancels_in_flight
             .lock()
             .expect("cancel-mark lock")
+            .remove(session_id);
+        self.outstanding
+            .lock()
+            .expect("outstanding-request lock")
             .remove(session_id);
         let (notice, _) = watch::channel(None);
         active.insert(session_id.to_owned(), notice.clone());
@@ -1342,6 +1421,19 @@ async fn cancel_pipeline<C: Connector>(
         // it routes) finds the mark and sends zero decision frames
         // (ADR-0005:49; the guard the permission bridge consults).
         state.arm_cancel_resolution(&session_id.to_string());
+        // Resolve an outstanding permission request LOCALLY as
+        // `cancelled` (M1a): the cancelling client will never answer
+        // it, and the inline cancel must not wait on that answer (M1c
+        // — no deadlock). The gateway expires the parked row itself
+        // during `CancelTask`; a late client answer finds a disarmed
+        // slot and is ignored.
+        if state.resolve_outstanding_locally(&session_id.to_string()) {
+            tracing::info!(
+                %session_id,
+                "outstanding permission request resolved locally as cancelled; \
+                 no Approve/Deny issued"
+            );
+        }
         match conn.call(Command::CancelTask { task_id }).await {
             Ok(payload) => {
                 let status = payload
@@ -1621,6 +1713,11 @@ async fn stream_turn(
             // decided against the cancel mark: owned ⇒ no decision at
             // all, standalone ⇒ fail-closed `Deny`.
             let raw = receiver.await;
+            // The exchange is over the moment the receiver resolved:
+            // the session no longer has an outstanding request for the
+            // cancel path to find (its local resolution already ran, or
+            // this was the client's own answer).
+            state.clear_outstanding(&session_id);
             let cancelled = matches!(
                 &raw,
                 Ok(Ok(value)) if value.get("outcome").and_then(Value::as_str) == Some("cancelled")
@@ -2838,5 +2935,96 @@ mod tests {
             "the mark is consumed; a later standalone answer can never inherit it"
         );
         assert!(!state.take_cancel_resolution("s2"), "marks are per-session");
+    }
+
+    /// S1 (M1a): a `session/cancel` with an armed request resolves the
+    /// local reply slot as `cancelled` and disarms it — the waiting
+    /// turn wakes with a `cancelled` payload that funnels to
+    /// `NoDecision` (zero Approve/Deny), the resolution is idempotent,
+    /// and a LATE answer for the disarmed id routes nowhere (the S2
+    /// seam: no panic, no gateway call).
+    #[tokio::test]
+    async fn cancel_resolves_the_armed_slot_locally_without_a_decision() {
+        let state = Arc::new(SessionState::default());
+        let (id, receiver) = state.requests().arm();
+        state.mark_outstanding("s1", id.clone());
+        assert_eq!(state.requests().armed(), 1, "the reply slot is armed");
+
+        // The cancel pipeline's order: mark FIRST, then resolve.
+        state.arm_cancel_resolution("s1");
+        assert!(state.resolve_outstanding_locally("s1"));
+        assert_eq!(
+            state.requests().armed(),
+            0,
+            "the local resolution disarms the slot"
+        );
+        let payload = receiver
+            .await
+            .expect("the waiting turn is resolved, never hung")
+            .expect("the local resolution is a valid answer");
+        assert_eq!(payload, json!({ "outcome": "cancelled" }));
+
+        // The turn's funnel over that payload: the mark it observed
+        // routes it to NoDecision — no Approve, no Deny.
+        assert!(state.take_cancel_resolution("s1"), "the mark was set");
+        assert!(matches!(
+            answer_action(Ok(Ok(payload)), true),
+            ClientAnswer::NoDecision
+        ));
+
+        // Idempotent: nothing left to resolve or route.
+        assert!(!state.resolve_outstanding_locally("s1"));
+        let late = InboundResponse {
+            id,
+            payload: Ok(json!({"outcome": "selected", "optionId": "allow_once"})),
+        };
+        assert!(
+            !state.requests().route(&late),
+            "a late answer for the disarmed id routes nowhere"
+        );
+    }
+
+    /// S1 (arm-time race): a cancel mark set BEFORE the ask arms makes
+    /// the ask resolve its own fresh slot immediately — the exchange
+    /// can never wait on an answer a cancelling client will not send
+    /// (the hang the timeout suspension would otherwise make permanent).
+    #[tokio::test]
+    async fn ask_after_a_cancel_mark_self_resolves_its_fresh_slot() {
+        let state = Arc::new(SessionState::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let session = "01990f9e-1111-7000-8000-000000000000";
+        let ask = json!({
+            "t": "ApprovalRequest",
+            "v": {"request": {
+                "id": "01990f9e-5555-7000-8000-000000000000",
+                "summary": "Apply patch to src/lib.rs",
+            }},
+        });
+        state.arm_cancel_resolution(session);
+
+        let mut bridge = PermissionBridge::default();
+        bridge
+            .ask(session, &ask, &tx, &state)
+            .expect("the ask still emits its frames");
+        let _announcement = rx.try_recv().expect("tool_call queued");
+        let _request = rx.try_recv().expect("request queued");
+        assert_eq!(
+            state.requests().armed(),
+            0,
+            "the fresh slot resolved locally at arm time"
+        );
+
+        let taken = std::mem::replace(&mut bridge.phase, PermissionPhase::Idle);
+        let PermissionPhase::Outstanding { receiver, .. } = taken else {
+            panic!("the ask still lands in Outstanding: {taken:?}");
+        };
+        let raw = receiver.await;
+        let cancelled = matches!(
+            &raw,
+            Ok(Ok(value)) if value.get("outcome").and_then(Value::as_str) == Some("cancelled")
+        );
+        assert!(cancelled, "the local resolution carries cancelled");
+        assert!(state.take_cancel_resolution(session));
+        assert!(matches!(answer_action(raw, true), ClientAnswer::NoDecision));
     }
 }

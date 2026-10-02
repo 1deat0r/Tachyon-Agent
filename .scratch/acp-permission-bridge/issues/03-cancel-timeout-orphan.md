@@ -7,12 +7,12 @@
 
 ## Small tasks (each = one commit, in order)
 
-- [ ] S1 Cancel-during-outstanding-request: local `cancelled` resolution, zero decision frames, drain-ack order re-pinned · Verify: `cancel_resolves_the_pending_request_locally_then_reports_cancelled`
-  - [ ] M1a On session/cancel with an armed request: resolve the local oneshot as `cancelled`, disarm the slot, send NO Approve/Deny
-  - [ ] M1b Preserve frame order: request emitted → cancel reply (CancelTask drain ack) → prompt `stopReason: cancelled`
-    - [ ] N1a1 Byte-pin: zero Approve/Deny frames appear between cancel and prompt reply
-    - [ ] N1a2 Regression: `cancel_mid_turn_awaits_the_drain_ack...` from task 03 of the adapter slice still green
-  - [ ] M1c No deadlock: inline cancel never awaits the client answer it just invalidated
+- [x] S1 Cancel-during-outstanding-request: local `cancelled` resolution, zero decision frames, drain-ack order re-pinned · Verify: `cancel_resolves_the_pending_request_locally_then_reports_cancelled`
+  - [x] M1a On session/cancel with an armed request: resolve the local oneshot as `cancelled`, disarm the slot, send NO Approve/Deny
+  - [x] M1b Preserve frame order: request emitted → cancel reply (CancelTask drain ack) → prompt `stopReason: cancelled`
+    - [x] N1a1 Byte-pin: zero Approve/Deny frames appear between cancel and prompt reply
+    - [x] N1a2 Regression: `cancel_mid_turn_awaits_the_drain_ack...` from task 03 of the adapter slice still green
+  - [x] M1c No deadlock: inline cancel never awaits the client answer it just invalidated
 - [ ] S2 Delayed client answer after cancel ⇒ ignored locally · Verify: `late_permission_answer_after_cancel_is_ignored`
   - [ ] M2a Response arriving for a disarmed id drops with a log line; no panic, no gateway call
 - [ ] S3 TURN_TIMEOUT suspended while a request is outstanding · Verify: `turn_timeout_is_suspended_during_an_outstanding_request`
