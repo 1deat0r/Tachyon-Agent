@@ -174,7 +174,9 @@ async fn deny_settles_the_prompt_as_refusal() {
         "a deny settles refusal: {response_line}"
     );
     assert!(
-        response["result"]["content"].as_array().is_some_and(Vec::is_empty),
+        response["result"]["content"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
         "the refusal carries no invented content: {response_line}"
     );
 
@@ -275,7 +277,11 @@ async fn standalone_cancelled_outcome_denies() {
         fixture.approvals_seen().is_empty(),
         "a cancelled answer must never Approve"
     );
-    assert_eq!(fixture.get_task_calls(), 3, "fresh + park + post-deny reads");
+    assert_eq!(
+        fixture.get_task_calls(),
+        3,
+        "fresh + park + post-deny reads"
+    );
     fixture.shutdown();
 
     adapter.close_stdin();
@@ -350,10 +356,7 @@ async fn late_deny_journal_with_no_request_is_handled() {
         fixture.denies_seen().is_empty(),
         "an observed deny journal must never mint a second Deny"
     );
-    assert!(
-        fixture.approvals_seen().is_empty(),
-        "no Approve either"
-    );
+    assert!(fixture.approvals_seen().is_empty(), "no Approve either");
     assert_eq!(
         fixture.get_task_calls(),
         2,

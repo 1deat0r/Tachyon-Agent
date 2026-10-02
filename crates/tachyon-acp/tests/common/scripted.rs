@@ -244,11 +244,7 @@ impl ScriptedGateway {
     /// reason naming the ACP client (ticket 02).
     #[must_use]
     pub fn denies_seen(&self) -> Vec<(String, String, String)> {
-        self.state
-            .denies_seen
-            .lock()
-            .expect("denies lock")
-            .clone()
+        self.state.denies_seen.lock().expect("denies lock").clone()
     }
 
     /// Stops accepting; connection handlers end on their own when the

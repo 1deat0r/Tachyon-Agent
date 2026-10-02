@@ -1911,9 +1911,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        APPROVAL_REQUEST_GRACE, DENY_REASON_REJECTED, DENY_SETTLE_GRACE, ClientAnswer, HandlerError,
-        OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase, ReadExpiry,
-        SessionState, agent_chunk, answer_action, approval_ask, approval_parked,
+        APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE,
+        HandlerError, OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase,
+        ReadExpiry, SessionState, agent_chunk, answer_action, approval_ask, approval_parked,
         classify_permission_answer, final_prompt_result, is_allow_once, is_approval_parked,
         is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel, parse_prompt,
         parse_session_new, permission_request_params, read_bound, refusal_prompt_result,
@@ -2646,7 +2646,10 @@ mod tests {
         // The orphan park keeps its own branch (typed error, not a
         // verdict), and phases with no bound stay free.
         let orphan = PermissionPhase::AwaitingRequest { deadline: now };
-        assert_eq!(read_bound(&orphan).expect("parked ask is bounded").1, ReadExpiry::Orphan);
+        assert_eq!(
+            read_bound(&orphan).expect("parked ask is bounded").1,
+            ReadExpiry::Orphan
+        );
         assert_eq!(read_bound(&PermissionPhase::Idle), None);
         assert_eq!(read_bound(&PermissionPhase::Sent), None);
     }
@@ -2778,7 +2781,10 @@ mod tests {
             PermissionAnswer::Cancelled
         );
         assert!(matches!(
-            answer_action(Ok(Ok(json!({"outcome": "selected", "optionId": "allow_once"}))), false),
+            answer_action(
+                Ok(Ok(json!({"outcome": "selected", "optionId": "allow_once"}))),
+                false
+            ),
             ClientAnswer::Grant
         ));
         // `cancelled` is a VALID shape: never an invalid-shape deny,
@@ -2831,9 +2837,6 @@ mod tests {
             !state.take_cancel_resolution("s1"),
             "the mark is consumed; a later standalone answer can never inherit it"
         );
-        assert!(
-            !state.take_cancel_resolution("s2"),
-            "marks are per-session"
-        );
+        assert!(!state.take_cancel_resolution("s2"), "marks are per-session");
     }
 }
