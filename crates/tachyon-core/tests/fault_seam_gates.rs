@@ -66,3 +66,15 @@ async fn effect_barrier_seams_are_inert_unless_armed() {
             .unwrap_or_else(|_| panic!("unarmed {seam} must not park"));
     }
 }
+
+/// Cancellation drain: cancel.committed seam (ticket 03) is inert unless armed.
+#[tokio::test]
+async fn cancel_gates_commit_seam_inert_unless_armed() {
+    assert!(!is_armed("cancel.committed"));
+    tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        reach("cancel.committed"),
+    )
+    .await
+    .expect("unarmed cancel.committed must not park");
+}

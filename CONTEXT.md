@@ -38,6 +38,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | **Effect fixture** | Minimal keyed/queryable external-effect executor whose only job is proving spec §19 crash reconcile: `effects.state` `prepared` → `committed` around the remote call; recovery classifies interrupted rows. Not a general effect protocol. |
 | **Workspace pin / canonical root** | One durable canonical filesystem root for a run; policy, evidence, and mutation all read that same value (no second resolution). |
 | **Workspace lease** | Exclusive claim on a canonical workspace root for the life of a run (`workspace_busy` when contended). |
+| **Cancellation drain** | Cooperative shutdown where cancel first stops new work, waits for the driver and owned effect workers to exit, and only then acknowledges: the CancelTask response blocks on both driver exit and effect-worker drain, and a `Cancelled` status alone never proves drain (ADR-0005). |
 
 ## Security and judgment
 

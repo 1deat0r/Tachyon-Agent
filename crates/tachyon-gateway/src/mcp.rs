@@ -27,6 +27,7 @@ use tachyon_tools::credential::CredentialBroker;
 use tachyon_tools::process::INHERITED_ENV_KEYS;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio_util::sync::CancellationToken;
 
 /// MCP wire version the gateway offers in `initialize` and requires back
 /// in the child's response: any other `protocolVersion` is a typed
@@ -191,12 +192,19 @@ impl LiveMcpServer {
     /// `mcp_call_failed` — a child that dies mid-call is never silent
     /// success (the caller marks the server `stopped`). A JSON-RPC
     /// `error` answer fails as `mcp_tool_error` with the redacted detail.
+    /// Aborting is cooperative through `cancel` (the gateway cancels it
+    /// when the owning session's task is cancelled or the server is
+    /// reaped mid-call): the child is killed so the pipe read returns
+    /// promptly instead of waiting out the call bound, and the call
+    /// fails as `mcp_call_failed` — never success, even when the abort
+    /// wins the race after the answer already sat in the pipe.
     pub async fn call_tool(
         &mut self,
         server_id: &str,
         tool: &str,
         arguments: &serde_json::Value,
         secrets: &CredentialBroker,
+        cancel: &CancellationToken,
     ) -> Result<serde_json::Value, McpCallError> {
         let id = MCP_CALL_ID.fetch_add(1, Ordering::Relaxed);
         let mut line = serde_json::to_string(&serde_json::json!({
@@ -228,14 +236,28 @@ impl LiveMcpServer {
         let reply: serde_json::Value = loop {
             let mut reply_text = String::new();
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let bytes = tokio::time::timeout(remaining, self.stdout.read_line(&mut reply_text))
-                .await
-                .map_err(|_| {
-                    McpCallError::failed(format!(
-                        "server '{server_id}': tools/call timed out after {}s",
-                        CALL_TIMEOUT.as_secs()
-                    ))
-                })?;
+            // Driver cancel aborts the in-flight call: kill the child so
+            // the pipe read returns promptly instead of waiting out the
+            // 60 s bound. Biased toward the abort — a cancel that lands
+            // while the answer sits in the pipe still fails the call.
+            let read = tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    let _ = self.child.kill().await;
+                    let _ = self.stdin.shutdown().await;
+                    return Err(McpCallError::failed(format!(
+                        "server '{server_id}': tools/call aborted on cancel — outcome unknown, \
+                         retry needs a fresh approved call"
+                    )));
+                }
+                read = tokio::time::timeout(remaining, self.stdout.read_line(&mut reply_text)) => read,
+            };
+            let bytes = read.map_err(|_| {
+                McpCallError::failed(format!(
+                    "server '{server_id}': tools/call timed out after {}s",
+                    CALL_TIMEOUT.as_secs()
+                ))
+            })?;
             let bytes = bytes.map_err(|err| {
                 McpCallError::failed(format!(
                     "server '{server_id}': child stdout unreadable: {err}"
@@ -266,6 +288,15 @@ impl LiveMcpServer {
         };
         if let Some(error) = reply.get("error") {
             return Err(McpCallError::tool_error(error, secrets));
+        }
+        // The abort may have fired while the answer sat in the pipe: a
+        // cancelled call never reports success, even when the child
+        // answered before the kill landed.
+        if cancel.is_cancelled() {
+            return Err(McpCallError::failed(format!(
+                "server '{server_id}': tools/call aborted on cancel — outcome unknown, \
+                 retry needs a fresh approved call"
+            )));
         }
         let Some(result) = reply.get("result") else {
             return Err(McpCallError::failed(format!(

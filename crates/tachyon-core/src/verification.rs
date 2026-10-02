@@ -316,6 +316,14 @@ impl Loop {
             let _ = reply.send(Err(error));
             return;
         }
+        if target == TaskStatus::Cancelled {
+            // Ticket 03 fault seam: kill here = cancel-intent committed
+            // (the terminal journal row is durable) with the drain
+            // acknowledgement still pending. Recovery must keep
+            // `Cancelled` terminal while classifying interrupted effects
+            // via the §19 matrix — never silent success.
+            tachyon_tools::fault::reach("cancel.committed").await;
+        }
         self.acknowledge_after_drain(reply);
     }
 

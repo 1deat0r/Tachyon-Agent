@@ -117,15 +117,23 @@ struct GatewayState {
     /// while the durable audit trail lives in `mcp_approvals`.
     mcp_call_approvals: Mutex<HashMap<ApprovalId, McpPendingCall>>,
     /// Live MCP children (ticket 02), keyed by `(session_id, server_id)`.
-    /// A call holds this map's lock across its whole round trip (known
-    /// issue: head-of-line blocking across sessions; feeds the
-    /// cancellation-drain slice). Owned by the gateway, never by a
-    /// client connection: a disconnect leaves them running, and
-    /// dropping the map (shutdown) kills them through `kill_on_drop`.
-    mcp_live: Mutex<HashMap<McpLiveKey, LiveMcpServer>>,
+    /// Each child rides behind its own mutex: a call holds only its
+    /// server's lock across the round trip, so deny, cancel, and other
+    /// servers' calls never wait out one hung call's 60 s bound.
+    /// Owned by the gateway, never by a client connection: a disconnect
+    /// leaves them running, and dropping the map (shutdown) kills them
+    /// through `kill_on_drop`.
+    mcp_live: Mutex<HashMap<McpLiveKey, Arc<Mutex<LiveMcpServer>>>>,
+    /// Abort tokens for in-flight `tools/call` round trips, keyed like
+    /// the live map and shared by every call queued on that server
+    /// (refcounted: concurrent same-server calls observe the same
+    /// cancel). Task cancel and mid-call reap cancel these so the
+    /// in-flight future kills its child and fails promptly instead of
+    /// waiting out the call bound.
+    mcp_call_abort: Mutex<HashMap<McpLiveKey, (CancellationToken, usize)>>,
 }
 
-/// Key of the live-server map: owning session + server.
+/// Key of the live-server and call-abort maps: owning session + server.
 type McpLiveKey = (String, String);
 
 /// One parked MCP launch: the exact per-server spawn operations one
@@ -322,6 +330,7 @@ pub async fn start_with(
         mcp_approvals: Mutex::new(HashMap::new()),
         mcp_call_approvals: Mutex::new(HashMap::new()),
         mcp_live: Mutex::new(HashMap::new()),
+        mcp_call_abort: Mutex::new(HashMap::new()),
     });
     recover_incomplete(&state).await?;
     // Ticket 02: rows left `live` by a dead gateway fall back to `stopped`
@@ -1371,6 +1380,16 @@ async fn cancel_run(state: &Arc<GatewayState>, task_id: TaskId) -> CommandResult
         &outcome,
         CommandResult::Ok { payload } if payload["task"]["status"] == "Cancelled"
     );
+    if cancellation_acknowledged {
+        // Cancellation drain (ticket 01): the supervisor released its
+        // own parks; expire the gateway-side MCP parks of the cancelled
+        // task's session the same way, so no late approval can ever
+        // launch client-supplied code for a cancelled task. Gated on
+        // the ack — a cancel that never landed must not kill live parks.
+        if let Ok(Some(task)) = state.store.load_task(&task_id.to_string()).await {
+            expire_mcp_parks_for_cancel(state, &task.session_id).await;
+        }
+    }
     let release_admission =
         cancellation_acknowledged || task_terminal_or_missing(state, task_id).await;
     if release_admission {
@@ -2220,11 +2239,10 @@ async fn launch_one_mcp_server(
         "version": live.version,
         "tools": live.tools,
     });
-    state
-        .mcp_live
-        .lock()
-        .await
-        .insert((session_id.to_owned(), server_id.to_owned()), live);
+    state.mcp_live.lock().await.insert(
+        (session_id.to_owned(), server_id.to_owned()),
+        Arc::new(Mutex::new(live)),
+    );
     Ok(entry)
 }
 
@@ -2290,12 +2308,105 @@ async fn deny_mcp_servers(
     ok(json!({"servers": servers}))
 }
 
+/// Claims the abort token for one in-flight `tools/call` on `key`:
+/// every call queued on the same server shares the one token, so a
+/// cancel or reap reaches them all. The caller must pair this with
+/// [`release_call_abort`] once the round trip settles.
+async fn claim_call_abort(state: &Arc<GatewayState>, key: McpLiveKey) -> CancellationToken {
+    let mut in_flight = state.mcp_call_abort.lock().await;
+    let entry = in_flight
+        .entry(key)
+        .or_insert_with(|| (CancellationToken::new(), 0));
+    entry.1 += 1;
+    entry.0.clone()
+}
+
+/// Releases one [`claim_call_abort`] hold; drops the token once the
+/// last queued call on the server settles, so a later fresh call gets
+/// a fresh token (a stale cancelled token must never abort new work).
+async fn release_call_abort(state: &Arc<GatewayState>, key: &McpLiveKey) {
+    let mut in_flight = state.mcp_call_abort.lock().await;
+    if let Some((_, holders)) = in_flight.get_mut(key) {
+        *holders = holders.saturating_sub(1);
+        if *holders == 0 {
+            in_flight.remove(key);
+        }
+    }
+}
+
+/// Cancels the in-flight `tools/call` round trips matching `wanted`:
+/// each one's read loop kills its child and fails promptly as
+/// `mcp_call_failed` instead of waiting out the call bound.
+async fn abort_in_flight_calls(state: &Arc<GatewayState>, wanted: impl Fn(&McpLiveKey) -> bool) {
+    let tokens: Vec<CancellationToken> = {
+        let in_flight = state.mcp_call_abort.lock().await;
+        in_flight
+            .iter()
+            .filter(|(key, _)| wanted(key))
+            .map(|(_, (token, _))| token.clone())
+            .collect()
+    };
+    for token in tokens {
+        token.cancel();
+    }
+}
+
 /// Drops (and thereby kills, via `kill_on_drop`) the live children for
-/// the given ids. No-op for ids with no running child.
+/// the given ids. No-op for ids with no running child. An in-flight
+/// call on a reaped server is aborted first, so it fails promptly as
+/// `mcp_call_failed` instead of answering from a dead server.
 async fn drop_live_mcp_servers(state: &Arc<GatewayState>, session_id: &str, server_ids: &[&str]) {
+    abort_in_flight_calls(state, |(session, server)| {
+        *session == session_id && server_ids.contains(&server.as_str())
+    })
+    .await;
     let mut live = state.mcp_live.lock().await;
     for server_id in server_ids {
         live.remove(&(session_id.to_owned(), (*server_id).to_owned()));
+    }
+}
+
+/// Expires every parked MCP launch/call approval owned by `session_id`
+/// (ticket 01, cancellation drain): each matching entry leaves its
+/// park map and its durable `mcp_approvals` row records `cancelled`,
+/// so a late approve/deny for the dead id fails as `approval_missing`
+/// and consumes nothing — mirroring `release_parked` semantics for
+/// supervisor parks. A grant/refusal that already consumed the id
+/// wins: the durable decide is one-shot, so an already-decided row
+/// survives unchanged and no double-outcome row is ever written.
+/// Best-effort: expiry must never fail the cancel it rides on.
+async fn expire_mcp_parks_for_cancel(state: &Arc<GatewayState>, session_id: &str) {
+    // Ticket 02: abort the session's in-flight `tools/call` round trips
+    // first — a waiting approve resolves promptly as `mcp_call_failed`
+    // (never success) instead of riding out the 60 s bound behind the
+    // cancel. Best-effort like the park expiry below.
+    abort_in_flight_calls(state, |(session, _)| *session == session_id).await;
+    let mut expired: Vec<ApprovalId> = Vec::new();
+    {
+        let mut approvals = state.mcp_approvals.lock().await;
+        approvals.retain(|id, pending| {
+            let kill = pending.session_id.to_string() == session_id;
+            if kill {
+                expired.push(*id);
+            }
+            !kill
+        });
+    }
+    {
+        let mut approvals = state.mcp_call_approvals.lock().await;
+        approvals.retain(|id, pending| {
+            let kill = pending.session_id.to_string() == session_id;
+            if kill {
+                expired.push(*id);
+            }
+            !kill
+        });
+    }
+    for id in expired {
+        let _ = state
+            .store
+            .decide_mcp_approval(&id.to_string(), "cancelled")
+            .await;
     }
 }
 
@@ -2589,25 +2700,17 @@ async fn execute_granted_mcp_call(
     // Snapshot the vault: the call resolves secret handles without
     // holding the broker lock across child I/O.
     let secrets = state.mcp_credentials.lock().await.clone();
-    // One live-map lock across the whole round trip (MCP-slice known
-    // issue: head-of-line blocking across sessions; feeds the
-    // cancellation-drain slice). Same-server calls serialize because
-    // JSON-RPC ids match on the shared pipes; the lock is released
-    // before the error path below reaps anything.
+    // Per-server isolation (ticket 02, resolving the MCP slice's
+    // deferred per-server-locking follow-up): the map lock is held only
+    // to clone this server's handle, then the whole round trip runs
+    // behind that server's own mutex. Deny, cancel, and other servers'
+    // calls never wait out this call's 60 s bound; same-server calls
+    // still serialize, because JSON-RPC ids match on the shared pipes.
     let key = (sid.clone(), pending.server_id.clone());
-    let outcome = {
-        let mut live = state.mcp_live.lock().await;
-        match live.get_mut(&key) {
-            Some(server) => {
-                server
-                    .call_tool(
-                        &pending.server_id,
-                        &pending.tool,
-                        &pending.arguments,
-                        &secrets,
-                    )
-                    .await
-            }
+    let server = {
+        let live = state.mcp_live.lock().await;
+        match live.get(&key) {
+            Some(server) => server.clone(),
             None => {
                 return fail(
                     "mcp_not_live",
@@ -2616,6 +2719,23 @@ async fn execute_granted_mcp_call(
             }
         }
     };
+    // The abort token outlives the map entry: task cancel and mid-call
+    // reap cancel it, and the in-flight read loop kills its child and
+    // fails promptly as `mcp_call_failed` (never success).
+    let abort = claim_call_abort(state, key.clone()).await;
+    let outcome = {
+        let mut server = server.lock().await;
+        server
+            .call_tool(
+                &pending.server_id,
+                &pending.tool,
+                &pending.arguments,
+                &secrets,
+                &abort,
+            )
+            .await
+    };
+    release_call_abort(state, &key).await;
     match outcome {
         Ok(result) => {
             tracing::info!(
@@ -4051,6 +4171,7 @@ mod stale_supervisor_tests {
             mcp_approvals: Mutex::new(HashMap::new()),
             mcp_call_approvals: Mutex::new(HashMap::new()),
             mcp_live: Mutex::new(HashMap::new()),
+            mcp_call_abort: Mutex::new(HashMap::new()),
         });
 
         let lease = acquire_run_lease(&canonical).await.expect("lease acquired");

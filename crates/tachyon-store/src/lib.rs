@@ -264,8 +264,8 @@ pub struct McpApprovalRow {
     /// BLAKE3 hash (hex) of the exact authorized operation JSON.
     pub op_hash: String,
     /// Row machine state: `parked`, then one-shot `granted` /
-    /// `denied` / `consumed-missing` (the first decision wins, never
-    /// rewritten).
+    /// `denied` / `consumed-missing` / `cancelled` (a task cancel
+    /// expired the park; the first decision wins, never rewritten).
     pub outcome: String,
     /// Park time (micros since epoch).
     pub created_at: i64,
@@ -1041,17 +1041,23 @@ impl StoreWriter {
     }
 
     /// Decides one parked MCP approval record one-shot
-    /// (`parked` -> `granted` | `denied` | `consumed-missing`): the
-    /// outcome is written once with the decide timestamp and never
-    /// rewritten afterwards. Best-effort audit — deciding an unknown
-    /// id is a no-op, never an error.
+    /// (`parked` -> `granted` | `denied` | `consumed-missing` |
+    /// `cancelled`): the outcome is written once with the decide
+    /// timestamp and never rewritten afterwards. `cancelled` is the
+    /// cancellation-drain expiry (issue #57 blocker 4): a task cancel
+    /// reached the gateway-side park before any grant/refusal, so the
+    /// late decision fails closed. Best-effort audit — deciding an
+    /// unknown id is a no-op, never an error.
     pub async fn decide_mcp_approval(
         &self,
         approval_id: &str,
         outcome: &str,
     ) -> Result<(), StoreError> {
         debug_assert!(
-            outcome == "granted" || outcome == "denied" || outcome == "consumed-missing",
+            outcome == "granted"
+                || outcome == "denied"
+                || outcome == "consumed-missing"
+                || outcome == "cancelled",
             "decide_mcp_approval only records terminal outcomes"
         );
         let _guard = self.write.lock().await;
@@ -2799,6 +2805,112 @@ mod tests {
         assert_eq!(row.outcome, "parked");
         assert_eq!(row.op_hash, "op-hash-fresh");
         assert_eq!(row.decided_at, 0);
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mcp_approval_cancelled_is_one_shot_against_grant_and_deny() {
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        // Cancel-then-grant: the cancel wins, the late grant is a no-op.
+        store
+            .record_mcp_approval("aid-cancel-first", "s", "launch", "op-hash-a")
+            .await
+            .unwrap();
+        store
+            .decide_mcp_approval("aid-cancel-first", "cancelled")
+            .await
+            .unwrap();
+        store
+            .decide_mcp_approval("aid-cancel-first", "granted")
+            .await
+            .unwrap();
+        let row = store
+            .get_mcp_approval("aid-cancel-first")
+            .await
+            .unwrap()
+            .expect("decided row");
+        assert_eq!(row.outcome, "cancelled", "first decision sticks");
+        assert!(row.decided_at > 0, "decide stamps the decision time");
+        // Deny-then-cancel: the denial stands, the cancel is a no-op.
+        store
+            .record_mcp_approval("aid-deny-first", "s", "call", "op-hash-b")
+            .await
+            .unwrap();
+        store
+            .decide_mcp_approval("aid-deny-first", "denied")
+            .await
+            .unwrap();
+        store
+            .decide_mcp_approval("aid-deny-first", "cancelled")
+            .await
+            .unwrap();
+        let row = store
+            .get_mcp_approval("aid-deny-first")
+            .await
+            .unwrap()
+            .expect("decided row");
+        assert_eq!(row.outcome, "denied", "first decision sticks");
+
+        store.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mcp_park_rows_survive_restart_as_audit_only() {
+        // Ticket 03: the durable `mcp_approvals` rows persist across a
+        // restart as audit, never as grants — usability is gated by the
+        // gateway's in-memory parks (proven at the gateway seam), while the
+        // rows keep their outcome and one-shot discipline here.
+        let (store, dir) = open_test_store().await;
+        store.create_session("s").await.unwrap();
+        store
+            .record_mcp_approval("aid-restart-launch", "s", "launch", "op-hash-l")
+            .await
+            .unwrap();
+        store
+            .record_mcp_approval("aid-restart-call", "s", "call", "op-hash-c")
+            .await
+            .unwrap();
+        store
+            .decide_mcp_approval("aid-restart-call", "cancelled")
+            .await
+            .unwrap();
+        store.close().await;
+
+        // Reopen on the same dir: the crash-restart shape.
+        let store = StoreWriter::open(&dir).await.unwrap();
+        let launch = store
+            .get_mcp_approval("aid-restart-launch")
+            .await
+            .unwrap()
+            .expect("parked launch row survives restart");
+        assert_eq!(launch.outcome, "parked");
+        assert_eq!(launch.decided_at, 0, "still undecided audit");
+        let call = store
+            .get_mcp_approval("aid-restart-call")
+            .await
+            .unwrap()
+            .expect("decided call row survives restart");
+        assert_eq!(call.outcome, "cancelled", "first decision sticks");
+        assert!(call.decided_at > 0);
+        // One-shot discipline holds after reopen: a late grant neither
+        // rewrites the cancel nor errors.
+        store
+            .decide_mcp_approval("aid-restart-call", "granted")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_mcp_approval("aid-restart-call")
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            "cancelled"
+        );
 
         store.close().await;
         std::fs::remove_dir_all(dir).unwrap();

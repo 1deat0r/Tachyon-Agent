@@ -646,3 +646,212 @@ async fn run_parent_recovery_case(mode: &str, fault_point: &str) {
     store.close().await;
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Ticket 03 child: stages §19 fixture effects, commits the cancel intent,
+/// and parks at `cancel.committed` until the parent kills it.
+async fn run_cancel_commit_child(dir: std::path::PathBuf) {
+    let store = Arc::new(StoreWriter::open(&dir).await.unwrap());
+    let session = SessionId::generate();
+    store.create_session(&session.to_string()).await.unwrap();
+    let handle = create_task(
+        session,
+        WorkspaceId::generate(),
+        "kill after cancel-intent commit".to_owned(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let task_id = handle.task_id();
+    let (prepared_graph, prepared_node) = effect_graph(task_id, Idempotency::NonIdempotent);
+    let (running_graph, running_node) = effect_graph(task_id, Idempotency::Keyed);
+    let graph = ExecutionGraph {
+        version: IR_VERSION,
+        nodes: prepared_graph
+            .nodes
+            .into_iter()
+            .chain(running_graph.nodes)
+            .collect(),
+        dependencies: vec![],
+    };
+    handle
+        .install_execution_graph(ValidatedExecutionGraph::from_unchecked_test_graph(graph))
+        .await
+        .unwrap();
+    handle.start_node(prepared_node).await.unwrap();
+    handle
+        .prepare_effect(prepared_node, "effect-cancel-kill-1".to_owned())
+        .await
+        .unwrap();
+    handle.start_node(running_node).await.unwrap();
+    std::fs::write(
+        dir.join("task-node-id"),
+        format!("{task_id}\n{prepared_node}\n{running_node}"),
+    )
+    .unwrap();
+    // Parks at `cancel.committed` when armed: the terminal journal row
+    // is durable, the drain acknowledgement never sends, and this
+    // await never resolves — the parent kills below.
+    let _ = handle.cancel().await;
+    std::process::exit(0);
+}
+
+/// Ticket 03 parent: spawns the current test as a child, waits for the
+/// `cancel.committed` seam, kills the parked child, and returns the
+/// staged identities.
+async fn kill_at_cancel_commit_seam(
+    fault_point: &str,
+) -> (std::path::PathBuf, Arc<StoreWriter>, TaskId, NodeId, NodeId) {
+    let dir = std::env::temp_dir().join(format!("tachyon-cancel-kill-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("fault-reached");
+    let store = Arc::new(StoreWriter::open(&dir).await.unwrap());
+    store.close().await;
+
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "effect_recovery_tests::cancel_intent_commit_crash_stays_cancelled_with_section19_classification",
+            "--nocapture",
+        ])
+        .env(CHILD_DIR, &dir)
+        .env(CHILD_MODE, "cancel")
+        .env("TACHYON_FAULT_POINT", fault_point)
+        .env("TACHYON_FAULT_REACHED_FILE", &marker)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let started = Instant::now();
+    while !marker.exists() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("cancel fault child exited before {fault_point}: {status}");
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not reach cancel fault point {fault_point}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), fault_point);
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "child should park at the cancel-commit seam"
+    );
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+
+    let identities = std::fs::read_to_string(dir.join("task-node-id")).unwrap();
+    let mut identities = identities.lines();
+    let task_id: TaskId = identities.next().unwrap().parse().unwrap();
+    let prepared_node: NodeId = identities.next().unwrap().parse().unwrap();
+    let running_node: NodeId = identities.next().unwrap().parse().unwrap();
+    let store = Arc::new(StoreWriter::open(&dir).await.unwrap());
+    (dir, store, task_id, prepared_node, running_node)
+}
+
+/// Ticket 03 assertions: terminal `Cancelled` plus §19 classification of
+/// interrupted effects (mirrors the suite's journal assertions), stable
+/// across a second recovery.
+async fn assert_cancelled_with_section19_classification(
+    dir: std::path::PathBuf,
+    store: Arc<StoreWriter>,
+    task_id: TaskId,
+    prepared_node: NodeId,
+    running_node: NodeId,
+) {
+    // The cancel intent was durable before the kill: the task row already
+    // records the terminal state, not a crash-time inference.
+    assert_eq!(
+        store
+            .load_task(&task_id.to_string())
+            .await
+            .unwrap()
+            .expect("cancelled task row survives the kill")
+            .status,
+        "Cancelled"
+    );
+    let recovered = recover_task(task_id, store.clone()).await.unwrap();
+    let state = recovered.get_state().await.unwrap();
+    assert_eq!(state.status, TaskStatus::Cancelled);
+    assert_eq!(
+        state.node_statuses[&prepared_node],
+        NodeStatus::UnknownAfterCrash
+    );
+    assert_eq!(state.node_statuses[&running_node], NodeStatus::Pending);
+    assert_eq!(
+        state.effects["effect-cancel-kill-1"].state,
+        EffectState::UnknownAfterCrash
+    );
+    assert_eq!(
+        store
+            .load_effect("effect-cancel-kill-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "unknown_after_crash"
+    );
+    let events_after_recovery = store
+        .load_events_since(&task_id.to_string(), -1)
+        .await
+        .unwrap();
+    assert!(
+        events_after_recovery
+            .iter()
+            .any(|event| event.kind == "effect_unknown_after_crash"),
+        "interrupted effects classify via the §19 matrix, never silent success"
+    );
+
+    recovered.shutdown().await.unwrap();
+    let recovered_again = recover_task(task_id, store.clone()).await.unwrap();
+    let state = recovered_again.get_state().await.unwrap();
+    assert_eq!(
+        state.status,
+        TaskStatus::Cancelled,
+        "recovery never reopens the terminal task"
+    );
+    assert_eq!(
+        state.node_statuses[&prepared_node],
+        NodeStatus::UnknownAfterCrash
+    );
+    assert_eq!(
+        store
+            .load_events_since(&task_id.to_string(), -1)
+            .await
+            .unwrap()
+            .len(),
+        events_after_recovery.len(),
+        "a second recovery must replay classifications without duplicating them"
+    );
+
+    recovered_again.shutdown().await.unwrap();
+    store.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Ticket 03 (ACP cancellation-drain slice, issue #57 blocker 4):
+/// cancel-intent committed then crash keeps `Cancelled` terminal while
+/// interrupted effects classify via the §19 matrix — never silent
+/// success. Kills at the `cancel.committed` seam (journal row durable,
+/// drain acknowledgement still pending) and asserts reconcile, mirroring
+/// the effect-recovery suite's journal assertions above.
+#[tokio::test]
+async fn cancel_intent_commit_crash_stays_cancelled_with_section19_classification() {
+    const FAULT_POINT: &str = "cancel.committed";
+    if let Ok(dir) = std::env::var(CHILD_DIR) {
+        run_cancel_commit_child(std::path::PathBuf::from(dir)).await;
+        return;
+    }
+    let (dir, store, task_id, prepared_node, running_node) =
+        kill_at_cancel_commit_seam(FAULT_POINT).await;
+    assert_cancelled_with_section19_classification(
+        dir,
+        store,
+        task_id,
+        prepared_node,
+        running_node,
+    )
+    .await;
+}
