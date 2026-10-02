@@ -13,10 +13,10 @@
   - [x] M1c Grace-wait settle: after `approval {granted:false}`, bounded wait for a terminal status; default to `stopReason: refusal`
     - [x] N1a1 Unit: grace default constant → refusal branch, no terminal status needed
     - [x] N1a2 Unit: `refusal` never maps to `turn_timed_out` or `end_turn`
-- [ ] S2 Fail-closed response validation — every invalid shape issues Deny, never Approve · Verify: `invalid_responses_fail_closed_as_deny` unit table
-  - [ ] M2a Response validator: optionId must equal `allow_once`/`reject_once`; outcome must be `selected` (with optionId) or `cancelled`; else invalid
-    - [ ] N2a1 Unit cases: unknown optionId, outcome not selected/cancelled, selected without optionId, non-object response — each ⇒ Deny + log
-  - [ ] M2b Wire the validator after every client answer, before any Approve path
+- [x] S2 Fail-closed response validation — every invalid shape issues Deny, never Approve · Verify: `invalid_responses_fail_closed_as_deny` unit table
+  - [x] M2a Response validator: optionId must equal `allow_once`/`reject_once`; outcome must be `selected` (with optionId) or `cancelled`; else invalid
+    - [x] N2a1 Unit cases: unknown optionId, outcome not selected/cancelled, selected without optionId, non-object response — each ⇒ Deny + log
+  - [x] M2b Wire the validator after every client answer, before any Approve path
 - [ ] S3 Standalone `cancelled` outcome ⇒ Deny + log · Verify: `standalone_cancelled_outcome_denies` (scripted)
   - [ ] M3a Branch: `outcome: cancelled` with no cancel in flight ⇒ no-approval ⇒ Deny + log
   - [ ] M3b Route guard: when session/cancel IS in flight, do not decide (ticket 03 owns that wiring); no double-decide

@@ -660,6 +660,117 @@ fn is_reject_once(response: &Value) -> bool {
         && response.get("optionId").and_then(Value::as_str) == Some("reject_once")
 }
 
+/// One classified answer to `session/request_permission` (spec
+/// "Response contract"): exactly `selected` + one of the two offered
+/// optionIds, or `cancelled` — every other shape is `Invalid`
+/// (ADR-0005:47: unknown/unoffered/malformed ⇒ fail closed).
+#[derive(Debug, PartialEq)]
+enum PermissionAnswer {
+    /// `selected` + the offered `allow_once`.
+    Allow,
+    /// `selected` + the offered `reject_once`.
+    Reject,
+    /// `outcome: "cancelled"` — a valid shape whose decision belongs
+    /// to the cancel contract (standalone ⇒ deny; see
+    /// [`classify_permission_answer`]).
+    Cancelled,
+    /// Unknown optionId, unknown outcome, missing optionId, or a
+    /// non-object response — never a grant, never Approve.
+    Invalid {
+        /// Why the shape failed validation (logged and carried in the
+        /// fail-closed `Deny` reason).
+        reason: String,
+    },
+}
+
+/// The strict response validator applied to EVERY client answer before
+/// any Approve path: `allow_once`/`reject_once` only under
+/// `outcome: "selected"`, `outcome: "cancelled"` accepted as its own
+/// shape, everything else invalid and destined to fail closed as a
+/// `Deny` (ADR-0005:47 — the operation must never run).
+fn classify_permission_answer(response: &Value) -> PermissionAnswer {
+    if is_allow_once(response) {
+        return PermissionAnswer::Allow;
+    }
+    if is_reject_once(response) {
+        return PermissionAnswer::Reject;
+    }
+    match response.get("outcome").and_then(Value::as_str) {
+        Some("cancelled") => PermissionAnswer::Cancelled,
+        Some("selected") => match response.get("optionId").and_then(Value::as_str) {
+            Some(option) => PermissionAnswer::Invalid {
+                reason: format!("unknown optionId {option:?}"),
+            },
+            None => PermissionAnswer::Invalid {
+                reason: "selected without an optionId".to_owned(),
+            },
+        },
+        Some(outcome) => PermissionAnswer::Invalid {
+            reason: format!("unknown outcome {outcome:?}"),
+        },
+        None => PermissionAnswer::Invalid {
+            reason: "response carries no outcome".to_owned(),
+        },
+    }
+}
+
+/// Maps one received permission response onto the loop's action — the
+/// single funnel every client answer passes through before any Approve
+/// path: allow → grant, reject → `Deny`, invalid shape → fail-closed
+/// `Deny` + log (ADR-0005:47), `cancelled` → unresolved here (its
+/// cancel-in-flight contract decides it), and error frames / dropped
+/// slots → unresolved (typed refusal, never a verdict).
+fn answer_action(
+    response: Result<Result<Value, ErrorObject>, oneshot::error::RecvError>,
+) -> ClientAnswer {
+    match response {
+        Ok(Ok(value)) => match classify_permission_answer(&value) {
+            PermissionAnswer::Allow => ClientAnswer::Grant,
+            PermissionAnswer::Reject => {
+                tracing::info!(
+                    response = %value,
+                    "the ACP client answered reject_once; refusing the park"
+                );
+                ClientAnswer::Deny(DENY_REASON_REJECTED.to_owned())
+            }
+            PermissionAnswer::Cancelled => {
+                tracing::warn!(
+                    response = %value,
+                    "permission response is cancelled; no verdict from this branch — \
+                     the cancel contract resolves it"
+                );
+                ClientAnswer::Unresolved
+            }
+            PermissionAnswer::Invalid { reason } => {
+                tracing::warn!(
+                    response = %value,
+                    %reason,
+                    "invalid permission response; failing closed as Deny (ADR-0005:47)"
+                );
+                ClientAnswer::Deny(format!(
+                    "the ACP client sent an invalid permission response ({reason}); \
+                     failing closed"
+                ))
+            }
+        },
+        Ok(Err(error)) => {
+            tracing::warn!(
+                ?error,
+                "client answered the permission request with an error frame; \
+                 refusing the park (fail-closed)"
+            );
+            ClientAnswer::Unresolved
+        }
+        Err(_) => {
+            tracing::warn!(
+                "permission request slot closed before an answer arrived \
+                 (client gone or EOF); refusing the park"
+            );
+            ClientAnswer::Unresolved
+        }
+    }
+}
+
 /// Permission-bridge state threaded through one stream loop: the
 /// exchange phase plus the approval ids already asked about, so a
 /// re-delivered replay row (after a re-subscribe) can never ask twice.
@@ -1440,42 +1551,12 @@ async fn stream_turn(
                     continue;
                 }
             };
-            let answer = match receiver.await {
-                Ok(Ok(value)) if is_allow_once(&value) => ClientAnswer::Grant,
-                Ok(Ok(value)) if is_reject_once(&value) => {
-                    tracing::info!(
-                        %approval_id,
-                        "the ACP client answered reject_once; refusing the park"
-                    );
-                    ClientAnswer::Deny(DENY_REASON_REJECTED.to_owned())
-                }
-                Ok(Ok(value)) => {
-                    // Not a grant, not a well-formed reject: fail
-                    // closed (the fail-closed response validator is
-                    // this slice's next small task).
-                    tracing::warn!(
-                        response = %value,
-                        "permission response is not selected/allow_once; refusing the \
-                         park (fail-closed)"
-                    );
-                    ClientAnswer::Unresolved
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(
-                        ?error,
-                        "client answered the permission request with an error frame; \
-                         refusing the park (fail-closed)"
-                    );
-                    ClientAnswer::Unresolved
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "permission request slot closed before an answer arrived \
-                         (client gone or EOF); refusing the park"
-                    );
-                    ClientAnswer::Unresolved
-                }
-            };
+            // The single validation funnel (M2b): classified before
+            // ANY branch can reach the Approve path — reject and
+            // invalid shapes both become `Deny`, a dropped slot or an
+            // error frame stays a typed refusal, and `cancelled` waits
+            // for its cancel-contract branch.
+            let answer = answer_action(receiver.await);
             drop(armed); // already routed (or abandoned): disarm is a no-op
             match answer {
                 ClientAnswer::Grant => {
@@ -1718,13 +1799,13 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        APPROVAL_REQUEST_GRACE, DENY_REASON_REJECTED, DENY_SETTLE_GRACE, HandlerError,
-        OutboundRequests, PermissionBridge, PermissionPhase, ReadExpiry, SessionState,
-        agent_chunk, approval_ask, approval_parked, final_prompt_result, is_allow_once,
-        is_approval_parked, is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel,
-        parse_prompt, parse_session_new, permission_request_params, read_bound,
-        refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
-        tool_call_status_update,
+        APPROVAL_REQUEST_GRACE, DENY_REASON_REJECTED, DENY_SETTLE_GRACE, ClientAnswer, HandlerError,
+        OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase, ReadExpiry,
+        SessionState, agent_chunk, answer_action, approval_ask, approval_parked,
+        classify_permission_answer, final_prompt_result, is_allow_once, is_approval_parked,
+        is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel, parse_prompt,
+        parse_session_new, permission_request_params, read_bound, refusal_prompt_result,
+        settlement_verdict, stop_reason, tool_call_announcement, tool_call_status_update,
     };
     use crate::codec::{
         INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
@@ -2514,5 +2595,86 @@ mod tests {
                 "{response} must never classify as reject_once"
             );
         }
+    }
+
+    /// N2a1 / S2 (fail-closed validation): every invalid response
+    /// shape — unknown optionId, outcome neither `selected` nor
+    /// `cancelled`, `selected` without an optionId, non-object
+    /// response — classifies `Invalid` and funnels into a `Deny`
+    /// whose reason names the ACP client: NEVER a grant, never
+    /// Approve (ADR-0005:47, the operation must never run). The two
+    /// offered shapes and `cancelled` stay valid; only `allow_once`
+    /// ever grants.
+    #[test]
+    fn invalid_responses_fail_closed_as_deny() {
+        let invalid = [
+            // Unknown/unoffered optionId (including the persistent
+            // kinds ADR-0005:48 never offers).
+            json!({"outcome": "selected", "optionId": "allow_always"}),
+            json!({"outcome": "selected", "optionId": "reject_always"}),
+            json!({"outcome": "selected", "optionId": "nope"}),
+            // Outcome neither `selected` nor `cancelled`.
+            json!({"outcome": "rejected"}),
+            json!({"outcome": "dismissed"}),
+            json!({"outcome": "allow_once"}),
+            // `selected` without an optionId.
+            json!({"outcome": "selected"}),
+            json!({"optionId": "allow_once"}),
+            json!({}),
+            // Non-object responses.
+            json!("allow_once"),
+            json!(null),
+            json!(42),
+            json!([]),
+        ];
+        for response in invalid {
+            assert!(
+                matches!(
+                    classify_permission_answer(&response),
+                    PermissionAnswer::Invalid { .. }
+                ),
+                "{response} must classify invalid"
+            );
+            let action = answer_action(Ok(Ok(response.clone())));
+            match action {
+                ClientAnswer::Deny(reason) => {
+                    assert!(
+                        reason.contains("ACP client"),
+                        "the deny reason names the ACP client: {response} => {reason}"
+                    );
+                    assert!(
+                        reason.contains("invalid"),
+                        "the deny reason says why: {response} => {reason}"
+                    );
+                }
+                other => panic!("{response} must fail closed as Deny, got {other:?}"),
+            }
+        }
+
+        // The valid shapes classify as themselves — and only the
+        // offered `allow_once` ever reaches the Approve path.
+        assert_eq!(
+            classify_permission_answer(&json!({"outcome": "selected", "optionId": "allow_once"})),
+            PermissionAnswer::Allow
+        );
+        assert_eq!(
+            classify_permission_answer(&json!({"outcome": "selected", "optionId": "reject_once"})),
+            PermissionAnswer::Reject
+        );
+        assert_eq!(
+            classify_permission_answer(&json!({"outcome": "cancelled"})),
+            PermissionAnswer::Cancelled
+        );
+        assert!(matches!(
+            answer_action(Ok(Ok(json!({"outcome": "selected", "optionId": "allow_once"})))),
+            ClientAnswer::Grant
+        ));
+        // `cancelled` is a VALID shape: it is not an invalid-shape
+        // deny (its standalone/cancel-in-flight decision is the next
+        // small task's branch) — and it never grants.
+        assert!(!matches!(
+            answer_action(Ok(Ok(json!({"outcome": "cancelled"})))),
+            ClientAnswer::Grant | ClientAnswer::Deny(_)
+        ));
     }
 }
