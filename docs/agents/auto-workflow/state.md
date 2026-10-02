@@ -217,6 +217,8 @@ updated: 2026-10-02T05:54:51Z
 2026-10-02T09:28:20Z EVENT task: AGENTS.md token trim — 4 duplication spots removed (dup sentence, halved Local-first prose, 3 subsections -> References bullets); 670->579 words (-13.6%); ISSUE_TEMPLATE section-name references preserved
 2026-10-02T09:28:20Z EVENT incident (root-caused, FIXED): first post-trim verify failed on tachyon-repo projection (NotFound on own source) — cause: backlog rounds built verify-worktree artifacts into the SHARED repo target/, baking deleted /tmp/opencode CARGO_MANIFEST_DIR paths into test binaries (grep confirmed /tmp/opencode in projection-23e2106a + others); NOT AGENTS.md-related; cargo clean removed 188.7GiB contaminated target, fresh cargo verify exit 0 with 137 ok suites; lesson for any future worktree-verify: use an ISOLATED CARGO_TARGET_DIR, never the repo's
 
+2026-10-02T10:08:59Z EVENT task 1/4: skill rule 14 — subagent reports write to evidence/, return verdict+path only. dotfiles 1f9c9b5.
+
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
 status: running
