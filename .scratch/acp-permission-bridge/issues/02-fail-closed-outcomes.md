@@ -7,12 +7,12 @@
 
 ## Small tasks (each = one commit, in order)
 
-- [ ] S1 Deny settlement path — reject_once drives `Deny`, `tool_call_update` failed, grace-wait, prompt settles `refusal` · Verify: `deny_settles_the_prompt_as_refusal` (scripted)
-  - [ ] M1a Emit `Command::Deny { task_id, approval_id, reason }` through the exchange's gateway connection, sequenced around the settlement slot like Approve
-  - [ ] M1b Emit `tool_call_update` {toolCallId, status: failed} after the Deny decision
-  - [ ] M1c Grace-wait settle: after `approval {granted:false}`, bounded wait for a terminal status; default to `stopReason: refusal`
-    - [ ] N1a1 Unit: grace default constant → refusal branch, no terminal status needed
-    - [ ] N1a2 Unit: `refusal` never maps to `turn_timed_out` or `end_turn`
+- [x] S1 Deny settlement path — reject_once drives `Deny`, `tool_call_update` failed, grace-wait, prompt settles `refusal` · Verify: `deny_settles_the_prompt_as_refusal` (scripted)
+  - [x] M1a Emit `Command::Deny { task_id, approval_id, reason }` through the exchange's gateway connection, sequenced around the settlement slot like Approve
+  - [x] M1b Emit `tool_call_update` {toolCallId, status: failed} after the Deny decision
+  - [x] M1c Grace-wait settle: after `approval {granted:false}`, bounded wait for a terminal status; default to `stopReason: refusal`
+    - [x] N1a1 Unit: grace default constant → refusal branch, no terminal status needed
+    - [x] N1a2 Unit: `refusal` never maps to `turn_timed_out` or `end_turn`
 - [ ] S2 Fail-closed response validation — every invalid shape issues Deny, never Approve · Verify: `invalid_responses_fail_closed_as_deny` unit table
   - [ ] M2a Response validator: optionId must equal `allow_once`/`reject_once`; outcome must be `selected` (with optionId) or `cancelled`; else invalid
     - [ ] N2a1 Unit cases: unknown optionId, outcome not selected/cancelled, selected without optionId, non-object response — each ⇒ Deny + log

@@ -63,6 +63,17 @@ const MAX_RESUBSCRIBES: u32 = 1;
 /// slice (ticket 03) tightens and documents it.
 const APPROVAL_REQUEST_GRACE: Duration = Duration::from_secs(5);
 
+/// Bound on the settle wait after a written `Deny`: a terminal status
+/// may journal moments later; when none arrives (the gateway journals no
+/// terminal status after a deny — pre-existing gap, out of scope) the
+/// prompt settles `stopReason: refusal` at this deadline instead of
+/// hanging to [`TURN_TIMEOUT`].
+const DENY_SETTLE_GRACE: Duration = Duration::from_secs(5);
+
+/// The `Command::Deny` reason for an explicit `reject_once` answer:
+/// names the ACP client as the refusing party (ADR-0005:47).
+const DENY_REASON_REJECTED: &str = "the ACP client rejected the permission request (reject_once)";
+
 /// Overlap refusal message: ACP v1 turns are sequential and are never
 /// queued behind one another.
 const TURN_IN_PROGRESS: &str = "Turn already active for this session; prompts run sequentially";
@@ -432,8 +443,9 @@ impl Drop for ArmedRequest {
 }
 
 /// One permission exchange's progress within a turn. Transitions:
-/// `Idle → AwaitingRequest → Outstanding → Approving → Sent → Idle`;
-/// a later park in the same turn starts again from `Idle`.
+/// `Idle → AwaitingRequest → Outstanding → Approving|Denying →
+/// Sent|Denied → Idle`; a later park in the same turn starts again from
+/// `Idle`.
 #[derive(Debug)]
 enum PermissionPhase {
     /// No park observed (or the previous exchange settled).
@@ -465,9 +477,89 @@ enum PermissionPhase {
         /// ACP tool call to close as `completed`.
         tool_call_id: String,
     },
+    /// The client rejected (`reject_once`): the gateway `Deny` waits for
+    /// the single settlement slot, sequenced exactly like `Approve`.
+    Denying {
+        /// Gateway approval id to refuse.
+        approval_id: String,
+        /// ACP tool call to close as `failed`.
+        tool_call_id: String,
+        /// Reason recorded in the gateway journal (names the client).
+        reason: String,
+    },
     /// `Approve` written; streaming resumes and the
     /// `WaitingApproval → Executing` bounce settles benignly.
     Sent,
+    /// `Deny` written; bounded by [`DENY_SETTLE_GRACE`] for a terminal
+    /// status — expiry settles the prompt `refusal` (the gateway
+    /// journals no terminal status after a deny; known gap, out of
+    /// scope).
+    Denied {
+        /// Instant after which the prompt settles `refusal`.
+        deadline: Instant,
+    },
+}
+
+/// The gateway decision waiting for the free settlement slot: grant or
+/// refuse the parked operation (both written through the same single
+/// slot, in the same loop step).
+#[derive(Debug)]
+enum PendingDecision {
+    /// Grant: `Command::Approve`, tool call closes `completed`.
+    Approve {
+        /// Gateway approval id to grant.
+        approval_id: String,
+        /// ACP tool call to close.
+        tool_call_id: String,
+    },
+    /// Refuse: `Command::Deny` with a reason naming the client, tool
+    /// call closes `failed`.
+    Deny {
+        /// Gateway approval id to refuse.
+        approval_id: String,
+        /// ACP tool call to close.
+        tool_call_id: String,
+        /// Reason recorded in the gateway journal.
+        reason: String,
+    },
+}
+
+/// One classified answer to `session/request_permission`, as the loop
+/// acts on it (grant → `Approve`, refuse → `Deny`, anything the adapter
+/// cannot resolve → the typed orphan refusal).
+#[derive(Debug)]
+enum ClientAnswer {
+    /// `selected` + `allow_once`: grant through `Command::Approve`.
+    Grant,
+    /// `selected` + `reject_once`: refuse through `Command::Deny`,
+    /// carrying the reason that names the ACP client.
+    Deny(String),
+    /// Error frame, dropped slot, or an unvalidated shape: no verdict
+    /// from here — the turn fails typed (fail closed).
+    Unresolved,
+}
+
+/// Why a bounded read expired: the park carried no ask (typed orphan
+/// refusal) or the deny settled with no terminal status (the prompt's
+/// `refusal` verdict).
+#[derive(Debug, PartialEq)]
+enum ReadExpiry {
+    /// No `approval_request` frame within the orphan grace.
+    Orphan,
+    /// No terminal status within the deny grace.
+    DenySettle,
+}
+
+/// The bound on the next gateway read, if any: which instant expires
+/// and what that expiry means for the prompt. Only the two bounded
+/// phases carry a bound — an outstanding client answer is human-paced
+/// (no read bound), everything else waits freely.
+fn read_bound(phase: &PermissionPhase) -> Option<(Instant, ReadExpiry)> {
+    match phase {
+        PermissionPhase::AwaitingRequest { deadline } => Some((*deadline, ReadExpiry::Orphan)),
+        PermissionPhase::Denied { deadline } => Some((*deadline, ReadExpiry::DenySettle)),
+        _ => None,
+    }
 }
 
 /// The ask carried by one journalled `approval_request` payload: the
@@ -558,6 +650,14 @@ fn tool_call_status_update(session_id: &str, tool_call_id: &str, status: &str) -
 fn is_allow_once(response: &Value) -> bool {
     response.get("outcome").and_then(Value::as_str) == Some("selected")
         && response.get("optionId").and_then(Value::as_str) == Some("allow_once")
+}
+
+/// The strict reject gate: `outcome: "selected"` with the offered
+/// `reject_once` option (the symmetric twin of [`is_allow_once`]) —
+/// the one non-grant answer this ticket settles as an explicit `Deny`.
+fn is_reject_once(response: &Value) -> bool {
+    response.get("outcome").and_then(Value::as_str) == Some("selected")
+        && response.get("optionId").and_then(Value::as_str) == Some("reject_once")
 }
 
 /// Permission-bridge state threaded through one stream loop: the
@@ -836,6 +936,16 @@ pub(crate) fn final_prompt_result(task: &Value) -> Result<Value, HandlerError> {
         None => json!([]),
     };
     Ok(json!({ "stopReason": stop, "content": content }))
+}
+
+/// The `session/prompt` result for a deny whose bounded grace elapsed
+/// with no terminal status: the schema-legal `refusal` verdict with
+/// empty content — never `turn_timed_out` (an error `data` marker, not
+/// a `stopReason`) and never a guessed `end_turn`. No terminal status
+/// is needed to build it (ADR-0005:47-49, spec "Deny settlement").
+#[must_use]
+fn refusal_prompt_result() -> Value {
+    json!({ "stopReason": "refusal", "content": [] })
 }
 
 /// The `session/update` payload for one journalled event, or `None` for
@@ -1192,55 +1302,123 @@ async fn stream_turn(
     // Approve sequenced around the settlement slot).
     let mut bridge = PermissionBridge::default();
     loop {
-        // 1. The granted decision: written only when the single
-        //    settlement slot is free, so the `Approve` response can
-        //    never interleave with an in-flight `GetTask`.
-        let approving = if awaiting.is_none() {
+        // 1. The decision (grant or refuse): written only when the
+        //    single settlement slot is free, so the `Approve`/`Deny`
+        //    response can never interleave with an in-flight `GetTask`.
+        let deciding = if awaiting.is_none() {
             match &bridge.phase {
                 PermissionPhase::Approving {
                     approval_id,
                     tool_call_id,
-                } => Some((approval_id.clone(), tool_call_id.clone())),
+                } => Some(PendingDecision::Approve {
+                    approval_id: approval_id.clone(),
+                    tool_call_id: tool_call_id.clone(),
+                }),
+                PermissionPhase::Denying {
+                    approval_id,
+                    tool_call_id,
+                    reason,
+                } => Some(PendingDecision::Deny {
+                    approval_id: approval_id.clone(),
+                    tool_call_id: tool_call_id.clone(),
+                    reason: reason.clone(),
+                }),
                 _ => None,
             }
         } else {
             None
         };
-        if let Some((approval_id, tool_call_id)) = approving {
-            let approval: ApprovalId = approval_id.parse().map_err(|_| {
-                HandlerError::turn_failed(
-                    "gateway_payload_invalid",
-                    "the journalled approval id does not parse as an approval id",
-                )
-            })?;
-            let approve_id = send_frame(
-                conn,
-                Command::Approve {
-                    task_id,
-                    approval_id: approval,
-                },
-            )
-            .await?;
-            // The tool call closes only now: the decision reached the
-            // gateway (schema `ToolCallUpdate.status = completed`).
-            if emit
-                .send(tool_call_status_update(
-                    &session_id,
-                    &tool_call_id,
-                    "completed",
-                ))
-                .is_err()
-            {
-                tracing::warn!("client went away; dropping tool_call_update");
+        if let Some(decision) = deciding {
+            match decision {
+                PendingDecision::Approve {
+                    approval_id,
+                    tool_call_id,
+                } => {
+                    let approval: ApprovalId = approval_id.parse().map_err(|_| {
+                        HandlerError::turn_failed(
+                            "gateway_payload_invalid",
+                            "the journalled approval id does not parse as an approval id",
+                        )
+                    })?;
+                    let approve_id = send_frame(
+                        conn,
+                        Command::Approve {
+                            task_id,
+                            approval_id: approval,
+                        },
+                    )
+                    .await?;
+                    // The tool call closes only now: the decision
+                    // reached the gateway (schema
+                    // `ToolCallUpdate.status = completed`).
+                    if emit
+                        .send(tool_call_status_update(
+                            &session_id,
+                            &tool_call_id,
+                            "completed",
+                        ))
+                        .is_err()
+                    {
+                        tracing::warn!("client went away; dropping tool_call_update");
+                    }
+                    awaiting = Some(approve_id);
+                    awaiting_subscribe = false;
+                    bridge.phase = PermissionPhase::Sent;
+                    tracing::info!(
+                        %approval_id,
+                        %task_id,
+                        "permission granted; Approve issued through the settlement slot"
+                    );
+                }
+                PendingDecision::Deny {
+                    approval_id,
+                    tool_call_id,
+                    reason,
+                } => {
+                    let approval: ApprovalId = approval_id.parse().map_err(|_| {
+                        HandlerError::turn_failed(
+                            "gateway_payload_invalid",
+                            "the journalled approval id does not parse as an approval id",
+                        )
+                    })?;
+                    let deny_id = send_frame(
+                        conn,
+                        Command::Deny {
+                            task_id,
+                            approval_id: approval,
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                    // The tool call closes `failed`: the operation the
+                    // client refused must never run (ADR-0005:47).
+                    if emit
+                        .send(tool_call_status_update(
+                            &session_id,
+                            &tool_call_id,
+                            "failed",
+                        ))
+                        .is_err()
+                    {
+                        tracing::warn!("client went away; dropping tool_call_update");
+                    }
+                    awaiting = Some(deny_id);
+                    awaiting_subscribe = false;
+                    // Arm the bounded settle wait NOW: a terminal
+                    // status may still journal; none ⇒ `refusal` at
+                    // the deadline (never the turn deadline).
+                    bridge.phase = PermissionPhase::Denied {
+                        deadline: Instant::now() + DENY_SETTLE_GRACE,
+                    };
+                    tracing::info!(
+                        %approval_id,
+                        %task_id,
+                        %reason,
+                        "permission refused; Deny issued through the settlement slot; \
+                         bounded refusal settle armed"
+                    );
+                }
             }
-            awaiting = Some(approve_id);
-            awaiting_subscribe = false;
-            bridge.phase = PermissionPhase::Sent;
-            tracing::info!(
-                %approval_id,
-                %task_id,
-                "permission granted; Approve issued through the settlement slot"
-            );
             continue;
         }
         // 2. The client's answer, awaited only when no gateway request
@@ -1262,17 +1440,25 @@ async fn stream_turn(
                     continue;
                 }
             };
-            let granted = match receiver.await {
-                Ok(Ok(value)) if is_allow_once(&value) => true,
+            let answer = match receiver.await {
+                Ok(Ok(value)) if is_allow_once(&value) => ClientAnswer::Grant,
+                Ok(Ok(value)) if is_reject_once(&value) => {
+                    tracing::info!(
+                        %approval_id,
+                        "the ACP client answered reject_once; refusing the park"
+                    );
+                    ClientAnswer::Deny(DENY_REASON_REJECTED.to_owned())
+                }
                 Ok(Ok(value)) => {
-                    // Not a grant: fail closed. The deny/fail-closed
-                    // settlement of non-allow answers is a later slice.
+                    // Not a grant, not a well-formed reject: fail
+                    // closed (the fail-closed response validator is
+                    // this slice's next small task).
                     tracing::warn!(
                         response = %value,
                         "permission response is not selected/allow_once; refusing the \
                          park (fail-closed)"
                     );
-                    false
+                    ClientAnswer::Unresolved
                 }
                 Ok(Err(error)) => {
                     tracing::warn!(
@@ -1280,24 +1466,33 @@ async fn stream_turn(
                         "client answered the permission request with an error frame; \
                          refusing the park (fail-closed)"
                     );
-                    false
+                    ClientAnswer::Unresolved
                 }
                 Err(_) => {
                     tracing::warn!(
                         "permission request slot closed before an answer arrived \
                          (client gone or EOF); refusing the park"
                     );
-                    false
+                    ClientAnswer::Unresolved
                 }
             };
             drop(armed); // already routed (or abandoned): disarm is a no-op
-            if !granted {
-                return Err(approval_parked());
+            match answer {
+                ClientAnswer::Grant => {
+                    bridge.phase = PermissionPhase::Approving {
+                        approval_id,
+                        tool_call_id,
+                    };
+                }
+                ClientAnswer::Deny(reason) => {
+                    bridge.phase = PermissionPhase::Denying {
+                        approval_id,
+                        tool_call_id,
+                        reason,
+                    };
+                }
+                ClientAnswer::Unresolved => return Err(approval_parked()),
             }
-            bridge.phase = PermissionPhase::Approving {
-                approval_id,
-                tool_call_id,
-            };
             continue;
         }
         // 3. Settlement read.
@@ -1312,17 +1507,28 @@ async fn stream_turn(
         //    `approval_request` frame the read is bounded by the orphan
         //    grace, so a park that never carries an ask fails typed
         //    instead of hanging (the buffered ask still wins: the poll
-        //    runs before the timer).
-        let grace = match &bridge.phase {
-            PermissionPhase::AwaitingRequest { deadline } => Some(*deadline),
-            _ => None,
-        };
-        let frame = match grace {
-            Some(deadline) => {
+        //    runs before the timer); while a written `Deny` waits for a
+        //    terminal status the read is bounded by the deny grace, so
+        //    a gateway that journals no terminal status settles the
+        //    prompt `refusal` instead of hanging to the turn deadline.
+        let frame = match read_bound(&bridge.phase) {
+            Some((deadline, expiry)) => {
                 let left = deadline.saturating_duration_since(Instant::now());
                 match tokio::time::timeout(left, conn.read_frame()).await {
                     Ok(frame) => frame.map_err(|error| HandlerError::unavailable(&error))?,
-                    Err(_) => return Err(approval_parked()),
+                    Err(_) => {
+                        return match expiry {
+                            ReadExpiry::Orphan => Err(approval_parked()),
+                            ReadExpiry::DenySettle => {
+                                tracing::info!(
+                                    %task_id,
+                                    "deny grace elapsed with no terminal status; \
+                                     settling the prompt refusal"
+                                );
+                                Ok(refusal_prompt_result())
+                            }
+                        };
+                    }
                 }
             }
             None => conn
@@ -1512,11 +1718,13 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        APPROVAL_REQUEST_GRACE, HandlerError, OutboundRequests, PermissionBridge, PermissionPhase,
-        SessionState, agent_chunk, approval_ask, approval_parked, final_prompt_result,
-        is_allow_once, is_approval_parked, is_settlement_signal, is_terminal_status, parse_cancel,
-        parse_prompt, parse_session_new, permission_request_params, settlement_verdict,
-        stop_reason, tool_call_announcement, tool_call_status_update,
+        APPROVAL_REQUEST_GRACE, DENY_REASON_REJECTED, DENY_SETTLE_GRACE, HandlerError,
+        OutboundRequests, PermissionBridge, PermissionPhase, ReadExpiry, SessionState,
+        agent_chunk, approval_ask, approval_parked, final_prompt_result, is_allow_once,
+        is_approval_parked, is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel,
+        parse_prompt, parse_session_new, permission_request_params, read_bound,
+        refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
+        tool_call_status_update,
     };
     use crate::codec::{
         INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
@@ -2220,5 +2428,91 @@ mod tests {
             .expect("an id-less ask is refused without error");
         assert!(rx.try_recv().is_err());
         assert!(matches!(fresh.phase, PermissionPhase::Idle));
+    }
+
+    /// N1a1 (deny settlement): a written `Deny` phase carries a read
+    /// bound that expires into the `refusal` verdict — no terminal
+    /// status is needed to build it; the orphan branch keeps its own
+    /// typed meaning; the human-paced and free phases carry no bound.
+    #[test]
+    fn deny_grace_expiry_defaults_to_refusal_without_a_terminal_status() {
+        let now = std::time::Instant::now();
+        let denied = PermissionPhase::Denied { deadline: now };
+        let (deadline, expiry) = read_bound(&denied).expect("a written deny is bounded");
+        assert_eq!(expiry, ReadExpiry::DenySettle);
+        assert!(
+            deadline <= now + DENY_SETTLE_GRACE,
+            "the settle wait never exceeds the deny grace"
+        );
+        assert_eq!(
+            refusal_prompt_result(),
+            json!({"stopReason": "refusal", "content": []}),
+            "the refusal verdict needs no terminal status"
+        );
+
+        // The orphan park keeps its own branch (typed error, not a
+        // verdict), and phases with no bound stay free.
+        let orphan = PermissionPhase::AwaitingRequest { deadline: now };
+        assert_eq!(read_bound(&orphan).expect("parked ask is bounded").1, ReadExpiry::Orphan);
+        assert_eq!(read_bound(&PermissionPhase::Idle), None);
+        assert_eq!(read_bound(&PermissionPhase::Sent), None);
+    }
+
+    /// N1a2 (deny settlement): the settle default is exactly `refusal`
+    /// — never `turn_timed_out` (an error `data` marker, never a
+    /// `stopReason`) and never a guessed `end_turn`; and no terminal
+    /// status ever maps to `refusal`, so the verdict has exactly one
+    /// source: the deny grace default.
+    #[test]
+    fn refusal_never_maps_to_turn_timed_out_or_end_turn() {
+        let result = refusal_prompt_result();
+        assert_eq!(result["stopReason"], "refusal");
+        assert_ne!(result["stopReason"], "end_turn");
+        assert_ne!(result["stopReason"], "turn_timed_out");
+        assert!(result["content"].as_array().is_some_and(Vec::is_empty));
+        for status in [
+            "Completed",
+            "Cancelled",
+            "Failed",
+            "WaitingApproval",
+            "Executing",
+        ] {
+            assert_ne!(
+                stop_reason(status).ok(),
+                Some("refusal"),
+                "{status} must never become the deny-settle verdict"
+            );
+        }
+        let timeout = HandlerError::turn_failed("turn_timed_out", "deadline");
+        assert_eq!(timeout.data, json!("turn_timed_out"));
+        assert_eq!(DENY_SETTLE_GRACE, std::time::Duration::from_secs(5));
+        assert_eq!(
+            DENY_REASON_REJECTED,
+            "the ACP client rejected the permission request (reject_once)"
+        );
+    }
+
+    /// The strict reject gate (the symmetric twin of the allow gate):
+    /// only `selected` + the offered `reject_once` classifies as the
+    /// explicit refuse answer — every other shape is not this gate's
+    /// grant-adjacent decision.
+    #[test]
+    fn only_selected_reject_once_refuses() {
+        assert!(is_reject_once(
+            &json!({"outcome": "selected", "optionId": "reject_once"})
+        ));
+        for response in [
+            json!({"outcome": "selected", "optionId": "allow_once"}),
+            json!({"outcome": "selected", "optionId": "reject_always"}),
+            json!({"outcome": "selected"}),
+            json!({"outcome": "cancelled"}),
+            json!({"optionId": "reject_once"}),
+            json!(null),
+        ] {
+            assert!(
+                !is_reject_once(&response),
+                "{response} must never classify as reject_once"
+            );
+        }
     }
 }

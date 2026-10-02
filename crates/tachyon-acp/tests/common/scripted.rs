@@ -25,7 +25,7 @@ use tachyon_protocol::{
     PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, ServerFrame, decode_frame,
     encode_server_frame,
 };
-use tachyon_types::{EventId, TaskId, Timestamp};
+use tachyon_types::{ApprovalId, EventId, TaskId, Timestamp};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 /// The one task every scripted `CreateTask` hands back (any valid UUID).
@@ -143,6 +143,9 @@ struct ScriptState {
     approves: Mutex<VecDeque<ApproveAnswer>>,
     /// Every `Approve` observed, as `(task_id, approval_id)` in order.
     approvals_seen: Mutex<Vec<(String, String)>>,
+    /// Every `Deny` observed, as `(task_id, approval_id, reason)` in
+    /// order — the fail-closed settlement pin (ticket 02).
+    denies_seen: Mutex<Vec<(String, String, String)>>,
     /// `after_seq` of every `Subscribe` seen, in order.
     cursors: Mutex<Vec<i64>>,
     /// Total `GetTask` calls observed.
@@ -156,6 +159,7 @@ impl ScriptState {
             subscribes: Mutex::new(script.subscribes.into()),
             approves: Mutex::new(script.approves.into()),
             approvals_seen: Mutex::new(Vec::new()),
+            denies_seen: Mutex::new(Vec::new()),
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
         }
@@ -234,6 +238,19 @@ impl ScriptedGateway {
             .clone()
     }
 
+    /// Every `Deny` the adapter issued, as `(task_id, approval_id,
+    /// reason)` in call order — the proof that a refuse/fail-closed
+    /// answer reached the gateway with the parked identity and a
+    /// reason naming the ACP client (ticket 02).
+    #[must_use]
+    pub fn denies_seen(&self) -> Vec<(String, String, String)> {
+        self.state
+            .denies_seen
+            .lock()
+            .expect("denies lock")
+            .clone()
+    }
+
     /// Stops accepting; connection handlers end on their own when the
     /// adapter's sockets close.
     pub fn shutdown(&self) {
@@ -252,6 +269,43 @@ fn refused(code: &str, message: &str) -> CommandResult {
         code: code.to_owned(),
         message: message.to_owned(),
     }
+}
+
+/// Answers one `Command::Deny` (ticket 02's fail-closed settlement):
+/// records the decision, then a FIXED reaction mirroring the real
+/// gateway `decide` — the post-decision task snapshot in the response,
+/// then the denied `approval` journal, then the `WaitingApproval →
+/// Executing` status. NO terminal status ever follows a deny (the
+/// pre-existing gateway gap) — the adapter's bounded refusal settle
+/// must cover it. Event seq values on these pushed frames are unused
+/// by the adapter (only `Resync.after_seq` matters).
+fn deny_answer(
+    state: &ScriptState,
+    task_id: &TaskId,
+    approval_id: &ApprovalId,
+    reason: &str,
+) -> (CommandResult, Vec<Step>) {
+    state.denies_seen.lock().expect("denies lock").push((
+        task_id.to_string(),
+        approval_id.to_string(),
+        reason.to_owned(),
+    ));
+    let post = vec![
+        Step::Journal {
+            seq: 3,
+            kind: "approval",
+            payload: json!({
+                "t": "Approval",
+                "v": {"approval": approval_id.to_string(), "granted": false, "reason": reason},
+            }),
+        },
+        Step::Journal {
+            seq: 4,
+            kind: "status",
+            payload: status_payload("Executing"),
+        },
+    ];
+    (ok(json!({ "task": task_status("Executing") })), post)
 }
 
 /// Answers one scripted command: the result plus the frames to push
@@ -301,6 +355,15 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
                     "no scripted Approve answer left for this call",
                 ),
             }
+        }
+        Command::Deny {
+            task_id,
+            approval_id,
+            reason,
+        } => {
+            let (result, deny_post) = deny_answer(state, task_id, approval_id, reason);
+            post = deny_post;
+            result
         }
         Command::Subscribe { after_seq, .. } => {
             state.cursors.lock().expect("cursor lock").push(*after_seq);
