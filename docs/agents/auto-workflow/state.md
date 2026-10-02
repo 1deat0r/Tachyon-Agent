@@ -221,6 +221,8 @@ updated: 2026-10-02T05:54:51Z
 
 2026-10-02T10:09:04Z EVENT task 2/4: skill rule 15 — scout output persists to evidence/, briefs cite paths. dotfiles 363e285.
 
+2026-10-02T10:09:27Z EVENT task 3/4: skill rule 16 — LOG events <=40 words + evidence path. dotfiles ca07f03.
+
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
 status: running
