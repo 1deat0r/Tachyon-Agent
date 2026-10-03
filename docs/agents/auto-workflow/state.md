@@ -24,6 +24,7 @@ updated: 2026-10-03T00:41:00Z
 2026-10-03T00:41:00Z EXEC 56 phase-1
 
 ## ARCHIVE 2026-10-03T00:34:30Z
+## STATE
 status: running
 origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/request_permission permission bridge (one-shot approvals driven through the adapter) or the grill-chosen runner-up from the residue list — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions
