@@ -196,3 +196,69 @@ async fn gate_gettask_failure_fails_closed() {
     let (_rest, _stderr, exit_ok) = adapter.finish().await;
     assert!(exit_ok);
 }
+
+/// THE cancel-release pin (ADR-0005:41): with no local turn, the
+/// cancel falls back to the load-recorded task — the fixture observes
+/// exactly ONE `CancelTask` carrying that id — and the completed stop
+/// clears the record, so the next prompt's gate costs NOTHING (zero
+/// gate `GetTask`s) and the prompt runs to `end_turn`.
+#[tokio::test]
+async fn prompt_gate_releases_after_cancel() {
+    let dir = test_dir();
+    let fixture = ScriptedGateway::start_with_get_session(
+        &dir,
+        Script {
+            // NO gate GetTask here: the prompt's own reads only —
+            // fresh-state, then settlement after the journal below.
+            get_tasks: vec![task_status("Executing"), task_completed("after cancel")],
+            subscribes: vec![Subscription {
+                replay: vec![],
+                post: vec![Step::Journal {
+                    seq: 1,
+                    kind: "status",
+                    payload: status_payload("Completed"),
+                }],
+            }],
+            approves: vec![],
+        },
+        get_session_recording(),
+    );
+
+    let mut adapter = Adapter::spawn(&dir);
+    adapter.send(&load_line(1)).await;
+    let (_n, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+    assert_eq!(parse_frame(&response_line)["result"], json!({}));
+
+    // Stop the recorded turn: the cancel targets it (no local turn).
+    adapter
+        .send(r#"{"jsonrpc":"2.0","id":2,"method":"session/cancel","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000"}}"#)
+        .await;
+    let (_n, response_line) = adapter.read_until_response(json!(2), WAIT).await;
+    assert_eq!(parse_frame(&response_line)["result"], json!({}));
+    assert_eq!(
+        fixture.cancels_seen(),
+        vec![RECORDED_TASK.to_owned()],
+        "the cancel stopped exactly the load-recorded task"
+    );
+
+    // Record cleared ⇒ the gate early-returns (NO GetTask): exactly the
+    // prompt's own two reads happen, and the prompt completes.
+    adapter.send(&prompt_line(3)).await;
+    let (_updates, response_line) = adapter.read_until_response(json!(3), WAIT).await;
+    let response = parse_frame(&response_line);
+    assert_eq!(
+        response["result"]["stopReason"], "end_turn",
+        "released gate ⇒ the prompt runs: {response_line}"
+    );
+    assert_eq!(
+        fixture.get_task_calls(),
+        2,
+        "fresh + settlement only — the gate never ran (record cleared)"
+    );
+    assert_eq!(fixture.create_task_calls(), 1);
+
+    fixture.shutdown();
+    adapter.close_stdin();
+    let (_rest, _stderr, exit_ok) = adapter.finish().await;
+    assert!(exit_ok);
+}

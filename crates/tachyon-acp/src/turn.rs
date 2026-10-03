@@ -1886,10 +1886,13 @@ async fn cancel_pipeline<C: Connector>(
     state: &Arc<SessionState>,
     session_id: SessionId,
 ) -> Result<(), HandlerError> {
-    // The active turn's published task id is the ONLY task this cancel
-    // may touch: a no-op cancel never cancels a historical task
-    // (reconnect/attach is a later slice).
-    let target = match state.turn_task(&session_id.to_string()) {
+    // The target: the ACTIVE turn's published task id first (a local
+    // turn outranks everything), else the NON-TERMINAL task recorded
+    // by `session/load` — the ADR-0005:41 explicit stop for work that
+    // outlived the adapter process. Never a historical/terminal task:
+    // the record only ever holds a non-terminal id and clears the
+    // moment it reaches one.
+    let local_target = match state.turn_task(&session_id.to_string()) {
         Some(mut received) => match received.wait_for(Option::is_some).await {
             Ok(published) => *published,
             // The turn ended before `CreateTask` published a task id:
@@ -1899,28 +1902,44 @@ async fn cancel_pipeline<C: Connector>(
         },
         None => None,
     };
+    let from_record = local_target.is_none();
+    let target = match local_target {
+        Some(task_id) => Some(task_id),
+        None => state.recorded_task(&session_id.to_string()),
+    };
     let mut conn = connector
         .connect()
         .await
         .map_err(|error| HandlerError::unavailable(&error))?;
     if let Some(task_id) = target {
-        // The cancel targets this session's active turn: mark it BEFORE
-        // anything is awaited, so the turn's `cancelled` answer (whenever
-        // it routes) finds the mark and sends zero decision frames
-        // (ADR-0005:49; the guard the permission bridge consults).
-        state.arm_cancel_resolution(&session_id.to_string());
-        // Resolve an outstanding permission request LOCALLY as
-        // `cancelled` (M1a): the cancelling client will never answer
-        // it, and the inline cancel must not wait on that answer (M1c
-        // — no deadlock). The gateway expires the parked row itself
-        // during `CancelTask`; a late client answer finds a disarmed
-        // slot and is ignored.
-        if state.resolve_outstanding_locally(&session_id.to_string()) {
+        // Cancel-mark arming and the local permission-request
+        // resolution are LOCAL-turn state (they guard THIS process's
+        // exchange); a recorded target has neither, so neither runs.
+        if from_record {
             tracing::info!(
                 %session_id,
-                "outstanding permission request resolved locally as cancelled; \
-                 no Approve/Deny issued"
+                %task_id,
+                "session/cancel: stopping the load-recorded turn (ADR-0005:41)"
             );
+        } else {
+            // The cancel targets this session's active turn: mark it BEFORE
+            // anything is awaited, so the turn's `cancelled` answer (whenever
+            // it routes) finds the mark and sends zero decision frames
+            // (ADR-0005:49; the guard the permission bridge consults).
+            state.arm_cancel_resolution(&session_id.to_string());
+            // Resolve an outstanding permission request LOCALLY as
+            // `cancelled` (M1a): the cancelling client will never answer
+            // it, and the inline cancel must not wait on that answer (M1c
+            // — no deadlock). The gateway expires the parked row itself
+            // during `CancelTask`; a late client answer finds a disarmed
+            // slot and is ignored.
+            if state.resolve_outstanding_locally(&session_id.to_string()) {
+                tracing::info!(
+                    %session_id,
+                    "outstanding permission request resolved locally as cancelled; \
+                     no Approve/Deny issued"
+                );
+            }
         }
         match conn.call(Command::CancelTask { task_id }).await {
             Ok(payload) => {
@@ -1936,6 +1955,9 @@ async fn cancel_pipeline<C: Connector>(
                     "session/cancel: drain ack received (CancelTask responded); the \
                      cancel reply follows only now"
                 );
+                // Scoped release: the record clears only if it still
+                // names THIS task (a newer load's record survives).
+                state.clear_recorded_if(&session_id.to_string(), task_id);
                 Ok(())
             }
             // The task reached a terminal state before (or during) this
@@ -1948,8 +1970,26 @@ async fn cancel_pipeline<C: Connector>(
                     detail = %message,
                     "session/cancel: task already terminal; idempotent ok"
                 );
+                state.clear_recorded_if(&session_id.to_string(), task_id);
                 Ok(())
             }
+            // A RECORDED task that vanished from the store: nothing
+            // left to stop, so the record releases (the gate would
+            // release it on the next prompt anyway) — idempotent ok.
+            Err(GatewayCallError::Refused { code, .. })
+                if from_record && code == "unknown_task" =>
+            {
+                tracing::info!(
+                    %session_id,
+                    %task_id,
+                    "session/cancel: recorded task no longer exists; record released"
+                );
+                state.clear_recorded_if(&session_id.to_string(), task_id);
+                Ok(())
+            }
+            // Any OTHER failure propagates WITHOUT clearing the
+            // record: the stop did not happen, and the gate must keep
+            // refusing (fail closed).
             Err(error) => Err(call_error(error)),
         }
     } else {
