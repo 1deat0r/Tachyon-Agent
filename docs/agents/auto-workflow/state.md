@@ -15,8 +15,9 @@ phase_entries: 1=1
 exec_count: 65
 polls: 0
 skills_pin: none
-updated: 2026-10-03T03:28:00Z
+updated: 2026-10-03T04:23:52Z
 ## LOG
+2026-10-03T04:23:52Z EVENT clock note: the ARCHIVE below carries updated:2026-10-03T03:42:00Z with its Phase-7 rows stamped 03:40/03:42 — written AHEAD of wall clock (~03:25 actual), so they postdate this rotation's 03:28 rows; rotation suffixes (report/decisions-...03:42:00Z) pair correctly off the archived STATE's updated value, only the absolute stamps drifted; no history rewritten
 2026-10-03T03:28:00Z EVENT ===== GOAL ROTATION (prior goal outcome success, frontier empty) =====
 2026-10-03T03:28:00Z EVENT rotations: report.md -> report-2026-10-03T03:42:00Z.md; decisions.md -> decisions-2026-10-03T03:42:00Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-03T03:42:00Z'; phase_entries/polls RESET; spec/tickets/edges/attempts cleared; baseline+fixed_point re-recorded at 6bdb4d5 (clean tree)
 2026-10-03T03:28:00Z EVENT goal intake: derived from open issues -> #57 (P1) again — session/load + loadSession:true slice COMPLETE (3 tickets, Phase 7 hard-fix stateless gate, Phase 8 report). Next-goal candidates sized deterministically from the capability doc residue + schema-v1.23.0: (a) MCP-at-setup — DEFERRED: needs an ACP approval-surface design (ApproveMCPServers has no ACP answer path; mcp_approvals is gateway-in-memory), not a tracer bullet; (b) ResourceLink — DEFERRED: needs a bounded evidence-access resolution design (ADR-0005:42); (c) attach/reconnect — large (live-subscription handoff); (d) ANNOUNCED tool_call CLOSURE ON CANCEL — SELECTED: smallest highest-value (one emission point in the turn's NoDecision path + one frame-order pin decision; ToolCallUpdate requires only toolCallId, status optional/pinned schema; closes a listed residue item). #44 skipped (P3, deferred); derived_tried seeded with the 8 consumed slices
