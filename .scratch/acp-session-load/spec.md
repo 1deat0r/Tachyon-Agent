@@ -56,3 +56,16 @@ From the perspective of an ACP client:
 
 - Schema pin: `agentclientprotocol/agent-client-protocol` tag `schema-v1.23.0`, `schema/v1/schema.json` (`LoadSessionRequest`/`LoadSessionResponse`, `SessionUpdate` → `user_message_chunk`/`agent_message_chunk`, `ContentChunk.messageId` optional) — local copy in `/tmp/acp-schema-v1.23.0.json` is ephemeral; re-fetch from the tag if gone.
 - Protocol doc pin: agentclientprotocol.com/protocol/session-setup §Loading Sessions (replay via `session/update`, then `{}`).
+
+## Phase 7 amendment — stateless gate (2026-10-03)
+
+Pass 1 found a HARD defect in the recorded-turn gate as specified above: the record existed only when `session/load` ran **in this process**, so a fresh-key prompt with a non-terminal recorded turn was ACCEPTED when load never ran — the post-restart re-prompt (clients re-prompt with old ids; `session_id_resolves_after_adapter_restart` proves it) and the post-`turn_timed_out` re-prompt. The gateway has NO per-session overlap guard (`create_supervised`/`start_run` scouted: only `UNIQUE(session_id, key)` idempotency), so both paths could create a second live turn for one session — ADR-0005:39's "do not accept overlapping turns".
+
+The fix makes the gate **stateless and stronger**, and simpler:
+
+- **Gate location:** `prompt_turn` reads the session's LAST recorded turn from the `GetSession` it already issues (zero extra gateway calls — the old design cost one extra `GetTask` round trip per prompt after a load). Non-terminal ⇒ typed `-32003 turn_in_progress` BEFORE `CreateTask`; terminal/absent ⇒ proceed; corrupt row / failed read ⇒ typed fail (never a guessed release).
+- **No stored record:** `SessionState.recorded`, `set_recorded`/`recorded_task`/`clear_recorded_if`, `GateVerdict`/`recorded_gate_verdict`, and `LoadOutcome` are deleted — no memory, covers load/no-load/post-timeout paths uniformly, nothing to clear or re-derive.
+- **Cancel fallback:** the no-local-turn path derives its target from its OWN `GetSession` (extracted as `cancel_outlived_turn`): non-terminal last turn ⇒ `CancelTask` on it (`ok`/`illegal_transition`/`unknown_task` all mean "not running" ⇒ idempotent ok); terminal/absent ⇒ the original byte-pinned no-op.
+- **Spec deltas:** "Implementation Decisions → Layers touched" (record + gate at `try_acquire_turn`), "Gate semantics", and ticket 02's Verify names are superseded by this amendment; ticket 02's small tasks record what was FIRST built, then reworked in commit `808905e`.
+
+Verification: `cargo verify` exit 0, 858 passed; mutation-red ×2 (gate never refuses ⇒ 2 tests fail; cancel never derives ⇒ `prompt_gate_releases_after_cancel` fails); new regression pin `prompt_without_any_load_is_refused_while_the_recorded_turn_runs`.
