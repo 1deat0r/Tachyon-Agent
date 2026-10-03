@@ -717,6 +717,14 @@ fn parse_url(url: &str, allow_insecure_remote: bool) -> Result<ParsedUrl, ModelE
         Some(index) => (rest[..index].to_owned(), rest[index..].to_owned()),
         None => (rest.to_owned(), "/".to_owned()),
     };
+    // Requests append `/v1/chat/completions` themselves; a versioned base
+    // would double the prefix and 404 on every standard server, so refuse
+    // it at config load with the actionable reason (measured 2026-10-03).
+    if path.trim_end_matches('/') == "/v1" {
+        return Err(ModelError::InvalidRequest(format!(
+            "base URL must not end in /v1: Tachyon appends /v1/chat/completions itself: {url}"
+        )));
+    }
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => {
             let port = port
@@ -1283,12 +1291,12 @@ mod tests {
 
     #[test]
     fn plain_http_only_never_downgrades() {
-        assert!(parse_url("http://example.com/v1", false).is_err());
-        let url = parse_url("http://localhost:11434/v1", false).expect("http");
+        assert!(parse_url("http://example.com", false).is_err());
+        let url = parse_url("http://localhost:11434", false).expect("http");
         let (host, port, path) = (url.host, url.port, url.path);
         assert_eq!(
             (host.as_str(), port, path.as_str()),
-            ("localhost", 11434, "/v1")
+            ("localhost", 11434, "/")
         );
     }
 
@@ -1363,6 +1371,19 @@ mod tests {
         assert!(parse_url("http://host/x\r\nInjected: yes", false).is_err());
     }
 
+    #[test]
+    fn version_prefix_in_base_url_fails_closed() {
+        let Err(error) = parse_url("https://api.example.com/v1", false) else {
+            panic!("a trailing /v1 must be refused before any request");
+        };
+        assert!(
+            error.to_string().contains("/v1/chat/completions"),
+            "refusal must name the appended path: {error}"
+        );
+        assert!(parse_url("https://api.example.com/v1/", false).is_err());
+        assert!(parse_url("https://api.example.com", false).is_ok());
+    }
+
     #[tokio::test]
     async fn stub_response_parses_to_decision() {
         let completion = serde_json::json!({
@@ -1414,11 +1435,11 @@ mod tests {
         // passes validation with no escape hatch; plaintext to a remote
         // host is still refused, and anything that is not http(s) never
         // reaches a socket.
-        assert!(parse_url("https://api.example.com/v1", false).is_ok());
-        assert!(parse_url("http://127.0.0.1:11434/v1", false).is_ok());
-        assert!(parse_url("http://api.example.com/v1", false).is_err());
-        assert!(parse_url("ftp://api.example.com/v1", false).is_err());
-        assert!(parse_url("api.example.com/v1", false).is_err());
+        assert!(parse_url("https://api.example.com", false).is_ok());
+        assert!(parse_url("http://127.0.0.1:11434", false).is_ok());
+        assert!(parse_url("http://api.example.com", false).is_err());
+        assert!(parse_url("ftp://api.example.com", false).is_err());
+        assert!(parse_url("api.example.com", false).is_err());
     }
 
     #[tokio::test]
