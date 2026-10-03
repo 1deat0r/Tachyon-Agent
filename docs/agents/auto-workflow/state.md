@@ -4,19 +4,21 @@ origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/load + loadSession:true slice (durable session lookup, ordered conversation replay, recorded-turn reconciliation per ADR-0005:29,39-40) — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions; fall back to the grill-chosen runner-up from the residue list
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done)
-phase: 4
+phase: 5
 fixed_point: c19d196610198e2308b46ebf280c8ca8aaa98fe7
 baseline: c19d196610198e2308b46ebf280c8ca8aaa98fe7 + clean
 spec: .scratch/acp-session-load/spec.md
-tickets: 01=ready 02=ready 03=ready
-edges: 01->02 02->03 (direction: blocker->blocked)
-attempts: 01=0 02=0 03=0
-phase_entries: 1=1 3=1 4=1
-exec_count: 58
+tickets: 01=done 02=ready 03=ready
+edges: 01->02 02->03 (direction: blocker->blocked; 01 done)
+attempts: 01=1 02=1 03=0
+phase_entries: 1=1 3=1 4=1 5=1
+exec_count: 59
 polls: 0
 skills_pin: none
-updated: 2026-10-03T00:58:00Z
+updated: 2026-10-03T01:35:00Z
 ## LOG
+2026-10-03T01:35:00Z EVENT TASK 01 done as 2 small-task commits (8571481 arm+pins, 9912b5b wire tests+fixture seam), verify exit 0, 852 tests (+9); mutation-red x4 (workspace check, speaker map, inline-result ordering); evidence to follow at ticket close. TASK 02 attempt 1 started (prompt gate).
+2026-10-03T01:35:00Z EXEC 59 phase-5 (ticket 02)
 2026-10-03T00:58:00Z EVENT Phase 4 (tickets) complete: 3 linear tracer-bullet tickets at .scratch/acp-session-load/issues/ — 01 load arm (ready), 02 prompt gate (blocked by 01), 03 advertise flip (blocked by 02); 4-level hierarchy per rule 18; cross-run dedup: no title matches with prior slices
 2026-10-03T00:58:00Z EXEC 58 phase-4
 2026-10-03T00:58:00Z EVENT Phase 3 (spec) complete: .scratch/acp-session-load/spec.md (local tracker, ready-for-agent; schema pin re-fetched at schema-v1.23.0 — LoadSessionRequest/Response + SessionUpdate shapes; protocol doc pin recorded in Further Notes)
