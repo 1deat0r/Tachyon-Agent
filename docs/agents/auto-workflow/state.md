@@ -4,19 +4,23 @@ origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/load + loadSession:true slice (durable session lookup, ordered conversation replay, recorded-turn reconciliation per ADR-0005:29,39-40) — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions; fall back to the grill-chosen runner-up from the residue list
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done)
-phase: 5
+phase: 7
 fixed_point: c19d196610198e2308b46ebf280c8ca8aaa98fe7
 baseline: c19d196610198e2308b46ebf280c8ca8aaa98fe7 + clean
 spec: .scratch/acp-session-load/spec.md
 tickets: 01=done 02=done 03=done
 edges: 01->02 02->03 (direction: blocker->blocked; all done)
 attempts: 01=1 02=1 03=1
-phase_entries: 1=1 3=1 4=1 5=4 6=1 7=1
-exec_count: 62
+phase_entries: 1=1 3=1 4=1 5=4 6=2 7=2
+exec_count: 64
 polls: 0
 skills_pin: none
-updated: 2026-10-03T03:05:00Z
+updated: 2026-10-03T03:42:00Z
 ## LOG
+2026-10-03T03:42:00Z EVENT Phase 6 GREEN for the Phase 7 fix: cargo verify exit 0, workspace 858 passed / 0 failed; MUTATION RED x2 (gate-never-refuses, cancel-never-derives); commits 808905e (stateless gate fix) + 498656b (docs + spec amendment)
+2026-10-03T03:42:00Z EXEC 64 phase-7 (review pass 3/3 — final, affected surface)
+2026-10-03T03:42:00Z EVENT Phase 7 pass 3 CLEAN: gate precedes CreateTask, single prompt path, cancel derives in cancel_outlived_turn, no stale stored-record claims, same-call-retry intact; rule-17 budget 3/3 used; evidence .scratch/acp-session-load/evidence/phase7-1-review.md. All tickets done + review clean -> Phase 8 (retro/rotation).
+2026-10-03T03:42:00Z EXEC 63 phase-6 (post-fix full gate)
 2026-10-03T03:05:00Z EVENT Phase 7 pass 1 (two axes, orchestrator self-review — no subagent tool) found 1 HARD finding: the recorded-turn gate is load-scoped (record set only by session/load in this process), so a fresh-key prompt with a non-terminal recorded turn is ACCEPTED when load never ran (post-restart re-prompt — no gateway overlap guard exists, verified: create_supervised/start_run have none, UNIQUE(session_id,key) is idempotency only; also pre-existing post-turn_timed_out re-prompt hole) — ADR-0005:39 'do not accept overlapping turns'. Disposition: fix = move the gate into prompt_turn's EXISTING GetSession (stateless, zero extra gateway calls vs the current extra GetTask connection), delete the record machinery, cancel derives its fallback target from its own GetSession, same-key retries exempt (gateway idempotency = no duplicate). Evidence: .scratch/acp-session-load/evidence/phase7-1-review.md
 2026-10-03T03:05:00Z EXEC 62 phase-5 (review fix: stateless prompt-time gate)
 2026-10-03T02:35:00Z EVENT Phase 6 GREEN for TASK 03 (full gate): cargo verify exit 0, workspace 858 passed / 0 failed (fmt + check + clippy -D warnings + xtask); no stale loadSession:false claims; TASK 03 done as 1 commit (2abc099). All tickets done -> Phase 7 review (rule 17: two axes).
