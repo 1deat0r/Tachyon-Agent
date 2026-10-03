@@ -4,19 +4,26 @@ origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/request_permission permission bridge (one-shot approvals driven through the adapter) or the grill-chosen runner-up from the residue list — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done)
-phase: 7
+phase: 8
 fixed_point: 8c23b6e8a4fe7ec4e70d16829ef9147595a38d39
 spec: .scratch/acp-permission-bridge/spec.md
 baseline: 8c23b6e8a4fe7ec4e70d16829ef9147595a38d39 + dirty (57 porcelain entries; five verified slices uncommitted in tree: reconciliation + MCP stdio + cancellation-drain + env/secret + ACP adapter lifecycle)
 tickets: 01=done 02=done 03=done
 edges: 01->02 02->03 (direction: blocker->blocked)
 attempts: 01=1 02=1 03=1
-phase_entries: 2=1 3=1 4=1 5=1 7=1
-exec_count: 51
+phase_entries: 2=1 3=1 4=1 5=2 6=2 7=2
+exec_count: 55
 polls: 0
 skills_pin: none
-updated: 2026-10-02T23:49:30Z
+updated: 2026-10-03T00:34:30Z
 ## LOG
+2026-10-03T00:34:30Z EVENT Phase 7 pass 3 (affected surface, at d7c7db3 + 2683f76) CLEAN — review budget 3/3 used; hard finding H1 (unbounded gateway read during suspension) fixed, verified (cargo verify exit 0, 843 passed), documented (2-line capability-doc precision); evidence/phase7-1-review.md. All tickets done + review clean -> Phase 8 (retro/rotation).
+2026-10-03T00:34:30Z EXEC 54 phase-7 (review pass 3/3 — final)
+2026-10-03T00:34:30Z EXEC 55 phase-8 (retro + rotation)
+2026-10-03T00:34:30Z EVENT Phase 6 GREEN for the Phase 7 fix: cargo verify exit 0, workspace 843 passed / 0 failed (+2 units), fmt+check+clippy -D warnings green; MUTATION RED recorded in evidence; commits d7c7db3 (fix) + 2683f76 (doc)
+2026-10-03T00:34:30Z EXEC 53 phase-6 (post-fix full gate)
+2026-10-03T00:34:30Z EVENT Phase 7 pass 1 (two axes, orchestrator self-review — no subagent tool in harness) found 1 hard finding: step-4 unbounded gateway read while the turn budget is suspended; pass 2 disposition confirmed hard -> fix. JEV probe: zero configured classifiers (degradation logged, deterministic routing kept)
+2026-10-03T00:34:30Z EXEC 52 phase-5 (review fix round: frozen-deadline gateway read bound)
 2026-10-02T23:49:30Z EVENT tracker reconcile: header said phase 5 / exec_count 50 while LOG already held EXEC 51 phase-7 (post-TASK-03 write missed the header); phase set 7, exec_count 51, phase_entries 7=1 — tracker-only, no code touched
 2026-10-02T13:08:24Z EVENT TASK 03 done as 5 small-task commits (d22c422..5edd588), verify exit 0, 841 tests; evidence/phase5-3-ticket03.md. All bridge tasks complete -> Phase 7 review (rule 17: two axes, evidence files).
 2026-10-02T13:08:24Z EXEC 51 phase-7
