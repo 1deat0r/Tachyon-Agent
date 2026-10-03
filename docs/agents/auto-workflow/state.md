@@ -4,19 +4,22 @@ origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/load + loadSession:true slice (durable session lookup, ordered conversation replay, recorded-turn reconciliation per ADR-0005:29,39-40) — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions; fall back to the grill-chosen runner-up from the residue list
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done)
-phase: 5
+phase: 7
 fixed_point: c19d196610198e2308b46ebf280c8ca8aaa98fe7
 baseline: c19d196610198e2308b46ebf280c8ca8aaa98fe7 + clean
 spec: .scratch/acp-session-load/spec.md
-tickets: 01=done 02=done 03=ready
-edges: 01->02 02->03 (direction: blocker->blocked; 01+02 done)
+tickets: 01=done 02=done 03=done
+edges: 01->02 02->03 (direction: blocker->blocked; all done)
 attempts: 01=1 02=1 03=1
-phase_entries: 1=1 3=1 4=1 5=2
-exec_count: 60
+phase_entries: 1=1 3=1 4=1 5=3 6=1 7=1
+exec_count: 61
 polls: 0
 skills_pin: none
-updated: 2026-10-03T02:20:07Z
+updated: 2026-10-03T02:35:00Z
 ## LOG
+2026-10-03T02:35:00Z EVENT Phase 6 GREEN for TASK 03 (full gate): cargo verify exit 0, workspace 858 passed / 0 failed (fmt + check + clippy -D warnings + xtask); no stale loadSession:false claims; TASK 03 done as 1 commit (2abc099). All tickets done -> Phase 7 review (rule 17: two axes).
+2026-10-03T02:35:00Z EXEC 61 phase-7 (review pass 1/3)
+2026-10-03T02:35:00Z EVENT TASK 03 S1 done: loadSession:true flag + initialize golden + live golden + capability doc (7 edits: shipped surface, param marker, gate contract, cancel fallback, idempotency cross-ref, residue bullet removed, 13 test names added)
 2026-10-03T02:20:07Z EVENT TASK 02 done as 2 small-task commits (e73b640 record+gate, 3e94c0e cancel release), verify exit 0, 858 tests (+6); mutation-red x3 (verdict-never-blocks, record-never-stored, cancel-never-clears); TASK 03 attempt 1 started (loadSession flip + capability doc).
 2026-10-03T02:20:07Z EXEC 60 phase-5 (ticket 03)
 2026-10-03T01:33:06Z EVENT clock note: the TASK-01 rows above carry 01:35:00Z (written ahead of the actual 01:33:06Z wall clock); corrected values are the ones in this line — tracker text was published before the tweak landed, no history rewrite
