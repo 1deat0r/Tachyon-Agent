@@ -5,12 +5,14 @@
 **Verify:** `cargo test -p tachyon-acp` — scripted/live: `prompt_after_load_is_refused_while_the_recorded_turn_runs` (load records non-terminal → prompt → `-32003 turn_in_progress`, zero `CreateTask` calls at the fixture), `prompt_after_load_proceeds_once_the_recorded_turn_is_terminal` (recorded turn terminal on the fresh `GetTask` → record cleared → prompt proceeds), `prompt_gate_releases_after_cancel` (cancel completes → record cleared → prompt proceeds), `gate_gettask_failure_fails_closed` (gateway error at the gate ⇒ typed refusal, no prompt); unit: `record_gate_decision_table` (non-terminal ⇒ block; terminal ⇒ release; missing ⇒ release; transport error ⇒ typed failure).
 
 ## Small tasks (each = one commit, in order)
-- [ ] S1 record on load + gate decision unit · Verify: `record_gate_decision_table` + load-side record assertions
-  - [ ] M1a `recorded: Mutex<HashMap<SessionId, TaskId>>` on `SessionState`; populated only for non-terminal last turns
-    - [ ] N1a1 record is in-process only (no store writes; restart ⇒ re-derived at next load)
-- [ ] S2 gate wiring at prompt entry + scripted/live tests · Verify: `prompt_after_load_is_refused_while_the_recorded_turn_runs`, `prompt_after_load_proceeds_once_the_recorded_turn_is_terminal`, `gate_gettask_failure_fails_closed`
-  - [ ] M2a fresh `GetTask` in the gate; terminal/missing ⇒ clear + proceed
-    - [ ] N2a1 zero `CreateTask` frames while blocked (fixture call count)
-- [ ] S3 cancel release + full suite green · Verify: `prompt_gate_releases_after_cancel`; `cargo test -p tachyon-acp` exit 0
-  - [ ] M3a cancel completion clears the record for its task id
-    - [ ] N3a1 clearing is scoped to (session, task) — a different task's record survives
+
+Decomposition note (dead-code reality, same as ticket 01): the record WRITE (on load), the record READERS (gate + cancel), and the verdict fn cannot land separately — an unwired reader fails `clippy -D warnings`. S1 = the whole gate (write + read + tests); S2 = cancel release (the one remaining reader) + full gate.
+
+- [x] S1 record + gate: `SessionState.recorded` (`set_recorded` on load success — None clears), pure `recorded_turn` (last turn non-terminal ⇒ its id; corrupt id ⇒ typed), `GateVerdict` + `recorded_gate_verdict` (terminal/`unknown_task` ⇒ Release, non-terminal ⇒ Block, other refusal/transport/bad payload ⇒ Fail typed), `recorded_turn_in_progress()` ctor (same `-32003 turn_in_progress` marker), gate wired in the prompt arm AFTER the probe gate (guard drops on refusal) + fixture `create_task_calls` counter · Verify: units `record_gate_decision_table`, `recorded_turn_tracks_only_the_last_turn`; wire `prompt_after_load_is_refused_while_the_recorded_turn_runs` (zero CreateTask), `prompt_after_load_proceeds_once_the_recorded_turn_is_terminal` (end_turn), `gate_gettask_failure_fails_closed` (typed, zero CreateTask)
+  - [x] M1a record write on load + readers + verdict + gate wiring in ONE commit
+    - [x] N1a1 record is in-process only (no store writes; re-derived at each successful load — a terminal last turn CLEARS a stale record)
+    - [x] N1a2 gate runs after the probe gate; its typed refusal releases the turn guard (slot never wedges)
+    - [x] N1a3 no record ⇒ gate is a zero-cost early return (no connection)
+- [ ] S2 cancel release: `cancel_pipeline` fallback target = the recorded non-terminal task when no local turn (ADR-0005:41 explicit stop; local target always wins; `clear_recorded_if(session, task)` on CancelTask ok / `illegal_transition` / `unknown_task`; other errors propagate WITHOUT clearing — fail closed), comment contract updated · Verify: wire `prompt_gate_releases_after_cancel` (CancelTask observed with the recorded id + prompt proceeds with NO gate GetTask), full `tachyon-acp` suite + `cargo verify` exit 0
+  - [ ] M2a arming of cancel marks stays LOCAL-turn-only (a recorded target has no local turn/slot to arm)
+    - [ ] N2a1 a different task's record survives the clear (scoped to session+task)

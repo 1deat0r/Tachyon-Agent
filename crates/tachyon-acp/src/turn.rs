@@ -189,6 +189,23 @@ impl HandlerError {
             data: json!("turn_in_progress"),
         }
     }
+
+    /// The recorded-turn gate refusal (`-32003`): the session's last
+    /// `session/load` recorded a turn that is still running (ADR-
+    /// 0005:39). SAME wire code and `turn_in_progress` data marker as
+    /// [`HandlerError::turn_in_progress`] (one refusal class for one
+    /// overlap hazard), message names the recorded cause so the client
+    /// knows the recovery: wait, or `session/cancel`.
+    pub(crate) fn recorded_turn_in_progress() -> Self {
+        Self {
+            code: TURN_CONFLICT,
+            message:
+                "A recorded turn from session/load is still in progress; wait for it to finish, \
+                 or session/cancel it"
+                    .to_owned(),
+            data: json!("turn_in_progress"),
+        }
+    }
 }
 
 /// Maps a transport failure from one command round trip onto its wire
@@ -342,6 +359,16 @@ pub(crate) fn check_load_workspace(cwd: &str, workspace_root: &str) -> Result<()
     ))
 }
 
+/// A successful load's two products: the replay frames to stream and
+/// the recorded-turn task to gate later prompts on (`None` ⇒ clear any
+/// stale record — the record is re-derived per load, never kept).
+pub(crate) struct LoadOutcome {
+    /// Replay notifications, in `turn_seq` order.
+    pub(crate) frames: Vec<Outbound>,
+    /// The last turn's id when it is still non-terminal.
+    pub(crate) recorded: Option<TaskId>,
+}
+
 /// The replay frames for one `session/load`: every recorded
 /// conversation entry in `turn_seq` order, mapped to the ACP
 /// `session/update` notifications the protocol requires BEFORE the
@@ -387,6 +414,78 @@ fn load_replay_frames(session_id: &str, turns: &[Value]) -> Vec<Outbound> {
     frames
 }
 
+/// The recorded turn carried by one `GetSession` history: the LAST
+/// entry's task id when its status is NON-terminal (replay order is
+/// `turn_seq ASC`, so the last entry is the latest turn), `None` when
+/// the history is empty or the last turn already finished. A corrupt
+/// row on that last entry (missing status or an unparseable id) is a
+/// typed `gateway_payload_invalid` — never a guessed record (ADR-
+/// 0005:39 reconciliation must be exact).
+fn recorded_turn(turns: &[Value]) -> Result<Option<TaskId>, HandlerError> {
+    let Some(last) = turns.last() else {
+        return Ok(None);
+    };
+    let status = last.get("status").and_then(Value::as_str).ok_or_else(|| {
+        HandlerError::turn_failed("gateway_payload_invalid", "recorded turn carries no status")
+    })?;
+    if is_terminal_status(status) {
+        return Ok(None);
+    }
+    let raw = last.get("task_id").and_then(Value::as_str).ok_or_else(|| {
+        HandlerError::turn_failed(
+            "gateway_payload_invalid",
+            "recorded in-progress turn carries no task_id",
+        )
+    })?;
+    raw.parse().map(Some).map_err(|_| {
+        HandlerError::turn_failed(
+            "gateway_payload_invalid",
+            "recorded in-progress turn task_id does not parse",
+        )
+    })
+}
+
+/// The prompt gate's verdict on one fresh `GetTask` of the recorded
+/// turn (ADR-0005:39): terminal status or the task being GONE
+/// (`unknown_task` — nothing left to overlap) ⇒ `Release` (the record
+/// clears and the prompt proceeds); still non-terminal ⇒ `Block` (typed
+/// `-32003 turn_in_progress`); any other refusal, transport failure, or
+/// malformed payload ⇒ `Fail` typed — the gate never guesses a release.
+#[derive(Debug, PartialEq)]
+pub(crate) enum GateVerdict {
+    /// Recorded turn finished (or vanished): clear the record, proceed.
+    Release,
+    /// Recorded turn still runs: refuse the prompt typed.
+    Block,
+    /// The check itself failed: propagate the typed error (fail closed).
+    Fail(HandlerError),
+}
+
+/// Classifies one `GetTask` outcome for the recorded turn — the whole
+/// gate decision as a pure fn (the unit seam for the decision table).
+pub(crate) fn recorded_gate_verdict(task: Result<Value, GatewayCallError>) -> GateVerdict {
+    match task {
+        Ok(payload) => {
+            let status = payload
+                .get("task")
+                .and_then(|task| task.get("status"))
+                .and_then(Value::as_str);
+            match status {
+                Some(status) if is_terminal_status(status) => GateVerdict::Release,
+                Some(_) => GateVerdict::Block,
+                None => GateVerdict::Fail(HandlerError::turn_failed(
+                    "gateway_payload_invalid",
+                    "GetTask answered without a task status",
+                )),
+            }
+        }
+        Err(GatewayCallError::Refused { code, .. }) if code == "unknown_task" => {
+            GateVerdict::Release
+        }
+        Err(error) => GateVerdict::Fail(call_error(error)),
+    }
+}
+
 /// One read-only `session/load` (ADR-0005:40): `GetSession` doubles as
 /// the identity check (unknown id fails with the gateway's typed
 /// `unknown_session`), the requested `cwd` must equal the session's
@@ -394,10 +493,12 @@ fn load_replay_frames(session_id: &str, turns: &[Value]) -> Vec<Outbound> {
 /// become the replay notification frames. Creates nothing, restarts
 /// nothing, holds no idempotency key — every fallible step runs before
 /// any frame exists, so an error path can never emit a partial replay.
+/// The returned [`LoadOutcome`] carries the replay frames PLUS the
+/// recorded-turn decision (ADR-0005:39) for the caller to store.
 pub(crate) async fn run_load<C: Connector>(
     connector: &C,
     params: SessionLoadParams,
-) -> Result<Vec<Outbound>, HandlerError> {
+) -> Result<LoadOutcome, HandlerError> {
     let session_id = params.session_id;
     let mut conn = connector
         .connect()
@@ -426,7 +527,11 @@ pub(crate) async fn run_load<C: Connector>(
                 "GetSession answered without a turns array",
             )
         })?;
-    Ok(load_replay_frames(&session_id.to_string(), turns))
+    let recorded = recorded_turn(turns)?;
+    Ok(LoadOutcome {
+        frames: load_replay_frames(&session_id.to_string(), turns),
+        recorded,
+    })
 }
 
 /// Validates `session/prompt` params per ACP `schema-v1.23.0`
@@ -1190,6 +1295,12 @@ pub(crate) struct SessionState {
     /// [`SessionState::resolve_outstanding_locally`] — it never waits
     /// for an answer the cancelling client will not send.
     outstanding: Mutex<HashMap<String, RpcId>>,
+    /// Session → the last NON-TERMINAL task a successful `session/load`
+    /// recorded (ADR-0005:39 reconciliation): a later prompt on this
+    /// session is refused until a fresh `GetTask` shows that task
+    /// terminal (or gone), or `session/cancel` stops it. In-process
+    /// only — re-derived from `GetSession` at every successful load.
+    recorded: Mutex<HashMap<String, TaskId>>,
 }
 
 impl SessionState {
@@ -1246,6 +1357,40 @@ impl SessionState {
             .lock()
             .expect("outstanding-request lock")
             .remove(session_id);
+    }
+    /// Records (or, with `None`, clears) the non-terminal task the just
+    /// completed `session/load` observed for this session — the ADR-
+    /// 0005:39 record the prompt gate consults. Every successful load
+    /// RE-DERIVES it: a terminal (or empty) history clears a stale
+    /// record instead of leaving a dead gate behind.
+    pub(crate) fn set_recorded(&self, session_id: &str, task_id: Option<TaskId>) {
+        let mut recorded = self.recorded.lock().expect("recorded-task lock");
+        match task_id {
+            Some(task_id) => {
+                recorded.insert(session_id.to_owned(), task_id);
+            }
+            None => {
+                recorded.remove(session_id);
+            }
+        }
+    }
+    /// The recorded non-terminal task for this session, if the last
+    /// load left one.
+    pub(crate) fn recorded_task(&self, session_id: &str) -> Option<TaskId> {
+        self.recorded
+            .lock()
+            .expect("recorded-task lock")
+            .get(session_id)
+            .copied()
+    }
+    /// Clears the record ONLY when it still names `task_id` (scoped to
+    /// session + task): a newer load's record for a different task
+    /// survives this release.
+    pub(crate) fn clear_recorded_if(&self, session_id: &str, task_id: TaskId) {
+        let mut recorded = self.recorded.lock().expect("recorded-task lock");
+        if recorded.get(session_id) == Some(&task_id) {
+            recorded.remove(session_id);
+        }
     }
     /// Resolves the session's outstanding permission request LOCALLY as
     /// `{"outcome":"cancelled"}` and disarms its reply slot — the
@@ -2362,17 +2507,19 @@ mod tests {
     use tokio::sync::{mpsc, watch};
 
     use super::{
-        APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE,
+        APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE, GateVerdict,
         HandlerError, OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase,
         ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
         approval_parked, check_load_workspace, classify_permission_answer, final_prompt_result,
         is_allow_once, is_approval_parked, is_reject_once, is_settlement_signal,
         is_terminal_status, load_replay_frames, parse_cancel, parse_load, parse_prompt,
         parse_session_new, permission_request_params, read_bound, read_gateway_frame,
-        refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
-        tool_call_status_update, turn_deadline,
+        recorded_gate_verdict, recorded_turn, refusal_prompt_result, settlement_verdict,
+        stop_reason, tool_call_announcement, tool_call_status_update, turn_deadline,
     };
-    use crate::client::GatewayUnavailable;
+    use std::str::FromStr as _;
+
+    use crate::client::{GatewayCallError, GatewayUnavailable};
     use crate::codec::{
         INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
     };
@@ -3656,6 +3803,97 @@ mod tests {
             .await
             .expect("a budget-less read is plain");
         assert_eq!(plain, "ok");
+    }
+
+    /// S1 (ticket 02): the recorded-turn record — only the LAST turn
+    /// can gate (replay order is `turn_seq ASC`), terminal/empty ⇒ no
+    /// record, in-progress ⇒ its id, corrupt row ⇒ typed (never a
+    /// guessed record: ADR-0005:39 reconciliation must be exact).
+    #[test]
+    fn recorded_turn_tracks_only_the_last_turn() {
+        let running = json!([
+            {"turn_seq": 1, "task_id": "01990f9e-7000-7000-8000-000000000001", "status": "Completed"},
+            {"turn_seq": 2, "task_id": "01990f9e-7000-7000-8000-000000000002", "status": "Executing"}
+        ]);
+        assert_eq!(
+            recorded_turn(running.as_array().unwrap()).unwrap(),
+            Some(TaskId::from_str("01990f9e-7000-7000-8000-000000000002").unwrap()),
+            "the in-progress LAST turn is the record"
+        );
+        let finished = json!([
+            {"turn_seq": 1, "task_id": "01990f9e-7000-7000-8000-000000000002", "status": "Executing"},
+            {"turn_seq": 2, "task_id": "01990f9e-7000-7000-8000-000000000003", "status": "Cancelled"}
+        ]);
+        assert_eq!(
+            recorded_turn(finished.as_array().unwrap()).unwrap(),
+            None,
+            "a terminal LAST turn records nothing (earlier turns never gate)"
+        );
+        assert_eq!(
+            recorded_turn(&[]).unwrap(),
+            None,
+            "empty history records nothing"
+        );
+        let corrupt = json!([
+            {"turn_seq": 1, "task_id": "not-a-task-id", "status": "Executing"}
+        ]);
+        let error = recorded_turn(corrupt.as_array().unwrap()).unwrap_err();
+        assert_eq!(error.data, json!("gateway_payload_invalid"));
+        let no_status = json!([{"turn_seq": 1, "task_id": "01990f9e-7000-7000-8000-000000000002"}]);
+        let error = recorded_turn(no_status.as_array().unwrap()).unwrap_err();
+        assert_eq!(error.data, json!("gateway_payload_invalid"));
+    }
+
+    /// S1 (ticket 02): the whole gate decision table — terminal and
+    /// `unknown_task` (nothing left to overlap) release, non-terminal
+    /// blocks, everything else fails typed (the gate never guesses a
+    /// release).
+    #[test]
+    fn record_gate_decision_table() {
+        for status in ["Completed", "Failed", "Cancelled"] {
+            let payload = json!({"task": {"status": status}});
+            assert_eq!(
+                recorded_gate_verdict(Ok(payload)),
+                GateVerdict::Release,
+                "{status} releases"
+            );
+        }
+        for status in ["Created", "Executing", "WaitingApproval"] {
+            let payload = json!({"task": {"status": status}});
+            assert_eq!(
+                recorded_gate_verdict(Ok(payload)),
+                GateVerdict::Block,
+                "{status} blocks"
+            );
+        }
+        // The task vanished from the store: nothing left to overlap.
+        assert_eq!(
+            recorded_gate_verdict(Err(GatewayCallError::Refused {
+                code: "unknown_task".to_owned(),
+                message: "no task".to_owned(),
+            })),
+            GateVerdict::Release
+        );
+        // Malformed payload ⇒ typed fail, never a guessed release.
+        let malformed = recorded_gate_verdict(Ok(json!({"task": {}})));
+        assert!(matches!(malformed, GateVerdict::Fail(_)));
+        // Any other gateway refusal propagates typed (fail closed).
+        let refused = recorded_gate_verdict(Err(GatewayCallError::Refused {
+            code: "internal".to_owned(),
+            message: "boom".to_owned(),
+        }));
+        assert!(matches!(refused, GateVerdict::Fail(ref error) if error.data == json!("internal")));
+        // Transport failure propagates typed (fail closed).
+        let transport = recorded_gate_verdict(Err(GatewayCallError::Transport(
+            GatewayUnavailable::new("gateway down"),
+        )));
+        assert!(
+            matches!(transport, GateVerdict::Fail(ref error) if error.data == json!("gateway_unavailable"))
+        );
+        // The block refusal keeps the shared overlap marker.
+        let block = HandlerError::recorded_turn_in_progress();
+        assert_eq!(block.code, TURN_CONFLICT);
+        assert_eq!(block.data, json!("turn_in_progress"));
     }
 
     /// S4 (M4a): the orphan bound is TIGHTENED to 2 s and is the one

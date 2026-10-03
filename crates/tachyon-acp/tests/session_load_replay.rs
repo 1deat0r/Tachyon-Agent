@@ -31,7 +31,7 @@ fn load_line(id: u64, cwd: &str) -> String {
 
 /// A scripted `GetSession` success carrying `turns` verbatim — the
 /// history the replay must stream in order.
-fn get_session_ok(turns: Value) -> CommandResult {
+fn get_session_ok(turns: &Value) -> CommandResult {
     CommandResult::Ok {
         payload: json!({
             "session_id": SESSION_ID,
@@ -104,7 +104,7 @@ async fn session_load_replays_history_in_turn_order_then_responds() {
             subscribes: vec![],
             approves: vec![],
         },
-        get_session_ok(three_turn_history()),
+        get_session_ok(&three_turn_history()),
     );
 
     let mut adapter = Adapter::spawn(&dir);
@@ -159,7 +159,7 @@ async fn session_load_with_empty_history_answers_immediately() {
             subscribes: vec![],
             approves: vec![],
         },
-        get_session_ok(json!([])),
+        get_session_ok(&json!([])),
     );
 
     let mut adapter = Adapter::spawn(&dir);
@@ -229,7 +229,7 @@ async fn session_load_workspace_mismatch_is_typed() {
             subscribes: vec![],
             approves: vec![],
         },
-        get_session_ok(three_turn_history()),
+        get_session_ok(&three_turn_history()),
     );
 
     let mut adapter = Adapter::spawn(&dir);
@@ -264,7 +264,7 @@ async fn load_notifications_are_idless_session_updates() {
             subscribes: vec![],
             approves: vec![],
         },
-        get_session_ok(three_turn_history()),
+        get_session_ok(&three_turn_history()),
     );
 
     let mut adapter = Adapter::spawn(&dir);

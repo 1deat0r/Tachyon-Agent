@@ -38,8 +38,9 @@ use crate::codec::{
     GATEWAY_UNAVAILABLE, INVALID_PARAMS, Notification, Outbound, Parsed, Peer, Request, RpcId,
 };
 use crate::turn::{
-    HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard, call_error,
-    parse_cancel, parse_load, parse_prompt, parse_session_new, run_cancel, run_load, run_prompt,
+    GateVerdict, HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard, call_error,
+    parse_cancel, parse_load, parse_prompt, parse_session_new, recorded_gate_verdict, run_cancel,
+    run_load, run_prompt,
 };
 
 /// ACP wire protocol version Tachyon speaks (ADR-0005:21 — negotiated
@@ -214,6 +215,18 @@ where
                 if let Some(error) = self.gate(id.clone(), &method).await {
                     return Some(error);
                 }
+                // ADR-0005:39 reconciliation: a load-recorded turn that
+                // is still running refuses this prompt typed (same
+                // `-32003` overlap class as the sequential guard — the
+                // guard above drops on this return, so the slot never
+                // wedges). No record ⇒ zero-cost early return, no
+                // connection opened.
+                if let Err(error) = self
+                    .recorded_turn_gate(&params.session_id.to_string())
+                    .await
+                {
+                    return Some(error_outbound(id, error));
+                }
                 // A same-call retry reuses the key its first delivery
                 // minted; a fresh call id always mints a new one.
                 let (key, reused) = self.state.key_for(&id);
@@ -368,8 +381,14 @@ where
         if let Some(error) = self.gate(id.clone(), &method).await {
             return Some(error);
         }
+        let session_key = params.session_id.to_string();
         match run_load(&self.connector, params).await {
-            Ok(mut frames) => {
+            Ok(outcome) => {
+                // ADR-0005:39: the record is RE-DERIVED per successful
+                // load — a terminal (or empty) history clears a stale
+                // record so the prompt gate never reads a dead gate.
+                self.state.set_recorded(&session_key, outcome.recorded);
+                let mut frames = outcome.frames;
                 frames.push(Outbound::success(id, json!({})));
                 for frame in frames {
                     if self.tx.send(frame).is_err() {
@@ -380,6 +399,39 @@ where
                 None
             }
             Err(error) => Some(error_outbound(id, error)),
+        }
+    }
+
+    /// The ADR-0005:39 recorded-turn gate: if `session/load` recorded a
+    /// non-terminal turn for this session, one fresh `GetTask` decides —
+    /// terminal/`unknown_task` ⇒ clear the record (scoped to session +
+    /// task) and accept; still running ⇒ typed `-32003
+    /// turn_in_progress`; any gateway failure ⇒ typed error (fail
+    /// closed, never a guessed release). No record ⇒ `Ok(())` without
+    /// touching the gateway.
+    async fn recorded_turn_gate(&self, session_id: &str) -> Result<(), HandlerError> {
+        let Some(task_id) = self.state.recorded_task(session_id) else {
+            return Ok(());
+        };
+        let mut conn = self
+            .connector
+            .connect()
+            .await
+            .map_err(|error| HandlerError::unavailable(&error))?;
+        let task = conn
+            .call(tachyon_protocol::Command::GetTask { task_id })
+            .await;
+        match recorded_gate_verdict(task) {
+            GateVerdict::Release => {
+                self.state.clear_recorded_if(session_id, task_id);
+                tracing::info!(
+                    %task_id,
+                    "recorded turn reached a terminal status; prompt gate released"
+                );
+                Ok(())
+            }
+            GateVerdict::Block => Err(HandlerError::recorded_turn_in_progress()),
+            GateVerdict::Fail(error) => Err(error),
         }
     }
 

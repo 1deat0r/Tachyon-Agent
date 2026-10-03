@@ -154,6 +154,9 @@ struct ScriptState {
     cursors: Mutex<Vec<i64>>,
     /// Total `GetTask` calls observed.
     get_task_calls: AtomicUsize,
+    /// Total `CreateTask` calls observed — the prompt-gate pin: a
+    /// refused prompt must never reach task creation.
+    create_task_calls: AtomicUsize,
     /// Optional `GetSession` override (session-load ticket 02): when
     /// `Some`, `GetSession` answers it instead of the fixed default —
     /// the seam that lets load tests script history, an unknown
@@ -178,6 +181,7 @@ impl ScriptState {
             cancels_seen: Mutex::new(Vec::new()),
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
+            create_task_calls: AtomicUsize::new(0),
             get_session_override: Mutex::new(None),
             fans: Mutex::new(Vec::new()),
         }
@@ -270,6 +274,13 @@ impl ScriptedGateway {
         self.state.get_task_calls.load(Ordering::SeqCst)
     }
 
+    /// How many `CreateTask` commands the adapter issued — the prompt
+    /// gate's zero-create pin.
+    #[must_use]
+    pub fn create_task_calls(&self) -> usize {
+        self.state.create_task_calls.load(Ordering::SeqCst)
+    }
+
     /// Every `Approve` the adapter issued, as `(task_id, approval_id)`
     /// in call order — the proof that a granted permission answer
     /// reached the gateway with exactly the parked approval's identity.
@@ -360,6 +371,24 @@ fn deny_answer(
     (ok(json!({ "task": task_status("Executing") })), post)
 }
 
+/// The `GetSession` answer: the scripted override when one is set
+/// (session-load tests), else the fixed default shape every existing
+/// test relies on.
+fn get_session_answer(state: &ScriptState, session_id: &tachyon_types::SessionId) -> CommandResult {
+    let override_answer = state
+        .get_session_override
+        .lock()
+        .expect("get-session lock")
+        .clone();
+    match override_answer {
+        Some(result) => result,
+        None => ok(json!({
+            "session_id": session_id.to_string(),
+            "workspace_root": "/tmp",
+        })),
+    }
+}
+
 /// Answers one scripted command: the result plus the frames to push
 /// right after its response (the scripted reaction `Subscribe` and
 /// `Approve` carry).
@@ -370,21 +399,11 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             "pong": true,
             "protocol_version": PROTOCOL_VERSION,
         })),
-        Command::GetSession { session_id } => {
-            let override_answer = state
-                .get_session_override
-                .lock()
-                .expect("get-session lock")
-                .clone();
-            match override_answer {
-                Some(result) => result,
-                None => ok(json!({
-                    "session_id": session_id.to_string(),
-                    "workspace_root": "/tmp",
-                })),
-            }
+        Command::GetSession { session_id } => get_session_answer(state, session_id),
+        Command::CreateTask { .. } => {
+            state.create_task_calls.fetch_add(1, Ordering::SeqCst);
+            ok(json!({ "task_id": SCRIPT_TASK_ID }))
         }
-        Command::CreateTask { .. } => ok(json!({ "task_id": SCRIPT_TASK_ID })),
         Command::GetTask { .. } => {
             state.get_task_calls.fetch_add(1, Ordering::SeqCst);
             match state.get_tasks.lock().expect("get-task lock").pop_front() {
