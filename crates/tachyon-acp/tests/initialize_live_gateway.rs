@@ -28,7 +28,7 @@ async fn initialize_succeeds_against_a_live_gateway_with_clean_framing() {
         .await;
     adapter
         .send(
-            r#"{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000"}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"/tmp"}}"#,
         )
         .await;
     adapter.close_stdin();
@@ -84,15 +84,15 @@ async fn initialize_succeeds_against_a_live_gateway_with_clean_framing() {
         "the advertisement is exactly the documented shape: {result}"
     );
 
-    // Unknown method and un-implemented session method: standard -32601
-    // even against a live gateway (`session/new`, `session/prompt`, and
-    // `session/cancel` have real arms since tickets 02+03; `session/load`
-    // keeps the slot-in contract until its slice).
-    for frame in &frames[1..] {
-        assert_eq!(frame["error"]["code"], -32601);
-        assert_eq!(frame["error"]["message"], "Method not found");
-    }
+    // Unknown method: standard -32601. `session/load` has a real arm:
+    // valid params + a session that does not exist in the live gateway
+    // answers the typed `-32002 unknown_session` (identity check first,
+    // replay never starts).
+    assert_eq!(frames[1]["error"]["code"], -32601);
+    assert_eq!(frames[1]["error"]["message"], "Method not found");
     assert_eq!(frames[1]["id"], 2);
+    assert_eq!(frames[2]["error"]["code"], -32002);
+    assert_eq!(frames[2]["error"]["data"], json!("unknown_session"));
     assert_eq!(frames[2]["id"], 3);
 
     // stderr carries logs while stdout stayed frame-clean.

@@ -641,17 +641,17 @@ mod tests {
 
     /// Unknown methods and not-yet-implemented `session/*` methods all
     /// answer the standard method-not-found error object. `session/new`,
-    /// `session/prompt`, and `session/cancel` have real arms — their
-    /// rejection paths are covered by their own tests — so this pins the
-    /// placeholder contract on the remaining `session/*` surface
-    /// (`session/load` until its own slice) plus a wholly unknown
-    /// method.
+    /// `session/prompt`, `session/cancel`, and `session/load` have real
+    /// arms — their rejection paths are covered by their own tests — so
+    /// this pins the placeholder contract on the remaining `session/*`
+    /// surface (`session/resume` until its own slice) plus a wholly
+    /// unknown method.
     #[tokio::test]
     async fn unknown_and_unimplemented_session_methods_yield_standard_method_not_found() {
         let replies = drive(
             &[
                 r#"{"jsonrpc":"2.0","id":"m1","method":"totally/unknown"}"#,
-                r#"{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"s"}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"s"}}"#,
             ],
             GatewayUp,
         )
@@ -744,6 +744,41 @@ mod tests {
         assert_eq!(frames[2]["error"]["code"], INVALID_PARAMS);
         assert_eq!(frames[2]["error"]["data"], json!("cwd_not_absolute"));
         assert_eq!(frames[2]["id"], 3);
+    }
+
+    /// `session/load` validates its params BEFORE the liveness gate,
+    /// exactly like `session/prompt`/`session/new`: with the gateway up
+    /// but no connection available (`NoConnector`), every bad shape
+    /// still answers invalid params — proof the validation
+    /// short-circuit never reaches the gateway (ADR-0005:40: load
+    /// creates nothing, so a malformed load must touch nothing).
+    #[tokio::test]
+    async fn session_load_validates_before_the_gateway() {
+        let replies = drive(
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"session/load"}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"nope","cwd":"/tmp"}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"relative/dir"}}"#,
+                r#"{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"/tmp","mcpServers":[{"transport":{"type":"stdio"},"command":"mcp-server"}]}}"#,
+                r#"{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"/tmp"}}"#,
+            ],
+            GatewayUp,
+        )
+        .await;
+        assert_eq!(replies.len(), 5, "one frame per request: {replies:?}");
+        let frames: Vec<Value> = replies
+            .iter()
+            .map(|reply| serde_json::from_str(reply).unwrap())
+            .collect();
+        assert_eq!(frames[0]["error"]["data"], json!("invalid_params"));
+        assert_eq!(frames[1]["error"]["data"], json!("invalid_session_id"));
+        assert_eq!(frames[2]["error"]["data"], json!("cwd_not_absolute"));
+        assert_eq!(frames[3]["error"]["data"], json!("mcp_servers_unsupported"));
+        // Valid params: validation passes, the NoConnector connect
+        // fails — one typed gateway-unavailable error, never a
+        // method-not-found.
+        assert_eq!(frames[4]["error"]["data"], json!("gateway_unavailable"));
+        assert_eq!(frames[4]["id"], 5);
     }
 
     /// The notification frame (agent → client, no id) serializes as the

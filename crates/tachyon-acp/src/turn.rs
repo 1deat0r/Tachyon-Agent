@@ -260,6 +260,175 @@ pub(crate) struct PromptParams {
     pub(crate) objective: String,
 }
 
+/// Validated `session/load` params.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SessionLoadParams {
+    /// Session to replay (identity-mapped gateway session).
+    pub(crate) session_id: SessionId,
+    /// Absolute cwd the client asks to load with — verified against the
+    /// session's pinned workspace root before any replay (ADR-0005:40).
+    pub(crate) cwd: String,
+}
+
+/// Validates `session/load` params per ACP `schema-v1.23.0`
+/// (`LoadSessionRequest`): `sessionId` must parse as a session id,
+/// `cwd` is required and must be absolute, and `mcpServers` follows
+/// the `session/new` contract (absent/empty accepted — the
+/// pinned-set reconnect ships with the MCP-at-setup slice; non-empty
+/// refused typed). Runs BEFORE the liveness gate, so a bad request
+/// never reaches the gateway (ADR-0005:40 — load creates nothing).
+pub(crate) fn parse_load(params: Option<&Value>) -> Result<SessionLoadParams, HandlerError> {
+    let invalid_shape = || {
+        HandlerError::invalid(
+            "Invalid params: session/load requires sessionId and cwd",
+            "invalid_params",
+        )
+    };
+    let object = params
+        .and_then(Value::as_object)
+        .ok_or_else(invalid_shape)?;
+    let raw_session = object
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_shape)?;
+    let session_id: SessionId = raw_session.parse().map_err(|_| {
+        HandlerError::invalid(
+            "Invalid params: sessionId is not a valid session id",
+            "invalid_session_id",
+        )
+    })?;
+    let cwd = object
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_shape)?;
+    if !Path::new(cwd).is_absolute() {
+        return Err(HandlerError::invalid(
+            "Invalid params: cwd must be an absolute path",
+            "cwd_not_absolute",
+        ));
+    }
+    if let Some(servers) = object.get("mcpServers") {
+        let list = servers.as_array().ok_or_else(|| {
+            HandlerError::invalid(
+                "Invalid params: mcpServers must be an array",
+                "invalid_params",
+            )
+        })?;
+        if !list.is_empty() {
+            return Err(HandlerError::invalid(
+                "MCP servers at session load are not supported yet; mcpServers must be empty",
+                "mcp_servers_unsupported",
+            ));
+        }
+    }
+    Ok(SessionLoadParams {
+        session_id,
+        cwd: cwd.to_owned(),
+    })
+}
+
+/// The pinned-workspace check for `session/load` (ADR-0005:40:
+/// "validates the pinned workspace"): the requested `cwd` must equal
+/// the session's `workspace_root` exactly — load never rebinds a
+/// pinned root. A mismatch is a typed `-32602 workspace_mismatch`
+/// refusal; equality passes untouched.
+pub(crate) fn check_load_workspace(cwd: &str, workspace_root: &str) -> Result<(), HandlerError> {
+    if cwd == workspace_root {
+        return Ok(());
+    }
+    Err(HandlerError::invalid(
+        "Invalid params: cwd does not match the session's pinned workspace root",
+        "workspace_mismatch",
+    ))
+}
+
+/// The replay frames for one `session/load`: every recorded
+/// conversation entry in `turn_seq` order, mapped to the ACP
+/// `session/update` notifications the protocol requires BEFORE the
+/// load result (ADR-0005:29) — `speaker: user` → `user_message_chunk`,
+/// `agent` → `agent_message_chunk`, text verbatim. A malformed row
+/// (unknown speaker, non-string content) is logged and skipped: one
+/// corrupt entry must never wedge the whole load, and the adapter
+/// never invents a role for data it cannot read.
+fn load_replay_frames(session_id: &str, turns: &[Value]) -> Vec<Outbound> {
+    let mut frames = Vec::new();
+    for turn in turns {
+        let Some(conversation) = turn.get("conversation").and_then(Value::as_array) else {
+            tracing::warn!(%session_id, "recorded turn without a conversation; skipped in load replay");
+            continue;
+        };
+        for entry in conversation {
+            let speaker = entry.get("speaker").and_then(Value::as_str);
+            let content = entry.get("content").and_then(Value::as_str);
+            let (Some(speaker), Some(content)) = (speaker, content) else {
+                tracing::warn!(%session_id, "malformed conversation row skipped in load replay");
+                continue;
+            };
+            let update = match speaker {
+                "user" => "user_message_chunk",
+                "agent" => "agent_message_chunk",
+                other => {
+                    tracing::warn!(speaker = other, %session_id, "unknown speaker skipped in load replay");
+                    continue;
+                }
+            };
+            frames.push(Outbound::notification(
+                "session/update",
+                json!({
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": update,
+                        "content": { "type": "text", "text": content },
+                    },
+                }),
+            ));
+        }
+    }
+    frames
+}
+
+/// One read-only `session/load` (ADR-0005:40): `GetSession` doubles as
+/// the identity check (unknown id fails with the gateway's typed
+/// `unknown_session`), the requested `cwd` must equal the session's
+/// pinned workspace root (load never rebinds), then the ordered turns
+/// become the replay notification frames. Creates nothing, restarts
+/// nothing, holds no idempotency key — every fallible step runs before
+/// any frame exists, so an error path can never emit a partial replay.
+pub(crate) async fn run_load<C: Connector>(
+    connector: &C,
+    params: SessionLoadParams,
+) -> Result<Vec<Outbound>, HandlerError> {
+    let session_id = params.session_id;
+    let mut conn = connector
+        .connect()
+        .await
+        .map_err(|error| HandlerError::unavailable(&error))?;
+    let payload = conn
+        .call(Command::GetSession { session_id })
+        .await
+        .map_err(call_error)?;
+    let root = payload
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "GetSession answered without a workspace_root",
+            )
+        })?;
+    check_load_workspace(&params.cwd, root)?;
+    let turns = payload
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "GetSession answered without a turns array",
+            )
+        })?;
+    Ok(load_replay_frames(&session_id.to_string(), turns))
+}
+
 /// Validates `session/prompt` params per ACP `schema-v1.23.0`
 /// (`PromptRequest`): `sessionId` must parse as a session id and every
 /// prompt block must be `text` (this slice advertises text-only prompt
@@ -2196,9 +2365,10 @@ mod tests {
         APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE,
         HandlerError, OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase,
         ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
-        approval_parked, classify_permission_answer, final_prompt_result, is_allow_once,
-        is_approval_parked, is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel,
-        parse_prompt, parse_session_new, permission_request_params, read_bound, read_gateway_frame,
+        approval_parked, check_load_workspace, classify_permission_answer, final_prompt_result,
+        is_allow_once, is_approval_parked, is_reject_once, is_settlement_signal,
+        is_terminal_status, load_replay_frames, parse_cancel, parse_load, parse_prompt,
+        parse_session_new, permission_request_params, read_bound, read_gateway_frame,
         refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
         tool_call_status_update, turn_deadline,
     };
@@ -2419,6 +2589,139 @@ mod tests {
         let not_an_array = parse_session_new(Some(&json!({"cwd": "/tmp", "mcpServers": {}})))
             .expect_err("mcpServers must be an array");
         assert_eq!(not_an_array.data, json!("invalid_params"));
+    }
+
+    /// S1 (ticket 01): `parse_load` refuses every bad shape BEFORE the
+    /// gateway — the param table is the whole pre-gate contract
+    /// (sessionId / cwd / mcpServers), one marker per refusal class.
+    #[test]
+    fn load_refuses_bad_params_before_the_gateway() {
+        let ok = parse_load(Some(&json!({
+            "sessionId": "01990f9e-1111-7000-8000-000000000000",
+            "cwd": "/tmp",
+        })))
+        .expect("absolute cwd + parseable id accepted");
+        assert_eq!(
+            ok.session_id.to_string(),
+            "01990f9e-1111-7000-8000-000000000000"
+        );
+        assert_eq!(ok.cwd, "/tmp");
+        // mcpServers follows the session/new contract: absent/empty ok.
+        parse_load(Some(&json!({
+            "sessionId": "01990f9e-1111-7000-8000-000000000000",
+            "cwd": "/tmp",
+            "mcpServers": [],
+        })))
+        .expect("empty mcpServers ok");
+
+        let relative = parse_load(Some(&json!({
+            "sessionId": "01990f9e-1111-7000-8000-000000000000",
+            "cwd": "relative/dir",
+        })))
+        .expect_err("relative cwd is rejected");
+        assert_eq!(relative.data, json!("cwd_not_absolute"));
+
+        let bad_id = parse_load(Some(&json!({"sessionId": "nope", "cwd": "/tmp"})))
+            .expect_err("unparseable sessionId is rejected");
+        assert_eq!(bad_id.data, json!("invalid_session_id"));
+
+        let no_cwd = parse_load(Some(&json!({
+            "sessionId": "01990f9e-1111-7000-8000-000000000000",
+        })))
+        .expect_err("cwd is required");
+        assert_eq!(no_cwd.data, json!("invalid_params"));
+
+        let no_id = parse_load(Some(&json!({"cwd": "/tmp"}))).expect_err("sessionId is required");
+        assert_eq!(no_id.data, json!("invalid_params"));
+
+        let mcp = parse_load(Some(&json!({
+            "sessionId": "01990f9e-1111-7000-8000-000000000000",
+            "cwd": "/tmp",
+            "mcpServers": [{"transport": {"type": "stdio"}, "command": "mcp-server"}],
+        })))
+        .expect_err("non-empty mcpServers is refused");
+        assert_eq!(mcp.data, json!("mcp_servers_unsupported"));
+
+        for params in [json!({}), json!([]), json!("nope")] {
+            let error = parse_load(Some(&params)).expect_err("bad shape rejected");
+            assert_eq!(error.code, INVALID_PARAMS, "{params}");
+        }
+        assert!(parse_load(None).is_err(), "absent params are invalid");
+    }
+
+    /// S1 (ticket 01): load validates the PINNED workspace
+    /// (ADR-0005:40) — exact equality passes, any other cwd is the one
+    /// NEW marker this slice adds (`workspace_mismatch`); every other
+    /// refusal reuses an existing marker (N1a1).
+    #[test]
+    fn load_requires_the_pinned_workspace_root() {
+        check_load_workspace("/tmp/ws", "/tmp/ws").expect("equal cwd passes");
+        let mismatch = check_load_workspace("/tmp/other", "/tmp/ws")
+            .expect_err("a different cwd never rebinds the pinned root");
+        assert_eq!(mismatch.code, INVALID_PARAMS);
+        assert_eq!(mismatch.data, json!("workspace_mismatch"));
+        // Trailing-slash drift is a mismatch too: the pinned root is
+        // byte-compared, never normalized at the ACP boundary.
+        let slash = check_load_workspace("/tmp/ws/", "/tmp/ws")
+            .expect_err("byte equality, no normalization");
+        assert_eq!(slash.data, json!("workspace_mismatch"));
+    }
+
+    /// S1 (ticket 01): the replay mapper — turn order preserved,
+    /// speakers mapped to the two ACP chunk kinds, and corrupt rows
+    /// (missing conversation, non-string content, unknown speaker)
+    /// logged-and-skipped so one bad entry never wedges the load.
+    #[test]
+    fn replay_maps_speakers_and_skips_corrupt_rows() {
+        let turns = json!([
+            {
+                "turn_seq": 1,
+                "status": "Completed",
+                "conversation": [
+                    {"speaker": "user", "content": "first question"},
+                    {"speaker": "agent", "content": "first answer"},
+                ],
+            },
+            {
+                "turn_seq": 2,
+                "status": "Completed",
+                "conversation": [
+                    {"speaker": "user", "content": 42},
+                    {"speaker": "assistant", "content": "wrong role name"},
+                    {"speaker": "user", "content": "still replayed"},
+                ],
+            },
+            {"turn_seq": 3, "status": "Failed"}
+        ]);
+        let session = "01990f9e-1111-7000-8000-000000000000";
+        let frames = load_replay_frames(session, turns.as_array().expect("turns array"));
+        let updates: Vec<Value> = frames
+            .iter()
+            .map(|frame| {
+                let Outbound::Notification { method, params } = frame else {
+                    panic!("replay frames are notifications: {frame:?}");
+                };
+                assert_eq!(method, "session/update");
+                assert_eq!(params["sessionId"], json!(session));
+                params["update"].clone()
+            })
+            .collect();
+        // 3 of 5 rows survive; order preserved; corrupt rows skipped.
+        assert_eq!(updates.len(), 3, "{updates:?}");
+        assert_eq!(updates[0]["sessionUpdate"], "user_message_chunk");
+        assert_eq!(updates[0]["content"]["text"], "first question");
+        assert_eq!(updates[1]["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(updates[1]["content"]["text"], "first answer");
+        assert_eq!(updates[2]["sessionUpdate"], "user_message_chunk");
+        assert_eq!(updates[2]["content"]["text"], "still replayed");
+        // No messageId: optional in the schema and nothing durable
+        // maps to an ACP message id (an honest absence over invention).
+        assert!(
+            updates.iter().all(|u| u.get("messageId").is_none()),
+            "messageId stays absent"
+        );
+        // Empty history ⇒ zero frames (the `{}` result is the arm's).
+        assert!(load_replay_frames(session, &[]).is_empty());
     }
 
     #[test]

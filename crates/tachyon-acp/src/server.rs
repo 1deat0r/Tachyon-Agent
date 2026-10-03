@@ -1,12 +1,13 @@
 //! The ACP stdio server loop: ND-JSON-RPC dispatch, the gateway
-//! liveness gate, the `initialize` handshake, and the `session/new` /
+//! liveness gate, the `initialize` handshake, the `session/new` /
 //! `session/prompt` / `session/cancel` arms (acp-adapter-lifecycle
-//! tickets 02+03).
+//! tickets 02+03), and the read-only `session/load` replay
+//! (session-load ticket 01).
 //!
 //! Param validation runs BEFORE the [`GatewayProbe`] gate (a malformed
-//! `session/new`/`session/prompt`/`session/cancel` is refused without
-//! ever touching the gateway); once params validate, every id-bearing
-//! request is gated on the probe first (ADR-0005:35: gateway down ⇒
+//! `session/new`/`session/prompt`/`session/cancel`/`session/load` is
+//! refused without ever touching the gateway); once params validate,
+//! every id-bearing request is gated on the probe first (ADR-0005:35: gateway down ⇒
 //! one clear actionable typed error for any request; the adapter never
 //! starts the gateway). Notifications are consumed without reply —
 //! except `session/cancel`, whose ACP notification form runs the same
@@ -18,7 +19,9 @@
 //! Supervisor's drain acknowledgement before answering, and while it
 //! does, nothing else is read or written — which is what pins the frame
 //! order (cancel reply first, the resolved prompt verdict after it).
-//! Remaining `session/*` arms (`session/load` until its own slice)
+//! `session/load` answers through the writer channel too: its replay
+//! notifications must precede its `{}` result in FIFO order.
+//! Remaining `session/*` arms (`session/resume`, `session/close`, …)
 //! answer the standard JSON-RPC method-not-found error.
 
 use std::io;
@@ -36,7 +39,7 @@ use crate::codec::{
 };
 use crate::turn::{
     HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard, call_error,
-    parse_cancel, parse_prompt, parse_session_new, run_cancel, run_prompt,
+    parse_cancel, parse_load, parse_prompt, parse_session_new, run_cancel, run_load, run_prompt,
 };
 
 /// ACP wire protocol version Tachyon speaks (ADR-0005:21 — negotiated
@@ -242,8 +245,10 @@ where
                     Err(error) => Some(error_outbound(id, error)),
                 }
             }
-            // Unimplemented `session/*` methods (`session/load` until
-            // its own slice) keep the standard method-not-found slot.
+            "session/load" => return self.session_load(id, method, params).await,
+            // Unimplemented `session/*` methods (`session/resume`,
+            // `session/close`, … — `session/load` has a real arm since
+            // its slice) keep the standard method-not-found slot.
             method if method.starts_with("session/") => {
                 if let Some(error) = self.gate(id.clone(), method).await {
                     return Some(error);
@@ -342,6 +347,42 @@ where
             })
     }
 
+    /// The read-only `session/load` arm: validate → liveness gate →
+    /// replay. Creates nothing (ADR-0005:40), so no turn slot and no
+    /// idempotency key. EVERY frame — the replay notifications and the
+    /// `{}` result — goes through the single writer channel, never the
+    /// inline return: an inline write would land BEFORE the queued
+    /// notifications, and ADR-0005:29 requires the replay to precede
+    /// the response. `None` = "answered through the writer channel";
+    /// any failure answers inline with zero frames queued.
+    async fn session_load(
+        &self,
+        id: RpcId,
+        method: String,
+        params: Option<Value>,
+    ) -> Option<Outbound> {
+        let params = match parse_load(params.as_ref()) {
+            Ok(params) => params,
+            Err(error) => return Some(error_outbound(id, error)),
+        };
+        if let Some(error) = self.gate(id.clone(), &method).await {
+            return Some(error);
+        }
+        match run_load(&self.connector, params).await {
+            Ok(mut frames) => {
+                frames.push(Outbound::success(id, json!({})));
+                for frame in frames {
+                    if self.tx.send(frame).is_err() {
+                        tracing::warn!("client went away; dropping session/load frames");
+                        break;
+                    }
+                }
+                None
+            }
+            Err(error) => Some(error_outbound(id, error)),
+        }
+    }
+
     /// Spawns one `session/prompt` turn: the pipeline runs detached
     /// (so the loop keeps serving) while its guard keeps the session's
     /// turn slot until the final frame is written through the writer
@@ -427,8 +468,10 @@ struct InitializeResult {
 
 #[derive(Serialize)]
 struct AgentCapabilities {
-    /// `session/load` is a later slice, never advertised before its
-    /// full replay contract is implemented (ADR-0005:29).
+    /// `loadSession` stays `false` until BOTH halves of the load
+    /// contract ship (replay arm + recorded-turn prompt gate) —
+    /// advertise-only-implemented, ADR-0005:29/31; the flip is the
+    /// load slice's last ticket.
     #[serde(rename = "loadSession")]
     load_session: bool,
     #[serde(rename = "promptCapabilities")]

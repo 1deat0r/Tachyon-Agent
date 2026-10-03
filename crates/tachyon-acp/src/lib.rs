@@ -7,9 +7,10 @@
 //! slice (acp-adapter-lifecycle tickets 01–03) ships the codec, the
 //! stdio server loop, the gateway liveness probe, the `initialize`
 //! handshake, `session/new`, the full `session/prompt` turn pipeline,
-//! and `session/cancel` (both the id-bearing and ACP notification
-//! forms, drain-acknowledged); `session/load` answers standard
-//! method-not-found until its own slice.
+//! `session/cancel` (both the id-bearing and ACP notification forms,
+//! drain-acknowledged), and the read-only `session/load` replay
+//! (`loadSession` stays `false` until the recorded-turn prompt gate
+//! ships — ADR-0005:31 advertise-only-implemented).
 
 pub mod client;
 pub mod codec;
