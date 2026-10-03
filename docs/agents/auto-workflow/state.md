@@ -1,6 +1,32 @@
 ## STATE
 status: running
 origin: session
+goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — announced `tool_call` closure on the cancel path (the permission bridge's last listed residue: a tool_call whose request `session/cancel` resolves locally must close instead of staying pending for the session's lifetime) — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions; fall back to the grill-chosen runner-up from the residue list
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done)
+phase: 1
+fixed_point: 6bdb4d51b4fec30fa8e7592fea8ec89ee02b1280
+baseline: 6bdb4d51b4fec30fa8e7592fea8ec89ee02b1280 + clean
+spec: none-not-yet
+tickets: none-not-yet
+edges: none-not-yet
+attempts: none-not-yet
+phase_entries: 1=1
+exec_count: 65
+polls: 0
+skills_pin: none
+updated: 2026-10-03T03:28:00Z
+## LOG
+2026-10-03T03:28:00Z EVENT ===== GOAL ROTATION (prior goal outcome success, frontier empty) =====
+2026-10-03T03:28:00Z EVENT rotations: report.md -> report-2026-10-03T03:42:00Z.md; decisions.md -> decisions-2026-10-03T03:42:00Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-03T03:42:00Z'; phase_entries/polls RESET; spec/tickets/edges/attempts cleared; baseline+fixed_point re-recorded at 6bdb4d5 (clean tree)
+2026-10-03T03:28:00Z EVENT goal intake: derived from open issues -> #57 (P1) again — session/load + loadSession:true slice COMPLETE (3 tickets, Phase 7 hard-fix stateless gate, Phase 8 report). Next-goal candidates sized deterministically from the capability doc residue + schema-v1.23.0: (a) MCP-at-setup — DEFERRED: needs an ACP approval-surface design (ApproveMCPServers has no ACP answer path; mcp_approvals is gateway-in-memory), not a tracer bullet; (b) ResourceLink — DEFERRED: needs a bounded evidence-access resolution design (ADR-0005:42); (c) attach/reconnect — large (live-subscription handoff); (d) ANNOUNCED tool_call CLOSURE ON CANCEL — SELECTED: smallest highest-value (one emission point in the turn's NoDecision path + one frame-order pin decision; ToolCallUpdate requires only toolCallId, status optional/pinned schema; closes a listed residue item). #44 skipped (P3, deferred); derived_tried seeded with the 8 consumed slices
+2026-10-03T03:28:00Z EVENT JEV probe already degraded this session (zero classifiers) — deterministic → MiMo routing continues
+2026-10-03T03:28:00Z EXEC 65 phase-1
+
+## ARCHIVE 2026-10-03T03:42:00Z
+## STATE
+status: running
+origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/load + loadSession:true slice (durable session lookup, ordered conversation replay, recorded-turn reconciliation per ADR-0005:29,39-40) — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions; fall back to the grill-chosen runner-up from the residue list
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done)
