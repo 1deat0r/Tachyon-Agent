@@ -1,6 +1,31 @@
 ## STATE
 status: running
 origin: session
+goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/load + loadSession:true slice (durable session lookup, ordered conversation replay, recorded-turn reconciliation per ADR-0005:29,39-40) — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions; fall back to the grill-chosen runner-up from the residue list
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done)
+phase: 1
+fixed_point: c19d196610198e2308b46ebf280c8ca8aaa98fe7
+baseline: c19d196610198e2308b46ebf280c8ca8aaa98fe7 + clean
+spec: none-not-yet
+tickets: none-not-yet
+edges: none-not-yet
+attempts: none-not-yet
+phase_entries: 1=1
+exec_count: 56
+polls: 0
+skills_pin: none
+updated: 2026-10-03T00:41:00Z
+## LOG
+2026-10-03T00:41:00Z EVENT ===== GOAL ROTATION (prior goal outcome success, frontier empty) =====
+2026-10-03T00:41:00Z EVENT rotations: report.md -> report-2026-10-03T00:34:30Z.md; decisions.md -> decisions-2026-10-03T00:34:30Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-03T00:34:30Z'; phase_entries/polls RESET; spec/tickets/edges/attempts cleared; baseline+fixed_point re-recorded at c19d196 (clean tree)
+2026-10-03T00:41:00Z EVENT goal intake: derived from open issues -> #57 (P1) again — evidence update: permission bridge complete incl. Phase 7 hard-fix (frozen-deadline gateway read) + Phase 8 report; residue list in docs/agents/acp-adapter-capability.md now leads with session/load + loadSession:true (confirmed from code: GetSession returns ordered turns+conversation, 0004/0005 migrations persist recorded turn, ADR-0005:29,39-40 pin the contract; ACP seam = single session/load arm + loadSession golden); #44 skipped (P3, deferred); derived_tried seeded with the 7 consumed slices
+2026-10-03T00:41:00Z EVENT JEV policy persisted in AGENTS.md (§ Development routing) per user mandate after goal close; JEV probe: zero configured classifiers — degradation logged, deterministic routing kept
+2026-10-03T00:41:00Z EXEC 56 phase-1
+
+## ARCHIVE 2026-10-03T00:34:30Z
+status: running
+origin: session
 goal: Advance issue #57 — ACP v1 distribution through the local gateway: land the next ACP adapter slice — the session/request_permission permission bridge (one-shot approvals driven through the adapter) or the grill-chosen runner-up from the residue list — as a small independently verified tracer-bullet slice honoring ADR-0005 and the issue's recorded decisions
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done)
@@ -237,6 +262,7 @@ updated: 2026-10-03T00:34:30Z
 2026-10-02T10:09:32Z EVENT task 4/4: skill rule 17 — 2-pass reviews, docs-only spot-check; Phase 7 amended. dotfiles aaa4235.
 
 2026-10-02T10:28:31Z EVENT hierarchy adopted: rules 18-19 (task>small>micro>nano; commit per small task), Phase 4/5 rewritten, tracker format added. dotfiles 2429914, 4934735.
+
 
 ## ARCHIVE 2026-10-01T23:15:53Z
 ## STATE
