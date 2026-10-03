@@ -178,7 +178,7 @@ where
                     }
                     tracing::info!(
                         "initialize: negotiated protocolVersion={ACP_PROTOCOL_VERSION} \
-                         (loadSession=false, text-only prompts)"
+                         (loadSession=true, text-only prompts)"
                     );
                     Some(Outbound::success(id, result))
                 }
@@ -520,10 +520,10 @@ struct InitializeResult {
 
 #[derive(Serialize)]
 struct AgentCapabilities {
-    /// `loadSession` stays `false` until BOTH halves of the load
-    /// contract ship (replay arm + recorded-turn prompt gate) —
-    /// advertise-only-implemented, ADR-0005:29/31; the flip is the
-    /// load slice's last ticket.
+    /// `loadSession: true` — BOTH halves of the load contract ship
+    /// (replay arm + recorded-turn prompt gate, tickets 01/02), so the
+    /// advertise-only-implemented rule (ADR-0005:29/31) permits the
+    /// flip.
     #[serde(rename = "loadSession")]
     load_session: bool,
     #[serde(rename = "promptCapabilities")]
@@ -550,7 +550,7 @@ impl InitializeResult {
         Self {
             protocol_version: ACP_PROTOCOL_VERSION,
             agent_capabilities: AgentCapabilities {
-                load_session: false,
+                load_session: true,
                 prompt_capabilities: PromptCapabilities {
                     image: false,
                     audio: false,
@@ -591,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_advertisement_is_byte_exact() {
         let replies = drive(&[&initialize_line("0", 1)], GatewayUp).await;
-        let golden = r#"{"jsonrpc":"2.0","id":0,"result":{"agentCapabilities":{"loadSession":false,"promptCapabilities":{"audio":false,"embeddedContext":false,"image":false}},"agentInfo":{"name":"tachyon-acp","title":"Tachyon ACP adapter","version":"@VERSION@"},"authMethods":[],"protocolVersion":1}}"#
+        let golden = r#"{"jsonrpc":"2.0","id":0,"result":{"agentCapabilities":{"loadSession":true,"promptCapabilities":{"audio":false,"embeddedContext":false,"image":false}},"agentInfo":{"name":"tachyon-acp","title":"Tachyon ACP adapter","version":"@VERSION@"},"authMethods":[],"protocolVersion":1}}"#
             .replace("@VERSION@", env!("CARGO_PKG_VERSION"));
         assert_eq!(replies.len(), 1, "exactly one frame: {replies:?}");
         assert_eq!(replies[0], golden);

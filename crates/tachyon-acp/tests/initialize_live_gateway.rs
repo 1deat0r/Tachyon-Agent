@@ -50,7 +50,7 @@ async fn initialize_succeeds_against_a_live_gateway_with_clean_framing() {
     let result = &frames[0]["result"];
     assert_eq!(result["protocolVersion"], 1);
     let capabilities = &result["agentCapabilities"];
-    assert_eq!(capabilities["loadSession"], false);
+    assert_eq!(capabilities["loadSession"], true);
     assert_eq!(
         capabilities["promptCapabilities"],
         json!({"image": false, "audio": false, "embeddedContext": false})
