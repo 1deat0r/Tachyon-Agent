@@ -199,10 +199,9 @@ impl HandlerError {
     pub(crate) fn recorded_turn_in_progress() -> Self {
         Self {
             code: TURN_CONFLICT,
-            message:
-                "A recorded turn from session/load is still in progress; wait for it to finish, \
-                 or session/cancel it"
-                    .to_owned(),
+            message: "A previous turn for this session is still in progress; wait for it to \
+                 finish, or session/cancel it"
+                .to_owned(),
             data: json!("turn_in_progress"),
         }
     }
@@ -359,16 +358,6 @@ pub(crate) fn check_load_workspace(cwd: &str, workspace_root: &str) -> Result<()
     ))
 }
 
-/// A successful load's two products: the replay frames to stream and
-/// the recorded-turn task to gate later prompts on (`None` ⇒ clear any
-/// stale record — the record is re-derived per load, never kept).
-pub(crate) struct LoadOutcome {
-    /// Replay notifications, in `turn_seq` order.
-    pub(crate) frames: Vec<Outbound>,
-    /// The last turn's id when it is still non-terminal.
-    pub(crate) recorded: Option<TaskId>,
-}
-
 /// The replay frames for one `session/load`: every recorded
 /// conversation entry in `turn_seq` order, mapped to the ACP
 /// `session/update` notifications the protocol requires BEFORE the
@@ -419,8 +408,11 @@ fn load_replay_frames(session_id: &str, turns: &[Value]) -> Vec<Outbound> {
 /// `turn_seq ASC`, so the last entry is the latest turn), `None` when
 /// the history is empty or the last turn already finished. A corrupt
 /// row on that last entry (missing status or an unparseable id) is a
-/// typed `gateway_payload_invalid` — never a guessed record (ADR-
-/// 0005:39 reconciliation must be exact).
+/// typed `gateway_payload_invalid` — never a guessed reconciliation
+/// (ADR-0005:39). This is the stateless reconciliation seam: the
+/// prompt gate and the cancel fallback both read it from the
+/// `GetSession` each pipeline ALREADY issues — no stored record, no
+/// extra gateway call, always fresh gateway truth.
 fn recorded_turn(turns: &[Value]) -> Result<Option<TaskId>, HandlerError> {
     let Some(last) = turns.last() else {
         return Ok(None);
@@ -445,47 +437,6 @@ fn recorded_turn(turns: &[Value]) -> Result<Option<TaskId>, HandlerError> {
     })
 }
 
-/// The prompt gate's verdict on one fresh `GetTask` of the recorded
-/// turn (ADR-0005:39): terminal status or the task being GONE
-/// (`unknown_task` — nothing left to overlap) ⇒ `Release` (the record
-/// clears and the prompt proceeds); still non-terminal ⇒ `Block` (typed
-/// `-32003 turn_in_progress`); any other refusal, transport failure, or
-/// malformed payload ⇒ `Fail` typed — the gate never guesses a release.
-#[derive(Debug, PartialEq)]
-pub(crate) enum GateVerdict {
-    /// Recorded turn finished (or vanished): clear the record, proceed.
-    Release,
-    /// Recorded turn still runs: refuse the prompt typed.
-    Block,
-    /// The check itself failed: propagate the typed error (fail closed).
-    Fail(HandlerError),
-}
-
-/// Classifies one `GetTask` outcome for the recorded turn — the whole
-/// gate decision as a pure fn (the unit seam for the decision table).
-pub(crate) fn recorded_gate_verdict(task: Result<Value, GatewayCallError>) -> GateVerdict {
-    match task {
-        Ok(payload) => {
-            let status = payload
-                .get("task")
-                .and_then(|task| task.get("status"))
-                .and_then(Value::as_str);
-            match status {
-                Some(status) if is_terminal_status(status) => GateVerdict::Release,
-                Some(_) => GateVerdict::Block,
-                None => GateVerdict::Fail(HandlerError::turn_failed(
-                    "gateway_payload_invalid",
-                    "GetTask answered without a task status",
-                )),
-            }
-        }
-        Err(GatewayCallError::Refused { code, .. }) if code == "unknown_task" => {
-            GateVerdict::Release
-        }
-        Err(error) => GateVerdict::Fail(call_error(error)),
-    }
-}
-
 /// One read-only `session/load` (ADR-0005:40): `GetSession` doubles as
 /// the identity check (unknown id fails with the gateway's typed
 /// `unknown_session`), the requested `cwd` must equal the session's
@@ -493,12 +444,10 @@ pub(crate) fn recorded_gate_verdict(task: Result<Value, GatewayCallError>) -> Ga
 /// become the replay notification frames. Creates nothing, restarts
 /// nothing, holds no idempotency key — every fallible step runs before
 /// any frame exists, so an error path can never emit a partial replay.
-/// The returned [`LoadOutcome`] carries the replay frames PLUS the
-/// recorded-turn decision (ADR-0005:39) for the caller to store.
 pub(crate) async fn run_load<C: Connector>(
     connector: &C,
     params: SessionLoadParams,
-) -> Result<LoadOutcome, HandlerError> {
+) -> Result<Vec<Outbound>, HandlerError> {
     let session_id = params.session_id;
     let mut conn = connector
         .connect()
@@ -527,11 +476,7 @@ pub(crate) async fn run_load<C: Connector>(
                 "GetSession answered without a turns array",
             )
         })?;
-    let recorded = recorded_turn(turns)?;
-    Ok(LoadOutcome {
-        frames: load_replay_frames(&session_id.to_string(), turns),
-        recorded,
-    })
+    Ok(load_replay_frames(&session_id.to_string(), turns))
 }
 
 /// Validates `session/prompt` params per ACP `schema-v1.23.0`
@@ -1295,12 +1240,6 @@ pub(crate) struct SessionState {
     /// [`SessionState::resolve_outstanding_locally`] — it never waits
     /// for an answer the cancelling client will not send.
     outstanding: Mutex<HashMap<String, RpcId>>,
-    /// Session → the last NON-TERMINAL task a successful `session/load`
-    /// recorded (ADR-0005:39 reconciliation): a later prompt on this
-    /// session is refused until a fresh `GetTask` shows that task
-    /// terminal (or gone), or `session/cancel` stops it. In-process
-    /// only — re-derived from `GetSession` at every successful load.
-    recorded: Mutex<HashMap<String, TaskId>>,
 }
 
 impl SessionState {
@@ -1357,40 +1296,6 @@ impl SessionState {
             .lock()
             .expect("outstanding-request lock")
             .remove(session_id);
-    }
-    /// Records (or, with `None`, clears) the non-terminal task the just
-    /// completed `session/load` observed for this session — the ADR-
-    /// 0005:39 record the prompt gate consults. Every successful load
-    /// RE-DERIVES it: a terminal (or empty) history clears a stale
-    /// record instead of leaving a dead gate behind.
-    pub(crate) fn set_recorded(&self, session_id: &str, task_id: Option<TaskId>) {
-        let mut recorded = self.recorded.lock().expect("recorded-task lock");
-        match task_id {
-            Some(task_id) => {
-                recorded.insert(session_id.to_owned(), task_id);
-            }
-            None => {
-                recorded.remove(session_id);
-            }
-        }
-    }
-    /// The recorded non-terminal task for this session, if the last
-    /// load left one.
-    pub(crate) fn recorded_task(&self, session_id: &str) -> Option<TaskId> {
-        self.recorded
-            .lock()
-            .expect("recorded-task lock")
-            .get(session_id)
-            .copied()
-    }
-    /// Clears the record ONLY when it still names `task_id` (scoped to
-    /// session + task): a newer load's record for a different task
-    /// survives this release.
-    pub(crate) fn clear_recorded_if(&self, session_id: &str, task_id: TaskId) {
-        let mut recorded = self.recorded.lock().expect("recorded-task lock");
-        if recorded.get(session_id) == Some(&task_id) {
-            recorded.remove(session_id);
-        }
     }
     /// Resolves the session's outstanding permission request LOCALLY as
     /// `{"outcome":"cancelled"}` and disarms its reply slot — the
@@ -1772,6 +1677,30 @@ async fn prompt_turn<C: Connector>(
             )
         })?;
 
+    // ADR-0005:39 reconciliation — the stateless recorded-turn gate,
+    // read from the GetSession this pipeline ALREADY issued (zero
+    // extra gateway calls): while the session's LAST recorded turn is
+    // non-terminal, a later prompt would be a second live turn for one
+    // session (the gateway's CreateTask has NO overlap guard — the
+    // adapter is the only guard), so it is refused typed `-32003`
+    // BEFORE any CreateTask. Covers every path — post-restart
+    // re-prompt (no `session/load` in this process), post-timeout
+    // re-prompt, load-then-prompt — because it holds no memory: the
+    // fresh `GetSession` IS the reconciliation (terminal or absent ⇒
+    // release; corrupt ⇒ typed fail, never a guessed release).
+    let turns = session
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "GetSession answered without a turns array",
+            )
+        })?;
+    if recorded_turn(turns)?.is_some() {
+        return Err(HandlerError::recorded_turn_in_progress());
+    }
+
     // The ONE idempotency-keyed `CreateTask`: a same-call retry replays
     // the original task (no duplicate), a fresh call creates a new one.
     // The replayed payload carries the status captured at CREATE time,
@@ -1887,12 +1816,12 @@ async fn cancel_pipeline<C: Connector>(
     session_id: SessionId,
 ) -> Result<(), HandlerError> {
     // The target: the ACTIVE turn's published task id first (a local
-    // turn outranks everything), else the NON-TERMINAL task recorded
-    // by `session/load` — the ADR-0005:41 explicit stop for work that
-    // outlived the adapter process. Never a historical/terminal task:
-    // the record only ever holds a non-terminal id and clears the
-    // moment it reaches one.
-    let local_target = match state.turn_task(&session_id.to_string()) {
+    // turn outranks everything and arms this process's cancel marks);
+    // with no local turn, the session's own `GetSession` below derives
+    // whether a NON-TERMINAL turn outlived this process — the
+    // stateless ADR-0005:41 explicit stop. Never a terminal task:
+    // `recorded_turn` only ever reports a non-terminal last turn.
+    let target = match state.turn_task(&session_id.to_string()) {
         Some(mut received) => match received.wait_for(Option::is_some).await {
             Ok(published) => *published,
             // The turn ended before `CreateTask` published a task id:
@@ -1902,44 +1831,28 @@ async fn cancel_pipeline<C: Connector>(
         },
         None => None,
     };
-    let from_record = local_target.is_none();
-    let target = match local_target {
-        Some(task_id) => Some(task_id),
-        None => state.recorded_task(&session_id.to_string()),
-    };
     let mut conn = connector
         .connect()
         .await
         .map_err(|error| HandlerError::unavailable(&error))?;
     if let Some(task_id) = target {
-        // Cancel-mark arming and the local permission-request
-        // resolution are LOCAL-turn state (they guard THIS process's
-        // exchange); a recorded target has neither, so neither runs.
-        if from_record {
+        // The cancel targets this session's ACTIVE turn: mark it BEFORE
+        // anything is awaited, so the turn's `cancelled` answer (whenever
+        // it routes) finds the mark and sends zero decision frames
+        // (ADR-0005:49; the guard the permission bridge consults).
+        state.arm_cancel_resolution(&session_id.to_string());
+        // Resolve an outstanding permission request LOCALLY as
+        // `cancelled` (M1a): the cancelling client will never answer
+        // it, and the inline cancel must not wait on that answer (M1c
+        // — no deadlock). The gateway expires the parked row itself
+        // during `CancelTask`; a late client answer finds a disarmed
+        // slot and is ignored.
+        if state.resolve_outstanding_locally(&session_id.to_string()) {
             tracing::info!(
                 %session_id,
-                %task_id,
-                "session/cancel: stopping the load-recorded turn (ADR-0005:41)"
+                "outstanding permission request resolved locally as cancelled; \
+                 no Approve/Deny issued"
             );
-        } else {
-            // The cancel targets this session's active turn: mark it BEFORE
-            // anything is awaited, so the turn's `cancelled` answer (whenever
-            // it routes) finds the mark and sends zero decision frames
-            // (ADR-0005:49; the guard the permission bridge consults).
-            state.arm_cancel_resolution(&session_id.to_string());
-            // Resolve an outstanding permission request LOCALLY as
-            // `cancelled` (M1a): the cancelling client will never answer
-            // it, and the inline cancel must not wait on that answer (M1c
-            // — no deadlock). The gateway expires the parked row itself
-            // during `CancelTask`; a late client answer finds a disarmed
-            // slot and is ignored.
-            if state.resolve_outstanding_locally(&session_id.to_string()) {
-                tracing::info!(
-                    %session_id,
-                    "outstanding permission request resolved locally as cancelled; \
-                     no Approve/Deny issued"
-                );
-            }
         }
         match conn.call(Command::CancelTask { task_id }).await {
             Ok(payload) => {
@@ -1955,9 +1868,6 @@ async fn cancel_pipeline<C: Connector>(
                     "session/cancel: drain ack received (CancelTask responded); the \
                      cancel reply follows only now"
                 );
-                // Scoped release: the record clears only if it still
-                // names THIS task (a newer load's record survives).
-                state.clear_recorded_if(&session_id.to_string(), task_id);
                 Ok(())
             }
             // The task reached a terminal state before (or during) this
@@ -1970,39 +1880,85 @@ async fn cancel_pipeline<C: Connector>(
                     detail = %message,
                     "session/cancel: task already terminal; idempotent ok"
                 );
-                state.clear_recorded_if(&session_id.to_string(), task_id);
                 Ok(())
             }
-            // A RECORDED task that vanished from the store: nothing
-            // left to stop, so the record releases (the gate would
-            // release it on the next prompt anyway) — idempotent ok.
-            Err(GatewayCallError::Refused { code, .. })
-                if from_record && code == "unknown_task" =>
-            {
-                tracing::info!(
-                    %session_id,
-                    %task_id,
-                    "session/cancel: recorded task no longer exists; record released"
-                );
-                state.clear_recorded_if(&session_id.to_string(), task_id);
-                Ok(())
-            }
-            // Any OTHER failure propagates WITHOUT clearing the
-            // record: the stop did not happen, and the gate must keep
-            // refusing (fail closed).
             Err(error) => Err(call_error(error)),
         }
     } else {
-        // No active turn: `GetSession` proves the session exists
-        // (unknown ⇒ typed refusal), then idempotent ok.
-        conn.call(Command::GetSession { session_id })
-            .await
-            .map_err(call_error)?;
+        cancel_outlived_turn(&mut conn, session_id).await
+    }
+}
+
+/// The no-local-turn `session/cancel` path: `GetSession` proves the
+/// session exists (unknown ⇒ typed refusal) AND — statelessly —
+/// derives whether a NON-TERMINAL turn outlived this process
+/// (ADR-0005:41's explicit stop for post-restart work). No such turn
+/// ⇒ idempotent ok; one found ⇒ `CancelTask` on it, where
+/// `illegal_transition` (already terminal) and `unknown_task` (gone)
+/// both mean "not running" — the cancel's goal — so both are ok.
+async fn cancel_outlived_turn(
+    conn: &mut GatewayConn,
+    session_id: SessionId,
+) -> Result<(), HandlerError> {
+    let payload = conn
+        .call(Command::GetSession { session_id })
+        .await
+        .map_err(call_error)?;
+    let turns = payload
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "GetSession answered without a turns array",
+            )
+        })?;
+    let Some(task_id) = recorded_turn(turns)? else {
         tracing::info!(
             %session_id,
             "session/cancel: no active turn; idempotent ok (no CancelTask issued)"
         );
-        Ok(())
+        return Ok(());
+    };
+    tracing::info!(
+        %session_id,
+        %task_id,
+        "session/cancel: stopping the turn that outlived this process (ADR-0005:41)"
+    );
+    match conn.call(Command::CancelTask { task_id }).await {
+        Ok(payload) => {
+            let status = payload
+                .get("task")
+                .and_then(|task| task.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            tracing::info!(
+                %session_id,
+                %task_id,
+                status,
+                "session/cancel: drain ack received (CancelTask responded); the \
+                 cancel reply follows only now"
+            );
+            Ok(())
+        }
+        Err(GatewayCallError::Refused { code, message }) if code == "illegal_transition" => {
+            tracing::info!(
+                %session_id,
+                %task_id,
+                detail = %message,
+                "session/cancel: task already terminal; idempotent ok"
+            );
+            Ok(())
+        }
+        Err(GatewayCallError::Refused { code, .. }) if code == "unknown_task" => {
+            tracing::info!(
+                %session_id,
+                %task_id,
+                "session/cancel: recorded task no longer exists; nothing to stop"
+            );
+            Ok(())
+        }
+        Err(error) => Err(call_error(error)),
     }
 }
 
@@ -2547,19 +2503,19 @@ mod tests {
     use tokio::sync::{mpsc, watch};
 
     use super::{
-        APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE, GateVerdict,
+        APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE,
         HandlerError, OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase,
         ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
         approval_parked, check_load_workspace, classify_permission_answer, final_prompt_result,
         is_allow_once, is_approval_parked, is_reject_once, is_settlement_signal,
         is_terminal_status, load_replay_frames, parse_cancel, parse_load, parse_prompt,
         parse_session_new, permission_request_params, read_bound, read_gateway_frame,
-        recorded_gate_verdict, recorded_turn, refusal_prompt_result, settlement_verdict,
-        stop_reason, tool_call_announcement, tool_call_status_update, turn_deadline,
+        recorded_turn, refusal_prompt_result, settlement_verdict, stop_reason,
+        tool_call_announcement, tool_call_status_update, turn_deadline,
     };
     use std::str::FromStr as _;
 
-    use crate::client::{GatewayCallError, GatewayUnavailable};
+    use crate::client::GatewayUnavailable;
     use crate::codec::{
         INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
     };
@@ -3882,58 +3838,6 @@ mod tests {
         let no_status = json!([{"turn_seq": 1, "task_id": "01990f9e-7000-7000-8000-000000000002"}]);
         let error = recorded_turn(no_status.as_array().unwrap()).unwrap_err();
         assert_eq!(error.data, json!("gateway_payload_invalid"));
-    }
-
-    /// S1 (ticket 02): the whole gate decision table — terminal and
-    /// `unknown_task` (nothing left to overlap) release, non-terminal
-    /// blocks, everything else fails typed (the gate never guesses a
-    /// release).
-    #[test]
-    fn record_gate_decision_table() {
-        for status in ["Completed", "Failed", "Cancelled"] {
-            let payload = json!({"task": {"status": status}});
-            assert_eq!(
-                recorded_gate_verdict(Ok(payload)),
-                GateVerdict::Release,
-                "{status} releases"
-            );
-        }
-        for status in ["Created", "Executing", "WaitingApproval"] {
-            let payload = json!({"task": {"status": status}});
-            assert_eq!(
-                recorded_gate_verdict(Ok(payload)),
-                GateVerdict::Block,
-                "{status} blocks"
-            );
-        }
-        // The task vanished from the store: nothing left to overlap.
-        assert_eq!(
-            recorded_gate_verdict(Err(GatewayCallError::Refused {
-                code: "unknown_task".to_owned(),
-                message: "no task".to_owned(),
-            })),
-            GateVerdict::Release
-        );
-        // Malformed payload ⇒ typed fail, never a guessed release.
-        let malformed = recorded_gate_verdict(Ok(json!({"task": {}})));
-        assert!(matches!(malformed, GateVerdict::Fail(_)));
-        // Any other gateway refusal propagates typed (fail closed).
-        let refused = recorded_gate_verdict(Err(GatewayCallError::Refused {
-            code: "internal".to_owned(),
-            message: "boom".to_owned(),
-        }));
-        assert!(matches!(refused, GateVerdict::Fail(ref error) if error.data == json!("internal")));
-        // Transport failure propagates typed (fail closed).
-        let transport = recorded_gate_verdict(Err(GatewayCallError::Transport(
-            GatewayUnavailable::new("gateway down"),
-        )));
-        assert!(
-            matches!(transport, GateVerdict::Fail(ref error) if error.data == json!("gateway_unavailable"))
-        );
-        // The block refusal keeps the shared overlap marker.
-        let block = HandlerError::recorded_turn_in_progress();
-        assert_eq!(block.code, TURN_CONFLICT);
-        assert_eq!(block.data, json!("turn_in_progress"));
     }
 
     /// S4 (M4a): the orphan bound is TIGHTENED to 2 s and is the one

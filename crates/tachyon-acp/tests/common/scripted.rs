@@ -158,11 +158,18 @@ struct ScriptState {
     /// refused prompt must never reach task creation.
     create_task_calls: AtomicUsize,
     /// Optional `GetSession` override (session-load ticket 02): when
-    /// `Some`, `GetSession` answers it instead of the fixed default —
-    /// the seam that lets load tests script history, an unknown
-    /// session, or a mismatched workspace root. `None` = today's
-    /// byte-identical default (existing tests untouched).
+    /// `Some`, EVERY `GetSession` answers it instead of the fixed
+    /// default — the seam that lets load/prompt tests script history,
+    /// an unknown session, or a mismatched workspace root. `None` =
+    /// today's byte-identical default (existing tests untouched).
     get_session_override: Mutex<Option<CommandResult>>,
+    /// Scripted `GetSession` ANSWERS consumed one per call (takes
+    /// precedence over the fixed override; exhausted ⇒ fixed/default).
+    /// The stateless recorded-turn tests use it to model gateway truth
+    /// CHANGING across calls — e.g. a cancel stopping the recorded
+    /// turn: `running` for the cancel's `GetSession`, `terminal` for
+    /// the next prompt's.
+    get_session_sequence: Mutex<VecDeque<CommandResult>>,
     /// One frame queue per live connection: the real gateway journals
     /// to EVERY subscriber (the turn's subscription lives on a
     /// different connection than a `CancelTask`), so fixture frames
@@ -183,6 +190,7 @@ impl ScriptState {
             get_task_calls: AtomicUsize::new(0),
             create_task_calls: AtomicUsize::new(0),
             get_session_override: Mutex::new(None),
+            get_session_sequence: Mutex::new(VecDeque::new()),
             fans: Mutex::new(Vec::new()),
         }
     }
@@ -223,6 +231,25 @@ impl ScriptedGateway {
     #[must_use]
     pub fn start_with_get_session(dir: &Path, script: Script, get_session: CommandResult) -> Self {
         Self::start_inner(dir, script, Some(get_session))
+    }
+
+    /// [`Self::start`] with a per-CALL `GetSession` answer sequence:
+    /// each call pops the next; once exhausted, calls fall back to the
+    /// fixed override (if set) and then the fixed default. Models
+    /// gateway truth evolving across calls (stateless gate tests).
+    #[must_use]
+    pub fn start_with_get_session_sequence(
+        dir: &Path,
+        script: Script,
+        answers: Vec<CommandResult>,
+    ) -> Self {
+        let this = Self::start_inner(dir, script, None);
+        *this
+            .state
+            .get_session_sequence
+            .lock()
+            .expect("get-session sequence lock") = answers.into();
+        this
     }
 
     fn start_inner(dir: &Path, script: Script, get_session: Option<CommandResult>) -> Self {
@@ -375,16 +402,27 @@ fn deny_answer(
 /// (session-load tests), else the fixed default shape every existing
 /// test relies on.
 fn get_session_answer(state: &ScriptState, session_id: &tachyon_types::SessionId) -> CommandResult {
-    let override_answer = state
-        .get_session_override
+    let sequence = state
+        .get_session_sequence
         .lock()
-        .expect("get-session lock")
-        .clone();
-    match override_answer {
+        .expect("get-session sequence lock")
+        .pop_front();
+    let fixed = sequence.or_else(|| {
+        state
+            .get_session_override
+            .lock()
+            .expect("get-session lock")
+            .clone()
+    });
+    match fixed {
         Some(result) => result,
+        // Mirrors the real gateway's `GetSession` shape (always
+        // includes `turns`) — `session/prompt` reconciles the recorded
+        // turn from it (ADR-0005:39).
         None => ok(json!({
             "session_id": session_id.to_string(),
             "workspace_root": "/tmp",
+            "turns": [],
         })),
     }
 }

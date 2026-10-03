@@ -1,10 +1,12 @@
-//! session/load ticket 02 (S1) against the scripted gateway fixture:
-//! the ADR-0005:39 recorded-turn prompt gate — a load that recorded a
-//! non-terminal turn refuses a later `session/prompt` typed `-32003`
-//! BEFORE any `CreateTask`; a recorded turn that has since finished
-//! releases the gate (fresh `GetTask`) and the prompt proceeds; a
-//! gateway failure at the gate fails typed with zero creates (the gate
-//! never guesses a release).
+//! session/load ticket 02 (Phase 7 rework) against the scripted gateway
+//! fixture: the STATELESS recorded-turn gate (ADR-0005:39) — a prompt
+//! whose session's LAST recorded turn is still non-terminal is refused
+//! typed `-32003` BEFORE any `CreateTask`, read from the `GetSession`
+//! the prompt pipeline already issues (zero extra gateway calls). The
+//! gate holds no memory: it works after `session/load`, WITHOUT any
+//! load (post-restart re-prompt — the Phase 7 finding), and releases
+//! the moment gateway truth turns terminal (e.g. after
+//! `session/cancel` stops the turn).
 
 use std::time::Duration;
 
@@ -40,9 +42,15 @@ fn prompt_line(id: u64) -> String {
     )
 }
 
+fn cancel_line(id: u64) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"session/cancel","params":{{"sessionId":"{SESSION_ID}"}}}}"#
+    )
+}
+
 /// A scripted `GetSession` whose LAST turn is still running — the
-/// history `session/load` records for the gate.
-fn get_session_recording() -> CommandResult {
+/// gateway truth the stateless gate refuses on.
+fn get_session_running() -> CommandResult {
     CommandResult::Ok {
         payload: json!({
             "session_id": SESSION_ID,
@@ -57,23 +65,63 @@ fn get_session_recording() -> CommandResult {
     }
 }
 
-/// THE block pin: load records the running turn, the prompt's gate
-/// `GetTask` confirms it is still non-terminal, so the prompt answers
-/// typed `-32003 turn_in_progress` and the fixture NEVER sees a
-/// `CreateTask` (the overlap would be a second live turn — ADR-0005:39).
+/// A scripted `GetSession` whose LAST turn finished — the gateway
+/// truth the gate releases on.
+fn get_session_terminal() -> CommandResult {
+    CommandResult::Ok {
+        payload: json!({
+            "session_id": SESSION_ID,
+            "workspace_root": PINNED_ROOT,
+            "turns": [{
+                "turn_seq": 1,
+                "task_id": RECORDED_TASK,
+                "status": "Cancelled",
+                "conversation": [{"speaker": "user", "content": "earlier work"}],
+            }],
+        }),
+    }
+}
+
+/// THE stateless block pin (and the Phase 7 regression): a prompt with
+/// NO preceding `session/load` in this process — the post-restart
+/// re-prompt — is still refused typed `-32003 turn_in_progress` and
+/// the fixture NEVER sees a `CreateTask` (a second live turn for one
+/// session is exactly what ADR-0005:39 forbids; the gateway has no
+/// overlap guard).
+#[tokio::test]
+async fn prompt_without_any_load_is_refused_while_the_recorded_turn_runs() {
+    let dir = test_dir();
+    let fixture =
+        ScriptedGateway::start_with_get_session(&dir, empty_script(), get_session_running());
+
+    let mut adapter = Adapter::spawn(&dir);
+    adapter.send(&prompt_line(1)).await;
+    let (updates, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+    assert!(updates.is_empty(), "a refused prompt streams nothing");
+    let response = parse_frame(&response_line);
+    assert_eq!(response["error"]["code"], -32003, "reply: {response_line}");
+    assert_eq!(response["error"]["data"], json!("turn_in_progress"));
+
+    assert_eq!(fixture.create_task_calls(), 0, "no CreateTask ever issued");
+    assert_eq!(
+        fixture.get_task_calls(),
+        0,
+        "the gate reads the pipeline's own GetSession — no GetTask"
+    );
+
+    fixture.shutdown();
+    adapter.close_stdin();
+    let (_rest, _stderr, exit_ok) = adapter.finish().await;
+    assert!(exit_ok);
+}
+
+/// Load then prompt (the ticket's original shape): the replay runs,
+/// the prompt is still refused on the same running gateway truth.
 #[tokio::test]
 async fn prompt_after_load_is_refused_while_the_recorded_turn_runs() {
     let dir = test_dir();
-    let fixture = ScriptedGateway::start_with_get_session(
-        &dir,
-        Script {
-            // The gate's fresh GetTask: still executing.
-            get_tasks: vec![task_status("Executing")],
-            subscribes: vec![],
-            approves: vec![],
-        },
-        get_session_recording(),
-    );
+    let fixture =
+        ScriptedGateway::start_with_get_session(&dir, empty_script(), get_session_running());
 
     let mut adapter = Adapter::spawn(&dir);
     adapter.send(&load_line(1)).await;
@@ -88,9 +136,12 @@ async fn prompt_after_load_is_refused_while_the_recorded_turn_runs() {
     assert_eq!(response["error"]["code"], -32003, "reply: {response_line}");
     assert_eq!(response["error"]["data"], json!("turn_in_progress"));
 
-    // THE zero-create pin: the refusal happened before any task work.
     assert_eq!(fixture.create_task_calls(), 0, "no CreateTask ever issued");
-    assert_eq!(fixture.get_task_calls(), 1, "exactly the gate's check");
+    assert_eq!(
+        fixture.get_task_calls(),
+        0,
+        "no GetTask — the gate is the GetSession"
+    );
 
     fixture.shutdown();
     adapter.close_stdin();
@@ -98,24 +149,19 @@ async fn prompt_after_load_is_refused_while_the_recorded_turn_runs() {
     assert!(exit_ok);
 }
 
-/// THE release pin: the recorded turn has since finished — the gate's
-/// fresh `GetTask` shows terminal, the record clears, and the prompt
-/// proceeds through the full pipeline to `end_turn` (the gate never
-/// wedges a session whose recorded work is done).
+/// THE release pin: gateway truth says the recorded turn FINISHED —
+/// the gate releases and the prompt runs the full pipeline to
+/// `end_turn` (the gate never wedges a session whose recorded work is
+/// done).
 #[tokio::test]
 async fn prompt_after_load_proceeds_once_the_recorded_turn_is_terminal() {
     let dir = test_dir();
     let fixture = ScriptedGateway::start_with_get_session(
         &dir,
         Script {
-            // 1: the gate's check (recorded turn → terminal → release).
-            // 2: the prompt's fresh-state read (non-terminal → StartRun).
-            // 3: the settlement read after the journal below.
-            get_tasks: vec![
-                task_completed("recorded turn finished"),
-                task_status("Executing"),
-                task_completed("final answer"),
-            ],
+            // The prompt's own reads: fresh-state, then settlement
+            // after the journal below. (No gate GetTask exists.)
+            get_tasks: vec![task_status("Executing"), task_completed("final answer")],
             subscribes: vec![Subscription {
                 replay: vec![],
                 post: vec![Step::Journal {
@@ -126,12 +172,17 @@ async fn prompt_after_load_proceeds_once_the_recorded_turn_is_terminal() {
             }],
             approves: vec![],
         },
-        get_session_recording(),
+        get_session_terminal(),
     );
 
     let mut adapter = Adapter::spawn(&dir);
     adapter.send(&load_line(1)).await;
-    let (_n, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+    let (notifications, response_line) = adapter.read_until_response(json!(1), WAIT).await;
+    assert_eq!(
+        notifications.len(),
+        1,
+        "the terminal turn's history still replays"
+    );
     assert_eq!(parse_frame(&response_line)["result"], json!({}));
 
     adapter.send(&prompt_line(2)).await;
@@ -139,12 +190,13 @@ async fn prompt_after_load_proceeds_once_the_recorded_turn_is_terminal() {
     let response = parse_frame(&response_line);
     assert_eq!(
         response["result"]["stopReason"], "end_turn",
-        "released gate ⇒ the prompt runs: {response_line}"
+        "terminal recorded turn ⇒ the prompt runs: {response_line}"
     );
-
-    // The gate consumed exactly one GetTask; the prompt then created
-    // exactly one task (gate released, not bypassed).
-    assert_eq!(fixture.get_task_calls(), 3, "gate + fresh + settlement");
+    assert_eq!(
+        fixture.get_task_calls(),
+        2,
+        "fresh + settlement only — no gate GetTask exists"
+    );
     assert_eq!(fixture.create_task_calls(), 1, "one task after release");
 
     fixture.shutdown();
@@ -153,22 +205,23 @@ async fn prompt_after_load_proceeds_once_the_recorded_turn_is_terminal() {
     assert!(exit_ok);
 }
 
-/// THE fail-closed pin: a gateway error AT the gate (the fixture's
-/// script-exhausted refusal stands in for any command failure) answers
-/// typed and creates NOTHING — the gate never guesses a release.
+/// THE fail-closed pin: the reconciliation itself fails (the gateway
+/// refuses the `GetSession` the gate needs — scripted as the second
+/// call, right after a successful load) ⇒ the prompt answers typed and
+/// creates NOTHING — the stateless gate never guesses a release.
 #[tokio::test]
-async fn gate_gettask_failure_fails_closed() {
+async fn prompt_gate_fails_closed_when_reconciliation_fails() {
     let dir = test_dir();
-    let fixture = ScriptedGateway::start_with_get_session(
+    let fixture = ScriptedGateway::start_with_get_session_sequence(
         &dir,
-        // No GetTask answers: the gate's check hits the fixture's
-        // script_exhausted refusal (a gateway-command failure).
-        Script {
-            get_tasks: vec![],
-            subscribes: vec![],
-            approves: vec![],
-        },
-        get_session_recording(),
+        empty_script(),
+        vec![
+            get_session_running(), // load: replay succeeds
+            CommandResult::Err {
+                code: "script_exhausted".to_owned(),
+                message: "gateway refused the reconciliation read".to_owned(),
+            }, // prompt: reconciliation fails ⇒ fail closed
+        ],
     );
 
     let mut adapter = Adapter::spawn(&dir);
@@ -182,13 +235,13 @@ async fn gate_gettask_failure_fails_closed() {
     let response = parse_frame(&response_line);
     assert!(
         response.get("result").is_none(),
-        "a failed gate never answers success: {response_line}"
+        "a failed reconciliation never answers success: {response_line}"
     );
     assert_eq!(response["error"]["data"], json!("script_exhausted"));
     assert_eq!(
         fixture.create_task_calls(),
         0,
-        "a failed gate never creates a task"
+        "a failed reconciliation never creates a task"
     );
 
     fixture.shutdown();
@@ -198,18 +251,18 @@ async fn gate_gettask_failure_fails_closed() {
 }
 
 /// THE cancel-release pin (ADR-0005:41): with no local turn, the
-/// cancel falls back to the load-recorded task — the fixture observes
-/// exactly ONE `CancelTask` carrying that id — and the completed stop
-/// clears the record, so the next prompt's gate costs NOTHING (zero
-/// gate `GetTask`s) and the prompt runs to `end_turn`.
+/// cancel derives its target from ITS OWN `GetSession` — the fixture
+/// observes exactly ONE `CancelTask` carrying the recorded id — and
+/// once gateway truth flips terminal (the next `GetSession` in the
+/// script), the stateless gate is released and the prompt runs to
+/// `end_turn`. Nothing is remembered, nothing needs clearing.
 #[tokio::test]
 async fn prompt_gate_releases_after_cancel() {
     let dir = test_dir();
-    let fixture = ScriptedGateway::start_with_get_session(
+    let fixture = ScriptedGateway::start_with_get_session_sequence(
         &dir,
         Script {
-            // NO gate GetTask here: the prompt's own reads only —
-            // fresh-state, then settlement after the journal below.
+            // The prompt's own reads after the release.
             get_tasks: vec![task_status("Executing"), task_completed("after cancel")],
             subscribes: vec![Subscription {
                 replay: vec![],
@@ -221,30 +274,28 @@ async fn prompt_gate_releases_after_cancel() {
             }],
             approves: vec![],
         },
-        get_session_recording(),
+        vec![
+            get_session_running(),  // cancel's GetSession: derive the target
+            get_session_terminal(), // prompt's GetSession: released
+        ],
     );
 
     let mut adapter = Adapter::spawn(&dir);
-    adapter.send(&load_line(1)).await;
-    let (_n, response_line) = adapter.read_until_response(json!(1), WAIT).await;
-    assert_eq!(parse_frame(&response_line)["result"], json!({}));
 
-    // Stop the recorded turn: the cancel targets it (no local turn).
-    adapter
-        .send(r#"{"jsonrpc":"2.0","id":2,"method":"session/cancel","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000"}}"#)
-        .await;
-    let (_n, response_line) = adapter.read_until_response(json!(2), WAIT).await;
+    // Stop the recorded turn: no local turn, so the cancel falls back
+    // to the turn derived from its own GetSession.
+    adapter.send(&cancel_line(1)).await;
+    let (_n, response_line) = adapter.read_until_response(json!(1), WAIT).await;
     assert_eq!(parse_frame(&response_line)["result"], json!({}));
     assert_eq!(
         fixture.cancels_seen(),
         vec![RECORDED_TASK.to_owned()],
-        "the cancel stopped exactly the load-recorded task"
+        "the cancel stopped exactly the recorded turn"
     );
 
-    // Record cleared ⇒ the gate early-returns (NO GetTask): exactly the
-    // prompt's own two reads happen, and the prompt completes.
-    adapter.send(&prompt_line(3)).await;
-    let (_updates, response_line) = adapter.read_until_response(json!(3), WAIT).await;
+    // Gateway truth is now terminal ⇒ the stateless gate releases.
+    adapter.send(&prompt_line(2)).await;
+    let (_updates, response_line) = adapter.read_until_response(json!(2), WAIT).await;
     let response = parse_frame(&response_line);
     assert_eq!(
         response["result"]["stopReason"], "end_turn",
@@ -253,7 +304,7 @@ async fn prompt_gate_releases_after_cancel() {
     assert_eq!(
         fixture.get_task_calls(),
         2,
-        "fresh + settlement only — the gate never ran (record cleared)"
+        "fresh + settlement — no gate GetTask"
     );
     assert_eq!(fixture.create_task_calls(), 1);
 
@@ -261,4 +312,12 @@ async fn prompt_gate_releases_after_cancel() {
     adapter.close_stdin();
     let (_rest, _stderr, exit_ok) = adapter.finish().await;
     assert!(exit_ok);
+}
+
+fn empty_script() -> Script {
+    Script {
+        get_tasks: vec![],
+        subscribes: vec![],
+        approves: vec![],
+    }
 }
