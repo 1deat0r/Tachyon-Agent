@@ -154,6 +154,12 @@ struct ScriptState {
     cursors: Mutex<Vec<i64>>,
     /// Total `GetTask` calls observed.
     get_task_calls: AtomicUsize,
+    /// Optional `GetSession` override (session-load ticket 02): when
+    /// `Some`, `GetSession` answers it instead of the fixed default —
+    /// the seam that lets load tests script history, an unknown
+    /// session, or a mismatched workspace root. `None` = today's
+    /// byte-identical default (existing tests untouched).
+    get_session_override: Mutex<Option<CommandResult>>,
     /// One frame queue per live connection: the real gateway journals
     /// to EVERY subscriber (the turn's subscription lives on a
     /// different connection than a `CancelTask`), so fixture frames
@@ -172,6 +178,7 @@ impl ScriptState {
             cancels_seen: Mutex::new(Vec::new()),
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
+            get_session_override: Mutex::new(None),
             fans: Mutex::new(Vec::new()),
         }
     }
@@ -203,6 +210,18 @@ impl ScriptedGateway {
     /// serves the script until [`ScriptedGateway::shutdown`].
     #[must_use]
     pub fn start(dir: &Path, script: Script) -> Self {
+        Self::start_inner(dir, script, None)
+    }
+
+    /// [`Self::start`] with a scripted `GetSession` answer — the
+    /// session-load replay seam (history, unknown session, workspace
+    /// mismatch). Every other command keeps the fixed behavior.
+    #[must_use]
+    pub fn start_with_get_session(dir: &Path, script: Script, get_session: CommandResult) -> Self {
+        Self::start_inner(dir, script, Some(get_session))
+    }
+
+    fn start_inner(dir: &Path, script: Script, get_session: Option<CommandResult>) -> Self {
         std::fs::create_dir_all(dir).expect("fixture data dir");
         let socket = dir.join("gateway.sock");
         let listener = Listener::bind(&socket).expect("bind fixture socket");
@@ -218,6 +237,7 @@ impl ScriptedGateway {
         )
         .expect("write endpoint file");
         let state = Arc::new(ScriptState::new(script));
+        *state.get_session_override.lock().expect("get-session lock") = get_session;
         let task_state = Arc::clone(&state);
         let accept_task = tokio::spawn(async move {
             loop {
@@ -350,10 +370,20 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             "pong": true,
             "protocol_version": PROTOCOL_VERSION,
         })),
-        Command::GetSession { session_id } => ok(json!({
-            "session_id": session_id.to_string(),
-            "workspace_root": "/tmp",
-        })),
+        Command::GetSession { session_id } => {
+            let override_answer = state
+                .get_session_override
+                .lock()
+                .expect("get-session lock")
+                .clone();
+            match override_answer {
+                Some(result) => result,
+                None => ok(json!({
+                    "session_id": session_id.to_string(),
+                    "workspace_root": "/tmp",
+                })),
+            }
+        }
         Command::CreateTask { .. } => ok(json!({ "task_id": SCRIPT_TASK_ID })),
         Command::GetTask { .. } => {
             state.get_task_calls.fetch_add(1, Ordering::SeqCst);
