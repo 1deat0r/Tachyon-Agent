@@ -2648,6 +2648,7 @@ name = "tachyon-models"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "blake3",
  "rustls",
  "rustls-native-certs",
  "serde",

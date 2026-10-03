@@ -31,6 +31,7 @@ Authoritative deeper contracts: `docs/01_ARCHITECTURE_FREEZE.md`, `docs/02_IMPLE
 | **MCP tool** | Single tool offered by a pinned MCP server; every call proposal is authorized per server/tool scope like any other effect — never a parallel execution path (ADR-0005). |
 | **Commit barrier** | Point where irreversible/ambiguous effects become durable under policy. |
 | **Durable journal** | Append-only event log; source of truth for recovery. Snapshots are materializations, not the sole truth. |
+| **ContextSlice** | Typed, content-addressed projection of canonical task state assembled for one model call: purpose, state revision, parent slice references, included blocks, and recorded omissions with reasons. Conversation history inside it is data, never authoritative state (ADR-0007). |
 | **TaskStatus** | Canonical enum: `Created`, `Routing`, `Planning`, `Executing`, `Verifying`, `WaitingApproval`, `Paused`, `Recovering`, `Completed`, `Failed`, `Cancelled`. |
 | **Recovering** | Status while a gateway/supervisor rebuilds state after restart; not a silent resume of unknown effects. Awaiting user go-ahead. |
 | **Driver re-entry** | User-triggered (`Resume` on `Recovering`) respawn of the in-flight run's driver; never automatic at gateway boot. A `Recovering` task with no run to re-enter transitions to `Paused` instead. |

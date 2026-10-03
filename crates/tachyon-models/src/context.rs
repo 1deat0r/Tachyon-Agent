@@ -6,7 +6,10 @@
 //! diagnostics, prefer excerpts, retain provenance, reserve output budget,
 //! then deterministic truncation of lowest-priority blocks first. Semantic
 //! summarization is out of scope for M6: truncation is explicit and lossless
-//! in provenance.
+//! in provenance. [`assemble_slice`] wraps one assembly as a
+//! [`ContextSlice`]: purpose, state revision, parent references, and every
+//! omission with its reason, under a content-addressed [`SliceId`]
+//! (ADR-0007).
 //!
 //! Token counts are deterministic `chars / 4` estimates. They bound context
 //! spends, not bills; per-provider calibration lands with telemetry (M13).
@@ -137,6 +140,78 @@ pub struct HistoryTurn {
     pub content: String,
 }
 
+/// Content-addressed identity of a [`ContextSlice`]: hex `BLAKE3-256` over
+/// the slice's deterministic content. Timestamps never participate, so
+/// identical inputs mint the same id (ADR-0007).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SliceId(pub String);
+
+impl std::fmt::Display for SliceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Why an item was not included whole in a [`ContextSlice`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmissionReason {
+    /// Removed by the spec §27 dedupe step: an earlier block covers it.
+    Duplicate,
+    /// Dropped whole to fit the context budget.
+    BudgetDrop,
+    /// Kept but cut by budget truncation; the cut part is omitted.
+    Truncated,
+}
+
+/// One item the assembly did not include whole, with the reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmittedItem {
+    /// Kind of item it was.
+    pub kind: ContextKind,
+    /// Block provenance at omission time.
+    pub provenance: String,
+    /// Why the item, or its cut part, is absent.
+    pub reason: OmissionReason,
+}
+
+/// How a [`ContextSlice`] was requested: lineage recorded without copying
+/// any ancestor content (ADR-0007).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceLineage {
+    /// Why the slice exists; the shared driver uses `proposal`.
+    pub purpose: String,
+    /// Task-state revision the slice represents, when one was observed.
+    pub state_revision: Option<u64>,
+    /// Ids of ancestor slices; referenced, never concatenated.
+    pub parent_ids: Vec<SliceId>,
+}
+
+/// One purpose-specific, content-addressed projection of task state for a
+/// single model call (spec §27, ADR-0007). Conversation inside it is data;
+/// the authoritative bindings are the revision and the references.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContextSlice {
+    /// Content address over everything below except timestamps.
+    pub id: SliceId,
+    /// Why the slice was built.
+    pub purpose: String,
+    /// Task-state revision the slice represents, when observed.
+    pub state_revision: Option<u64>,
+    /// Ancestor slice ids; referenced, never concatenated.
+    pub parent_ids: Vec<SliceId>,
+    /// Included blocks, in assembly order.
+    pub blocks: Vec<ContextBlock>,
+    /// Items omitted or cut, each with a reason.
+    pub omitted: Vec<OmittedItem>,
+    /// Total context budget, tokens (estimated).
+    pub total_budget_tokens: u32,
+    /// Output tokens reserved when the slice was assembled.
+    pub output_budget_tokens: u32,
+    /// When the slice was assembled; excluded from [`Self::id`].
+    pub created_at: Timestamp,
+}
+
 /// Inputs to [`assemble`]. A struct (not seven arguments) keeps call sites
 /// and future budget knobs stable.
 pub struct AssembleInput<'a> {
@@ -194,6 +269,12 @@ pub fn collapse_repeated_lines(text: &str) -> String {
 /// appended after excerpt truncation so they are never cut.
 #[must_use]
 pub fn assemble(input: &AssembleInput<'_>) -> Vec<ContextBlock> {
+    assemble_detailed(input).0
+}
+
+/// [`assemble`] plus every omission the reduction order caused, each with a
+/// reason (ADR-0007).
+fn assemble_detailed(input: &AssembleInput<'_>) -> (Vec<ContextBlock>, Vec<OmittedItem>) {
     let mut blocks = Vec::new();
     push_system(&mut blocks, input.system_prompt);
     push_objective(&mut blocks, input.objective);
@@ -202,13 +283,116 @@ pub fn assemble(input: &AssembleInput<'_>) -> Vec<ContextBlock> {
     push_evidence(&mut blocks, &input.evidence.findings, 100);
     push_history(&mut blocks, input.history);
     push_gaps(&mut blocks, input.evidence);
-    dedupe_blocks(&mut blocks);
+    let mut omitted = Vec::new();
+    dedupe_blocks(&mut blocks, &mut omitted);
     fit_budget(
         &mut blocks,
         input.total_budget_tokens,
         input.output_budget_tokens,
+        &mut omitted,
     );
-    blocks
+    (blocks, omitted)
+}
+
+/// Assembles [`assemble`]'s blocks into a [`ContextSlice`]: lineage,
+/// budgets, recorded omissions, and a content-addressed [`SliceId`]
+/// (ADR-0007). Timestamps never enter the id, so identical inputs mint the
+/// same id.
+#[must_use]
+pub fn assemble_slice(input: &AssembleInput<'_>, lineage: &SliceLineage) -> ContextSlice {
+    let (blocks, omitted) = assemble_detailed(input);
+    let mut slice = ContextSlice {
+        id: SliceId(String::new()),
+        purpose: lineage.purpose.clone(),
+        state_revision: lineage.state_revision,
+        parent_ids: lineage.parent_ids.clone(),
+        blocks,
+        omitted,
+        total_budget_tokens: input.total_budget_tokens,
+        output_budget_tokens: input.output_budget_tokens,
+        created_at: Timestamp::now(),
+    };
+    slice.id = slice.compute_id();
+    slice
+}
+
+impl ContextSlice {
+    /// Recomputes the content address from the slice's own fields and
+    /// reports whether it still matches. Timestamps are ignored; any change
+    /// to purpose, lineage, budgets, blocks, or omissions breaks the match.
+    #[must_use]
+    pub fn verifies(&self) -> bool {
+        self.compute_id() == self.id
+    }
+
+    fn compute_id(&self) -> SliceId {
+        let mut hasher = blake3::Hasher::new();
+        put_str(&mut hasher, &self.purpose);
+        match self.state_revision {
+            None => {
+                hasher.update(&[0]);
+            }
+            Some(revision) => {
+                hasher.update(&[1]);
+                hasher.update(&revision.to_le_bytes());
+            }
+        }
+        put_usize(&mut hasher, self.parent_ids.len());
+        for parent in &self.parent_ids {
+            put_str(&mut hasher, &parent.0);
+        }
+        hasher.update(&self.total_budget_tokens.to_le_bytes());
+        hasher.update(&self.output_budget_tokens.to_le_bytes());
+        put_usize(&mut hasher, self.blocks.len());
+        for block in &self.blocks {
+            put_str(&mut hasher, kind_name(block.kind));
+            put_str(&mut hasher, &block.provenance);
+            put_str(&mut hasher, trust_label(block.trust));
+            hasher.update(&block.priority.to_le_bytes());
+            put_str(&mut hasher, &block.content);
+        }
+        put_usize(&mut hasher, self.omitted.len());
+        for item in &self.omitted {
+            put_str(&mut hasher, kind_name(item.kind));
+            put_str(&mut hasher, &item.provenance);
+            put_str(&mut hasher, omission_name(item.reason));
+        }
+        SliceId(hasher.finalize().to_hex().to_string())
+    }
+}
+
+/// Length-prefixes `value` into `hasher` so field boundaries stay
+/// unambiguous across concatenation.
+fn put_str(hasher: &mut blake3::Hasher, value: &str) {
+    put_usize(hasher, value.len());
+    hasher.update(value.as_bytes());
+}
+
+/// Encodes a count as fixed little-endian bytes.
+fn put_usize(hasher: &mut blake3::Hasher, value: usize) {
+    let value = u64::try_from(value).unwrap_or(u64::MAX);
+    hasher.update(&value.to_le_bytes());
+}
+
+/// Stable fingerprint name for a [`ContextKind`], independent of serde.
+fn kind_name(kind: ContextKind) -> &'static str {
+    match kind {
+        ContextKind::System => "system",
+        ContextKind::Objective => "objective",
+        ContextKind::Constraint => "constraint",
+        ContextKind::Evidence => "evidence",
+        ContextKind::History(HistorySpeaker::User) => "history.user",
+        ContextKind::History(HistorySpeaker::Assistant) => "history.assistant",
+    }
+}
+
+/// Stable fingerprint name for an [`OmissionReason`].
+fn omission_name(reason: OmissionReason) -> &'static str {
+    match reason {
+        OmissionReason::Duplicate => "duplicate",
+        OmissionReason::BudgetDrop => "budget_drop",
+        OmissionReason::Truncated => "truncated",
+    }
 }
 
 fn push_constraints(blocks: &mut Vec<ContextBlock>, constraints: &[ContextConstraint]) {
@@ -396,17 +580,28 @@ fn push_gaps(blocks: &mut Vec<ContextBlock>, evidence: &EvidencePackage) {
     });
 }
 
-/// Drops exact (kind, content) duplicates after the first occurrence.
-fn dedupe_blocks(blocks: &mut Vec<ContextBlock>) {
+/// Drops exact (kind, content) duplicates after the first occurrence,
+/// recording each dropped block as [`OmissionReason::Duplicate`].
+fn dedupe_blocks(blocks: &mut Vec<ContextBlock>, omitted: &mut Vec<OmittedItem>) {
     let mut seen = std::collections::HashSet::new();
-    blocks.retain(|block| {
+    let mut kept = Vec::with_capacity(blocks.len());
+    for block in std::mem::take(blocks) {
         let key = (
             context_kind_rank(block.kind),
             block.trust as u8,
             block.content.clone(),
         );
-        seen.insert(key)
-    });
+        if seen.insert(key) {
+            kept.push(block);
+        } else {
+            omitted.push(OmittedItem {
+                kind: block.kind,
+                provenance: block.provenance,
+                reason: OmissionReason::Duplicate,
+            });
+        }
+    }
+    *blocks = kept;
 }
 
 /// Stable rank so (kind, trust, content) is hashable for dedupe.
@@ -425,7 +620,13 @@ fn context_kind_rank(kind: ContextKind) -> u8 {
 /// nothing can shrink further. System and objective are truncated but never
 /// dropped; degenerate budgets (allowance below the pinned minimum) return
 /// best-effort over-budget blocks rather than eating pinned content.
-fn fit_budget(blocks: &mut Vec<ContextBlock>, total: u32, output: u32) {
+/// Whole drops and truncations are recorded in `omitted` (ADR-0007).
+fn fit_budget(
+    blocks: &mut Vec<ContextBlock>,
+    total: u32,
+    output: u32,
+    omitted: &mut Vec<OmittedItem>,
+) {
     let allowance = total.saturating_sub(output);
     // Drop whole flexible blocks, lowest priority first.
     while used_tokens(blocks) > allowance && droppable_count(blocks) > 0 {
@@ -436,7 +637,12 @@ fn fit_budget(blocks: &mut Vec<ContextBlock>, total: u32, output: u32) {
             .max_by_key(|(_, block)| (block.priority, block.content.len()))
             .map(|(index, _)| index)
         {
-            blocks.remove(victim);
+            let dropped = blocks.remove(victim);
+            omitted.push(OmittedItem {
+                kind: dropped.kind,
+                provenance: dropped.provenance,
+                reason: OmissionReason::BudgetDrop,
+            });
         } else {
             break;
         }
@@ -444,6 +650,7 @@ fn fit_budget(blocks: &mut Vec<ContextBlock>, total: u32, output: u32) {
     // Still over with only pinned blocks left: shrink the largest until the
     // allowance fits or the block cannot shrink further. Each successful
     // pass strictly shortens content, so this loop always terminates.
+    let mut truncated = std::collections::HashSet::new();
     while used_tokens(blocks) > allowance {
         let Some(largest) = blocks
             .iter()
@@ -456,6 +663,14 @@ fn fit_budget(blocks: &mut Vec<ContextBlock>, total: u32, output: u32) {
         let over = used_tokens(blocks).saturating_sub(allowance);
         if !truncate_block_chars(&mut blocks[largest], over) {
             break;
+        }
+        if truncated.insert(largest) {
+            let block = &blocks[largest];
+            omitted.push(OmittedItem {
+                kind: block.kind,
+                provenance: block.provenance.clone(),
+                reason: OmissionReason::Truncated,
+            });
         }
     }
 }
@@ -794,5 +1009,146 @@ mod tests {
             "unexpected header: {}",
             finding.content
         );
+    }
+
+    fn lineage() -> SliceLineage {
+        SliceLineage {
+            purpose: "proposal".to_owned(),
+            state_revision: Some(7),
+            parent_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn slice_id_is_deterministic_and_verifiable() {
+        let evidence = package_with("fn f() {}");
+        let first = assemble_slice(&input(&evidence, 10_000, 1_000), &lineage());
+        let second = assemble_slice(&input(&evidence, 10_000, 1_000), &lineage());
+        assert_eq!(first.id, second.id);
+        assert!(first.verifies());
+        assert!(first.omitted.is_empty(), "unexpected: {:?}", first.omitted);
+        assert_eq!(first.state_revision, Some(7));
+    }
+
+    #[test]
+    fn slice_id_excludes_timestamps_but_binds_content() {
+        let evidence = package_with("fn f() {}");
+        let mut slice = assemble_slice(&input(&evidence, 10_000, 1_000), &lineage());
+        slice.created_at = Timestamp::from_micros(42);
+        assert!(
+            slice.verifies(),
+            "timestamps must not affect the content address"
+        );
+        slice.blocks[0].content.push_str("tampered");
+        assert!(!slice.verifies(), "content changes must change the id");
+    }
+
+    #[test]
+    fn slice_id_binds_purpose_revision_and_parents() {
+        let evidence = package_with("fn f() {}");
+        let base = assemble_slice(&input(&evidence, 10_000, 1_000), &lineage());
+        let other_purpose = assemble_slice(
+            &input(&evidence, 10_000, 1_000),
+            &SliceLineage {
+                purpose: "scout".to_owned(),
+                state_revision: Some(7),
+                parent_ids: Vec::new(),
+            },
+        );
+        let other_revision = assemble_slice(
+            &input(&evidence, 10_000, 1_000),
+            &SliceLineage {
+                purpose: "proposal".to_owned(),
+                state_revision: Some(8),
+                parent_ids: Vec::new(),
+            },
+        );
+        let with_parent = assemble_slice(
+            &input(&evidence, 10_000, 1_000),
+            &SliceLineage {
+                purpose: "proposal".to_owned(),
+                state_revision: Some(7),
+                parent_ids: vec![base.id.clone()],
+            },
+        );
+        assert_ne!(base.id, other_purpose.id);
+        assert_ne!(base.id, other_revision.id);
+        assert_ne!(base.id, with_parent.id);
+    }
+
+    #[test]
+    fn assemble_slice_blocks_equal_assemble() {
+        let evidence = package_with("fn f() {}");
+        let plain = assemble(&input(&evidence, 10_000, 1_000));
+        let slice = assemble_slice(&input(&evidence, 10_000, 1_000), &lineage());
+        // Equal up to `created_at`, which is wall-clock, not content.
+        assert_eq!(shape(&plain), shape(&slice.blocks));
+    }
+
+    #[test]
+    fn duplicate_history_is_recorded_as_an_omission() {
+        let evidence = package_with("fn f() {}");
+        let history = [
+            HistoryTurn {
+                speaker: HistorySpeaker::User,
+                content: "same".to_owned(),
+            },
+            HistoryTurn {
+                speaker: HistorySpeaker::User,
+                content: "same".to_owned(),
+            },
+        ];
+        let call = AssembleInput {
+            system_prompt: "sys",
+            objective: "obj",
+            constraints: &[],
+            evidence: &evidence,
+            history: &history,
+            total_budget_tokens: 10_000,
+            output_budget_tokens: 1_000,
+        };
+        let slice = assemble_slice(&call, &lineage());
+        assert!(
+            slice
+                .omitted
+                .iter()
+                .any(|item| item.reason == OmissionReason::Duplicate),
+            "missing duplicate: {:?}",
+            slice.omitted
+        );
+        assert!(slice.verifies());
+    }
+
+    #[test]
+    fn budget_drops_and_truncations_are_recorded() {
+        let evidence = package_with("fn f() {}");
+        let long_system = "s".repeat(500);
+        let squeezed = AssembleInput {
+            system_prompt: &long_system,
+            objective: "obj",
+            constraints: &[],
+            evidence: &evidence,
+            history: &[],
+            total_budget_tokens: 40,
+            output_budget_tokens: 10,
+        };
+        let slice = assemble_slice(&squeezed, &lineage());
+        assert!(
+            slice
+                .omitted
+                .iter()
+                .any(|item| item.reason == OmissionReason::BudgetDrop),
+            "missing budget drop: {:?}",
+            slice.omitted
+        );
+        assert!(
+            slice
+                .omitted
+                .iter()
+                .any(|item| item.reason == OmissionReason::Truncated),
+            "missing truncation: {:?}",
+            slice.omitted
+        );
+        assert!(slice.verifies());
     }
 }

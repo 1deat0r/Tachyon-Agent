@@ -34,7 +34,7 @@ use crate::{
 use tachyon_models::{
     AgentDecision, AssembleInput, ConstraintOrigin, ConstraintStrength, ContextConstraint,
     HistorySpeaker, HistoryTurn, ModelFeature, ModelProvider, ModelRequest, ModelUsage, Role,
-    assemble,
+    SliceLineage, assemble_slice,
 };
 use tachyon_mutation::{MutationEngine, MutationError, PatchSpec, blake3_hex};
 use tachyon_policy::ApprovalRequest;
@@ -709,15 +709,23 @@ async fn stage_model(
         )));
     }
     let evidence = model_evidence_package(&plan.task_context.objective, &plan.contract, items)?;
-    let context = assemble(&AssembleInput {
-        system_prompt: MODEL_SYSTEM_PROMPT,
-        objective: &plan.task_context.objective,
-        constraints: &plan.task_context.constraints,
-        evidence: &evidence,
-        history: &plan.task_context.history,
-        total_budget_tokens: capabilities.context_window_tokens,
-        output_budget_tokens: OUTPUT_BUDGET_TOKENS,
-    });
+    let slice = assemble_slice(
+        &AssembleInput {
+            system_prompt: MODEL_SYSTEM_PROMPT,
+            objective: &plan.task_context.objective,
+            constraints: &plan.task_context.constraints,
+            evidence: &evidence,
+            history: &plan.task_context.history,
+            total_budget_tokens: capabilities.context_window_tokens,
+            output_budget_tokens: OUTPUT_BUDGET_TOKENS,
+        },
+        &SliceLineage {
+            purpose: "proposal".to_owned(),
+            state_revision: plan.task_context.revision,
+            parent_ids: Vec::new(),
+        },
+    );
+    let context = slice.blocks;
     let request = ModelRequest {
         role: Role::Primary,
         model: plan.model.clone(),

@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 # Provider transport. `ring` only, never the default `aws-lc-rs`: no C
 # toolchain or cmake on the build host, and both crates' licenses are
 # already on deny.toml's allow list. Roots come from the platform store
