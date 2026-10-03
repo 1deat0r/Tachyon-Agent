@@ -61,6 +61,10 @@ Do not speculate about performance when it can be measured. Add instrumentation 
 
 Never claim Tachyon is faster because a different model/provider was used. Harness comparisons should use the same model where possible.
 
+## Development routing
+
+Deterministic evidence first; TypeSafe JEV for bounded typed uncertainty; generative models only for unresolved open-ended reasoning. JEV never verifies truth.
+
 ## Scope discipline
 
 MVP explicitly defers:
