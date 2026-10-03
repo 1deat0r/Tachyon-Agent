@@ -1329,6 +1329,53 @@ pub(crate) async fn run_prompt<C: Connector>(
     .await
 }
 
+/// The typed `-32004 turn_timed_out` verdict: the turn did not reach a
+/// terminal task status within the 300 s budget. ONE construction for
+/// both sources — the deadline wrapper below, and a gateway read that
+/// outlives the FROZEN budget while a permission request is
+/// outstanding (see [`read_gateway_frame`]).
+fn turn_timed_out() -> HandlerError {
+    HandlerError::turn_failed(
+        "turn_timed_out",
+        format!(
+            "turn did not reach a terminal task status within {}s",
+            TURN_TIMEOUT.as_secs()
+        ),
+    )
+}
+
+/// One gateway read, suspension-aware: while the turn budget runs the
+/// deadline wrapper owns the bound (the read completes inside the turn
+/// future), so this is a plain read. While a permission request is
+/// outstanding the wrapper's paused branch has NO timer — but a
+/// gateway round trip in flight at that moment (the settlement read
+/// the ask armed on top of) is machine-paced, never human-paced: it
+/// keeps the FROZEN pre-suspension deadline and fails typed
+/// [`turn_timed_out`] on expiry. Otherwise a wedged gateway would hang
+/// the turn forever — and client EOF could never end it either (the
+/// serve loop's drain waits on this turn).
+async fn read_gateway_frame<F, T>(
+    read: F,
+    budget: Option<&watch::Sender<TurnBudgetState>>,
+) -> Result<T, HandlerError>
+where
+    F: Future<Output = Result<T, GatewayUnavailable>>,
+{
+    let frozen = budget.and_then(|budget| {
+        let state = *budget.borrow();
+        state.suspended.then_some(state.deadline)
+    });
+    match frozen {
+        Some(deadline) => match tokio::time::timeout_at(deadline, read).await {
+            Ok(frame) => frame.map_err(|error| HandlerError::unavailable(&error)),
+            Err(_) => Err(turn_timed_out()),
+        },
+        None => read
+            .await
+            .map_err(|error| HandlerError::unavailable(&error)),
+    }
+}
+
 /// The turn-deadline wrapper around any turn future — the budget
 /// logic of [`run_prompt`] factored out as the unit seam for the
 /// paused-clock suspension proof.
@@ -1371,13 +1418,7 @@ where
         if current.suspended || current.deadline > snapshot.deadline {
             continue;
         }
-        break Err(HandlerError::turn_failed(
-            "turn_timed_out",
-            format!(
-                "turn did not reach a terminal task status within {}s",
-                TURN_TIMEOUT.as_secs()
-            ),
-        ));
+        break Err(turn_timed_out());
     }
 }
 
@@ -1910,6 +1951,11 @@ async fn stream_turn(
         //    terminal status the read is bounded by the deny grace, so
         //    a gateway that journals no terminal status settles the
         //    prompt `refusal` instead of hanging to the turn deadline.
+        //    With no phase bound the deadline wrapper bounds the read
+        //    while the budget runs — EXCEPT during the suspension:
+        //    there the wrapper has no timer, so a gateway round trip
+        //    already in flight keeps the frozen pre-suspension deadline
+        //    (`read_gateway_frame`), never an unbounded read.
         let frame = match read_bound(&bridge.phase) {
             Some((deadline, expiry)) => {
                 let left = deadline.saturating_duration_since(Instant::now());
@@ -1930,10 +1976,7 @@ async fn stream_turn(
                     }
                 }
             }
-            None => conn
-                .read_frame()
-                .await
-                .map_err(|error| HandlerError::unavailable(&error))?,
+            None => read_gateway_frame(conn.read_frame(), bridge.budget.as_ref()).await?,
         };
         match frame {
             ServerFrame::Response(response) if Some(response.request_id) == awaiting => {
@@ -2155,10 +2198,11 @@ mod tests {
         ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
         approval_parked, classify_permission_answer, final_prompt_result, is_allow_once,
         is_approval_parked, is_reject_once, is_settlement_signal, is_terminal_status, parse_cancel,
-        parse_prompt, parse_session_new, permission_request_params, read_bound,
+        parse_prompt, parse_session_new, permission_request_params, read_bound, read_gateway_frame,
         refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
         tool_call_status_update, turn_deadline,
     };
+    use crate::client::GatewayUnavailable;
     use crate::codec::{
         INVALID_PARAMS, InboundResponse, Outbound, RpcId, TURN_CONFLICT, TURN_FAILED,
     };
@@ -3262,6 +3306,53 @@ mod tests {
         // The full cycle: resolution runs `running()` (step 2's call).
         let resumed = TurnBudgetState::running();
         assert!(!resumed.suspended, "resolution resumes with a full budget");
+    }
+
+    /// Phase 7 review fix: a gateway read issued while the budget is
+    /// SUSPENDED keeps the FROZEN pre-suspension deadline — the
+    /// wrapper's paused branch has no timer, so without this local
+    /// bound a wedged gateway would hang the turn (and the serve
+    /// loop's EOF drain) forever. Expiry is the SAME typed
+    /// `turn_timed_out` verdict the wrapper produces.
+    #[tokio::test(start_paused = true)]
+    async fn a_gateway_read_while_suspended_keeps_the_frozen_deadline() {
+        let (budget, _rx) = watch::channel(TurnBudgetState {
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+            suspended: true,
+        });
+        let read = async {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            Ok::<_, GatewayUnavailable>("a frame the wedged gateway sends too late")
+        };
+        let error = read_gateway_frame(read, Some(&budget))
+            .await
+            .expect_err("a wedged gateway read fails typed at the frozen deadline");
+        assert_eq!(error.data, json!("turn_timed_out"));
+    }
+
+    /// Negative control for the review fix: while the budget RUNS (or
+    /// no budget is wired at all), `read_gateway_frame` adds NO local
+    /// timer — the deadline wrapper owns the bound, so a slow gateway
+    /// read still completes on its own schedule.
+    #[tokio::test(start_paused = true)]
+    async fn a_gateway_read_while_running_adds_no_local_timer() {
+        let (budget, _rx) = watch::channel(TurnBudgetState {
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+            suspended: false,
+        });
+        let read = async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok::<_, GatewayUnavailable>("frame")
+        };
+        let frame = read_gateway_frame(read, Some(&budget))
+            .await
+            .expect("a running budget leaves the bound to the wrapper");
+        assert_eq!(frame, "frame");
+        // Unit bridges wire no budget at all — same plain-read contract.
+        let plain = read_gateway_frame(std::future::ready(Ok::<_, GatewayUnavailable>("ok")), None)
+            .await
+            .expect("a budget-less read is plain");
+        assert_eq!(plain, "ok");
     }
 
     /// S4 (M4a): the orphan bound is TIGHTENED to 2 s and is the one
