@@ -21,7 +21,7 @@ use tachyon_core::{
     project_task_state, recover_task,
 };
 use tachyon_models::ModelProvider;
-use tachyon_policy::{ApprovalRequest, Approvals, DefaultPosture, Policy, operation_hash};
+use tachyon_policy::{ApprovalRequest, Approvals, Policy, operation_hash};
 use tachyon_protocol::{
     Command, CommandResult, EventEnvelope, GatewayEvent, McpArgEntry, McpEnvEntry,
     McpServerDescriptor, McpToolInfo, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope,
@@ -44,7 +44,10 @@ use uuid::Uuid;
 use crate::endpoint::{
     ClaimPaths, EndpointError, claim_runtime_dir, release_runtime_dir, write_endpoint,
 };
-use crate::mcp::{LiveMcpServer, launch_mcp_server};
+use crate::mcp::{
+    LiveMcpServer, launch_mcp_server, mcp_call_policy, mcp_launch_policy, mcp_spawn_operation,
+    mcp_spawn_scope, mcp_spawn_summary, mcp_tool_operation, mcp_tool_scope, mcp_tool_summary,
+};
 use crate::transport::{Listener, Stream};
 
 /// Errors produced by the gateway.
@@ -2483,71 +2486,6 @@ async fn expire_mcp_parks_for_cancel(state: &Arc<GatewayState>, session_id: &str
             .decide_mcp_approval(&id.to_string(), "cancelled")
             .await;
     }
-}
-
-/// The authorize scope of one mediated call: `<server-id>/<tool>`.
-/// Built from compiler-validated parts (neither may hold `/`), so the
-/// scope splits unambiguously on its single `/`.
-fn mcp_tool_scope(server_id: &str, tool: &str) -> String {
-    format!("{server_id}/{tool}")
-}
-
-/// The authorized operation JSON of one mediated call: the server and
-/// tool identity plus the FULL arguments verbatim. The policy binds
-/// grants to the BLAKE3 hash of exactly this document, so any material
-/// argument change invalidates them.
-fn mcp_tool_operation(
-    server_id: &str,
-    tool: &str,
-    arguments: &serde_json::Value,
-) -> serde_json::Value {
-    serde_json::json!({"server_id": server_id, "tool": tool, "arguments": arguments})
-}
-
-/// The policy mediated calls authorize against: default Ask, no grants,
-/// no denials — every call parks, and a human grants each one through
-/// the session-scoped approve commands (`allow_once` semantics live in
-/// the one-shot approval consumption, never in durable grants).
-fn mcp_call_policy() -> Policy {
-    Policy::new(DefaultPosture::Ask)
-}
-
-/// Human summary shown at approval time. Arguments are deliberately
-/// excluded: they may carry caller-supplied secrets, and the parked
-/// approval must never become a disclosure surface.
-fn mcp_tool_summary(server_id: &str, tool: &str) -> String {
-    format!("MCP tool call {server_id}/{tool}")
-}
-
-/// The authorize scope of one mediated launch: `<server-id>/launch`.
-/// Built from the compiler-validated `server_id` (no `/`), so the
-/// scope splits unambiguously on its single `/` — the same shape as
-/// the call scope `<server-id>/<tool>`.
-fn mcp_spawn_scope(server_id: &str) -> String {
-    format!("{server_id}/launch")
-}
-
-/// The authorized operation JSON of one mediated launch: the server
-/// identity plus the launch-approval id (the compiler's idempotency
-/// key). The policy binds grants to the BLAKE3 hash of exactly this
-/// document, so a launch under a different approval is a different
-/// grant.
-fn mcp_spawn_operation(server_id: &str, approval_id: &ApprovalId) -> serde_json::Value {
-    serde_json::json!({"server_id": server_id, "approval_id": approval_id.to_string()})
-}
-
-/// The policy mediated launches authorize against: default Ask, no
-/// grants, no denials — the same funnel as calls. The human grant is
-/// the session-scoped approval consumption; the per-server authorize
-/// binds scope + operation hash exactly once per launch.
-fn mcp_launch_policy() -> Policy {
-    Policy::new(DefaultPosture::Ask)
-}
-
-/// Human summary shown at approval time: identity only, never the
-/// descriptor (it may carry caller-supplied secrets).
-fn mcp_spawn_summary(server_id: &str) -> String {
-    format!("MCP server launch {server_id}")
 }
 
 /// Proves a call target before any child I/O: the row exists
