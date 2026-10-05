@@ -178,6 +178,8 @@ Local runtime endpoint must be user-scoped. Remote network listener remains disa
 
 Do not store bearer secrets in world-readable endpoint metadata.
 
+The gateway publishes `gateway.json` atomically (0600 temp file plus rename in a 0700 runtime dir), quarantines corrupt endpoint files instead of trusting them, and never steals a directory whose recorded pid is still alive.
+
 ## Security test minimum
 
 Automated tests must cover:
