@@ -4,16 +4,24 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 19 — proposed frozen multi-file/API-preservation eval.
-Milestone 18 is complete. Baseline and generic boundary-guidance candidate
-both verified 15/15 full-mode runs, including two new held-out tasks.
-The declared strict-improvement rule blocks adoption on this tie.
-Production prompt and acceptance remain unchanged. The next eval should
-increase task difficulty beyond one-file arithmetic and retain independent
-API, regression, change-path, and recovery checks. See
-`docs/milestones/CANDIDATE_REPORT.md`.
+Milestone 20 — proposed frozen stateful cross-module repair eval.
+Milestone 19 is complete. Two new multi-file tasks verified 20/20 runs,
+with 20 model calls and no retries. Every task/mode cell verified 5/5.
+The exploratory reference line was met. These small synthetic samples
+support no general reliability or speed claim. The next eval should test
+state preservation across modules with independent operation sequences.
+Production behavior stays unchanged. See
+`docs/milestones/MULTIFILE_REPORT.md`.
 
 ## Completed gates
+
+- 2026-10-06 Milestone 19 — froze two cross-file API-preservation tasks
+  before 20 live runs. All 20 verified with 20 calls and no retries.
+  Independent golden/edge oracles, four partial-repair controls, API consumers,
+  protected paths, and completed recovery passed. The registered reference
+  line was met. VERIFY/FULL, strict validator and safe retention controls,
+  and both review axes passed. Production behavior stays unchanged. Report:
+  `docs/milestones/MULTIFILE_REPORT.md`.
 
 - 2026-10-06 Milestone 18 — froze one opt-in benchmark guidance candidate,
   a reused development task, and two new held-out arithmetic tasks before

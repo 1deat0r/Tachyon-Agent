@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "eval_valid": true,
+  "scope": "two new cross-file synthetic tasks, five runs per mode, unchanged production baseline",
+  "source_commit": "f22ebc711f17bbbe798ffa3a425fe673b234961c",
+  "binary_sha256": "c4b3e5455a39377080bad7a67d9d620da3477507d3d82294b99ea67244267021",
+  "manifest_sha256": "409404d2f5e62c9aec0555ee6ecaeea9475ff0004ebdd48eeef07b58a79d4ed9",
+  "tasks": {
+    "canonical-frame": {
+      "full": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 11850,
+          "p95": 20864
+        },
+        "verified_task_wall_ms": {
+          "p50": 11850,
+          "p95": 20864
+        },
+        "verified_first_edit_ms": {
+          "p50": 11515,
+          "p95": 20526
+        },
+        "model_ms": {
+          "p50": 11509.768309,
+          "p95": 20521.269088
+        },
+        "known_input_tokens": 8470,
+        "known_output_tokens": 3883,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "serial": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 17095,
+          "p95": 42426
+        },
+        "verified_task_wall_ms": {
+          "p50": 17095,
+          "p95": 42426
+        },
+        "verified_first_edit_ms": {
+          "p50": 16712,
+          "p95": 42080
+        },
+        "model_ms": {
+          "p50": 16707.82131,
+          "p95": 42075.269017
+        },
+        "known_input_tokens": 8470,
+        "known_output_tokens": 4783,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    },
+    "normalized-registry": {
+      "full": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 39014,
+          "p95": 76336
+        },
+        "verified_task_wall_ms": {
+          "p50": 39014,
+          "p95": 76336
+        },
+        "verified_first_edit_ms": {
+          "p50": 38641,
+          "p95": 75754
+        },
+        "model_ms": {
+          "p50": 38635.76835300001,
+          "p95": 75747.924964
+        },
+        "known_input_tokens": 8755,
+        "known_output_tokens": 8475,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "serial": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 20932,
+          "p95": 67966
+        },
+        "verified_task_wall_ms": {
+          "p50": 20932,
+          "p95": 67966
+        },
+        "verified_first_edit_ms": {
+          "p50": 20460,
+          "p95": 67114
+        },
+        "model_ms": {
+          "p50": 20454.393309,
+          "p95": 67108.019195
+        },
+        "known_input_tokens": 8755,
+        "known_output_tokens": 5628,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    }
+  },
+  "verified": 20,
+  "total": 20,
+  "model_calls": 20,
+  "reference_line_met": true,
+  "comparison_allowed": false,
+  "cost_usd": null,
+  "decision": "Retain all failures. Small per-cell samples support no general reliability or speed claim."
+}

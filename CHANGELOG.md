@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Milestone 19 frozen multi-file API-preservation baseline: two new tasks,
+  independent wire/state oracles, four partial-repair controls, API consumers,
+  and safe failure-artifact retention. All 20 full/serial runs verified,
+  with 20 calls and no retries. The exploratory reference line was met.
+  These small samples support no general reliability or speed claim.
+  Production behavior stays unchanged. See `docs/milestones/MULTIFILE_REPORT.md`.
+
 - Milestone 18 boundary-guidance candidate experiment: opt-in benchmark
   instrumentation and two frozen held-out tasks, with committed inputs,
   strict variant/order accounting, and API/numeric oracles. Baseline and

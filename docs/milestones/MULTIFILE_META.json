@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "source_commit": "f22ebc711f17bbbe798ffa3a425fe673b234961c",
+  "binary_sha256": "c4b3e5455a39377080bad7a67d9d620da3477507d3d82294b99ea67244267021",
+  "manifest_sha256": "409404d2f5e62c9aec0555ee6ecaeea9475ff0004ebdd48eeef07b58a79d4ed9",
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "planned_order": [
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 5
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 5
+    }
+  ],
+  "runner_state": {
+    "complete": true,
+    "recorded_samples": 20,
+    "in_flight": null
+  }
+}

@@ -6,10 +6,11 @@ genuine unresolved uncertainty.
 
 > LLMs are reasoning accelerators, not Tachyon's operating system.
 
-**Status (Oct 2026):** Milestone 18 candidate experiment complete.
-Baseline and boundary-guidance candidate each verified 15/15 matched runs.
-The success tie blocks adoption. Production behavior remains unchanged.
-See the [candidate report](docs/milestones/CANDIDATE_REPORT.md).
+**Status (Oct 2026):** Milestone 19 multi-file evaluation complete.
+Two new tasks verified 20/20 runs across full and serial modes, with
+20 model calls and no retries. API, protected-path, and recovery checks passed.
+See the [multi-file report](docs/milestones/MULTIFILE_REPORT.md).
+Production behavior remains unchanged. The M18 candidate remains unselected.
 The M16 [live baseline](docs/milestones/HELDOUT_REPORT.md) remains 29/30.
 The MVP remains frozen at Milestone 14; see
 [`PROGRESS.md`](PROGRESS.md) and [`MVP_REPORT.md`](MVP_REPORT.md).
