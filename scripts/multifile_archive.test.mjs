@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {archiveFailure} from './multifile_archive.mjs';
+function setup(){const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'tachyon-m14-test-')),outside=fs.mkdtempSync(path.join(os.tmpdir(),'tachyon-archive-outside-')),dest=fs.mkdtempSync(path.join(os.tmpdir(),'tachyon-archive-dest-'));fs.mkdirSync(path.join(scratch,'ws/subject/src'),{recursive:true});fs.writeFileSync(path.join(scratch,'ws/subject/src/one.rs'),'authorized');fs.writeFileSync(path.join(outside,'one.rs'),'outside');return{scratch,outside,dest,row:{scratch,task_id:'task-1'},cell:{fixture:'test'},descriptor:{change_paths:['subject/src/one.rs']},cleanup(){for(const p of [scratch,outside,dest])fs.rmSync(p,{recursive:true,force:true});}};}
+test('regular authorized source is retained from the failed workspace',()=>{const s=setup();try{archiveFailure(s.row,s.cell,s.descriptor,s.dest);assert.equal(fs.readFileSync(path.join(s.dest,'task-1/subject/src/one.rs'),'utf8'),'authorized');}finally{s.cleanup();}});
+test('linked workspace, ancestor and source cannot escape containment',()=>{for(const kind of ['workspace','ancestor','source']){const s=setup();try{const linked=path.join(s.scratch,kind==='workspace'?'ws':kind==='ancestor'?'ws/subject/src':'ws/subject/src/one.rs');fs.rmSync(linked,{recursive:true,force:true});fs.symlinkSync(kind==='source'?path.join(s.outside,'one.rs'):s.outside,linked);assert.throws(()=>archiveFailure(s.row,s.cell,s.descriptor,s.dest));assert.deepEqual(fs.readdirSync(s.dest),[]);}finally{s.cleanup();}}});
+test('unsafe declared paths and task identities are refused',()=>{for(const rel of ['../one.rs','/one.rs','subject/../one.rs','']){const s=setup();try{s.descriptor.change_paths=[rel];assert.throws(()=>archiveFailure(s.row,s.cell,s.descriptor,s.dest));assert.deepEqual(fs.readdirSync(s.dest),[]);}finally{s.cleanup();}}const s=setup();try{s.row.task_id='../escape';assert.throws(()=>archiveFailure(s.row,s.cell,s.descriptor,s.dest));}finally{s.cleanup();}});

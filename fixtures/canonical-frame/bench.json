@@ -1,0 +1,119 @@
+{
+  "id": "canonical-frame",
+  "class": "D",
+  "objective": "Fix both encoder and decoder to use the canonical frame-v1 wire format: a two-byte big-endian payload length followed by exactly that many payload bytes. Preserve all public APIs and label functions. Keep TooLarge, Truncated, and LengthMismatch behavior correct. Both implementation files need repair.",
+  "evidence_paths": [
+    "subject/src/decoder.rs",
+    "subject/src/encoder.rs",
+    "subject/src/lib.rs",
+    "subject/tests/visible.rs",
+    "client/tests/api.rs",
+    "README.md"
+  ],
+  "protected_paths": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "README.md",
+    "bench.json",
+    "client/Cargo.toml",
+    "client/src/lib.rs",
+    "client/tests/api.rs",
+    "subject/Cargo.toml",
+    "subject/src/lib.rs",
+    "subject/tests/holdout.rs",
+    "subject/tests/visible.rs",
+    "unrelated/Cargo.toml",
+    "unrelated/src/lib.rs"
+  ],
+  "change_paths": [
+    "subject/src/decoder.rs",
+    "subject/src/encoder.rs"
+  ],
+  "contract": {
+    "clauses": [
+      {
+        "kind": "CommandPasses",
+        "command": {
+          "program": "cargo",
+          "args": [
+            "test",
+            "--offline",
+            "--locked"
+          ],
+          "cwd": ".",
+          "env": {},
+          "timeout_ms": 180000
+        }
+      },
+      {
+        "kind": "ChangedPathsWithin",
+        "paths": [
+          "subject/src/decoder.rs",
+          "subject/src/encoder.rs"
+        ]
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "Cargo.lock"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "README.md"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "bench.json"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/src/lib.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/tests/api.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/src/lib.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/tests/holdout.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/tests/visible.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "unrelated/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "unrelated/src/lib.rs"
+      }
+    ]
+  },
+  "requested_checks": [
+    "canonical-frame",
+    "api-client"
+  ],
+  "available_checks": [
+    "canonical-frame",
+    "api-client",
+    "unrelated"
+  ],
+  "check_note": "Affected checks cover subject and public API consumer; unrelated crate remains protected."
+}

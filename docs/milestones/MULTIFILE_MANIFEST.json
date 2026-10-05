@@ -1,0 +1,218 @@
+{
+  "schema": 1,
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "planned_order": [
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "canonical-frame",
+      "mode": "serial",
+      "sample": 5
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "normalized-registry",
+      "mode": "serial",
+      "sample": 5
+    }
+  ],
+  "files": {
+    "crates/tachyon-core/examples/bench_matrix.rs": "412e9826e049b4283405905337c3b2974e793363cf6e08350553aa36a95a451b",
+    "crates/tachyon-core/src/driver.rs": "419b96a05f0e6bf41e18f54334e5161b92e4aa8e43278d451552bc8c15e2a854",
+    "crates/tachyon-core/src/driver/model.rs": "fe372592f3021fcabecdc8610ff17864f32b7f83f7a8693bddf285c335dcdf46",
+    "crates/tachyon-models/src/decision.rs": "22cb6f89298e2c6cffefb9fc2a0fedafc590f01547594372de5921cb4ec421be",
+    "crates/tachyon-models/src/openai_compat.rs": "7cde8f0faf0a064891afc639388d057d225d2c29b0d3bccf3cd2b46b86567ad2",
+    "crates/tachyon-models/src/provider.rs": "3eeb80b8b0d4b429082e793a2c2975ec7231e8ae8e9c87732ff115561176294f",
+    "docs/milestones/HELDOUT_PLAN.md": "f75cfba2e071c43c88061ac49a613e229361769d49fb9e57bba0fc0824093018",
+    "docs/milestones/MULTIFILE_PLAN.md": "cdfabf1e96f6810924b0bb66bbd847d051770ac9b4fff97f539c20efff38c75d",
+    "fixtures/atomic-transfer/Cargo.lock": "4180f9e83395c4062ca9d7b45ef7e7350301adaef225259ef5c17fd3c524f4f6",
+    "fixtures/atomic-transfer/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/atomic-transfer/README.md": "f6580826401dc54a398399dfe2d20d8ef0eb44358f9b6f78be63a1816147baf2",
+    "fixtures/atomic-transfer/bench.json": "9c44f69762b75e6595501f3a5cfa3de9ba558fc4dc309b14e170f560f4d5ea0e",
+    "fixtures/atomic-transfer/client/Cargo.toml": "2c6a925482b596b6df1a1e731cbebe10c0f5ce371bbe9254723122aa4b5dd923",
+    "fixtures/atomic-transfer/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/atomic-transfer/client/tests/api.rs": "c5b2730fb08abe3afe08d440d28ad9eed2eeef95bc6c11b4c189b2579b0042de",
+    "fixtures/atomic-transfer/subject/Cargo.toml": "25c0cf1190b233947f28b00bc468ee80ede16b115c0e879ffd9c7f7e4cadbfcc",
+    "fixtures/atomic-transfer/subject/src/implementation.rs": "89cb669af9afe65b6e92119e073fa45ab19333791e17b81383affb0459448ae7",
+    "fixtures/atomic-transfer/subject/src/lib.rs": "145883e83fbece1299f8bda87f587ab45416a8765b0948844070f02d73ff5231",
+    "fixtures/atomic-transfer/subject/tests/holdout.rs": "3a3bd998ea310fa7bda4e9622e991103d4a672929fc0849ae9d3dde465ae7b92",
+    "fixtures/atomic-transfer/subject/tests/visible.rs": "231ef15748c98637d1d6b36e6f4bfa14826d318e40414c7e7d2b392a90143f12",
+    "fixtures/atomic-transfer/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/atomic-transfer/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/canonical-frame/Cargo.lock": "e17e026d325d9741e4e0f64b2ee56666a0536c2ed9ea50ff86a5fd10af20b160",
+    "fixtures/canonical-frame/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/canonical-frame/README.md": "8693648eee5417cad32184de03a90db6261272cb46908f3f41c74321be468eb0",
+    "fixtures/canonical-frame/bench.json": "a3efbb4af6533ddf1c2b1a85d30b0a548753df38b3ee14dfff172ccf45976f99",
+    "fixtures/canonical-frame/client/Cargo.toml": "d7fadaf0abc21d1a36611b1a4b200e3c0c92aa5ff35bf4db79f40f35b5fe047d",
+    "fixtures/canonical-frame/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/canonical-frame/client/tests/api.rs": "f4071ef4e05f1f6181330f1a7bf06728329ed835d107666fc79477dcb01246c9",
+    "fixtures/canonical-frame/subject/Cargo.toml": "7513437b18f432443ba4bda65099a14ecd32e90ed9a6c5ff66284bdaf3dce163",
+    "fixtures/canonical-frame/subject/src/decoder.rs": "b464bbf625d023d51765f2bfb6e9acb4d2b4c2ee3bf056b93c66fe7950ac2aa9",
+    "fixtures/canonical-frame/subject/src/encoder.rs": "d50d12724ab0f9ccbfac37208a257e8de5927d73f45ba197cad0afd087540339",
+    "fixtures/canonical-frame/subject/src/lib.rs": "2fc4ab87ae4f40815a7e08b2fbfcf3951d98c32b2372a10d456904dae81f388b",
+    "fixtures/canonical-frame/subject/tests/holdout.rs": "8c6188a518f774cd41849ab96ca7de07514bd1c3155c3ed223107a0771e0aa4f",
+    "fixtures/canonical-frame/subject/tests/visible.rs": "1185c8b5dd14b8adc075345a351d7ca25cd9a3ad23fea0d496ead0bd20a43e35",
+    "fixtures/canonical-frame/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/canonical-frame/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/duplicate-range/Cargo.lock": "ccef95f23ddb595565da4f6b798aeb4281a7b39c0337b1bde605c468374dee53",
+    "fixtures/duplicate-range/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/duplicate-range/README.md": "ae154132b1e3e4f532559714f16ee5e0d61833c79dea3e91aadc2822d5ccda7a",
+    "fixtures/duplicate-range/bench.json": "95d5a25faf601673688ec8b8ec6211995f356bcec665cc0dd63979ab82d6d05f",
+    "fixtures/duplicate-range/client/Cargo.toml": "a84e649c1764d461d7c0dc799f2e2c5f1239cf902d96c7bc744a1a516dd03a9c",
+    "fixtures/duplicate-range/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/duplicate-range/client/tests/api.rs": "cddb699732c82d90dc08e2c8ab4c39a5566606c897ea72fd527ad4a28be84558",
+    "fixtures/duplicate-range/subject/Cargo.toml": "f2f8eccc6bdfec72b37239f6a28354f12389261390a43f45fd2dd86dd882055e",
+    "fixtures/duplicate-range/subject/src/implementation.rs": "c08edc4afd1e2a5345bb74cf7f96d2075f529e768d3537718969a07b3de5aa08",
+    "fixtures/duplicate-range/subject/src/lib.rs": "179a6874ff725033d928482894c7760db20dc75d8ca23c65c7d8f6d085f890a1",
+    "fixtures/duplicate-range/subject/tests/holdout.rs": "edc24075f5f75a84eeccf06d0976d2f37dcba8ebae9d62c401e90257864fa1b2",
+    "fixtures/duplicate-range/subject/tests/visible.rs": "99060c44b841d61e8803de57f110a5da9d9f97ff245099ef595a018bfd24067d",
+    "fixtures/duplicate-range/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/duplicate-range/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/normalized-registry/Cargo.lock": "dcc9e8acfc355b9600a66f277a34085466488c4cbcad67c5e0c3ac725d9b3769",
+    "fixtures/normalized-registry/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/normalized-registry/README.md": "db32af84503b427709886ddbb2c6906851947f44d037eb9bd97182a215fb7e41",
+    "fixtures/normalized-registry/bench.json": "06fd13a5c6d644ec6e42c79a618ecd1424717b6eefad531208bd1ca8a733cd45",
+    "fixtures/normalized-registry/client/Cargo.toml": "4c7ab639764e8e902d2851fd8ef263607e8c9207114fb95fbf51a9fd38b10fe1",
+    "fixtures/normalized-registry/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/normalized-registry/client/tests/api.rs": "a87c4e9644dabf3f6f3f75eb4fc5edf161390ad4233a2b7ad2d3d6eaf91c9887",
+    "fixtures/normalized-registry/subject/Cargo.toml": "87176678c97a0a0847e7dd9eb0d1e0b38b8da9972431e5bce0360d64009bc4aa",
+    "fixtures/normalized-registry/subject/src/lib.rs": "31fec22eeed2c377583c78d60dc26f768e2cb75992353af5179700bf4c6a2420",
+    "fixtures/normalized-registry/subject/src/reader.rs": "d1a162292816f162a0b9c38d539b8e173d73cea7f4a4da94563bb0507a3d92a3",
+    "fixtures/normalized-registry/subject/src/writer.rs": "25c2f5c0d97d96aa87b17fddabfa7216dfdb68f1d484d3db67279434637e2d1e",
+    "fixtures/normalized-registry/subject/tests/holdout.rs": "b3c56abc9c96405cf19c3cbe19beb7b489c06586e15da94bc22ee1894f05d620",
+    "fixtures/normalized-registry/subject/tests/visible.rs": "a69f4be2fe4cf0154fcf8c06b47c9c4ad15a86d1882eccd51260a3335a3a1ff3",
+    "fixtures/normalized-registry/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/normalized-registry/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/solutions/atomic-transfer/subject/src/implementation.rs": "cf91b7891a749ac858b666e5aa55aafd42accfe7d32229c7a1d24c3e6df1d96c",
+    "fixtures/solutions/canonical-frame/subject/src/decoder.rs": "6be578818dc9b56872dd2acee8cd341a9accf07f02568f9f45f757768687dfc5",
+    "fixtures/solutions/canonical-frame/subject/src/encoder.rs": "76efe5dad89ed820330548b233053a03ca55ef7b7e6b62698009ab736511ab0d",
+    "fixtures/solutions/duplicate-range/subject/src/implementation.rs": "6169fbdaa39bcfbb680fe6225335f85503712a3b48c9079d800cd4003a5875fd",
+    "fixtures/solutions/normalized-registry/subject/src/reader.rs": "260aec679eb334fb14b20882c052c281eb9f777411217435272a3ebb289f74b8",
+    "fixtures/solutions/normalized-registry/subject/src/writer.rs": "531cfedb7b2e129af8cb3193495d3bb1851daa3f272600de10b9a82c8857011c",
+    "fixtures/solutions/utf8-boundary/subject/src/implementation.rs": "47cd9110acd5d4e45e462fe35d700d4e9e0adb1046eefafe3c4b3436ee1e30b2",
+    "fixtures/utf8-boundary/Cargo.lock": "100437d728cd84ced62e54e54eaf6cfb702822d519951dc53c62430e26b7daa3",
+    "fixtures/utf8-boundary/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/utf8-boundary/README.md": "f94031c628531280ef74328294820c5f3ad4d7b15ae9c389f1e6bc4ba24544b1",
+    "fixtures/utf8-boundary/bench.json": "f0ce16b663022599a4c1f93a222be02c0e0c020288aaff736d66cba93cf71f07",
+    "fixtures/utf8-boundary/client/Cargo.toml": "3c018de8a4c20d6ed8e6f753a73792d90cc9c5fa3cc16f0614153859688edf7c",
+    "fixtures/utf8-boundary/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/utf8-boundary/client/tests/api.rs": "5361ce91cf24b93dbb893a30b90c34eba0631653d5c0a120fcbc4f7d56179158",
+    "fixtures/utf8-boundary/subject/Cargo.toml": "095bf5271221b47f5798255645ed208b329534ac2d7e47a2d51037c07c1453eb",
+    "fixtures/utf8-boundary/subject/src/implementation.rs": "06499ec1985152e953261c91eccf99fd44e533d212a8f87d4dfe964961ab6be0",
+    "fixtures/utf8-boundary/subject/src/lib.rs": "22c7da84f5ba5b1463638351e02891fa38548cdbf5cc7ecfe5a421bc7978c5a1",
+    "fixtures/utf8-boundary/subject/tests/holdout.rs": "c104b06a5098b6c8b923fc5077adbb0450c26e4e6d2ef8573736c7e6ebb2168c",
+    "fixtures/utf8-boundary/subject/tests/visible.rs": "ebde4b0915b042341645380f715b3bae89158c7152e45540b2ad89884b7455bd",
+    "fixtures/utf8-boundary/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/utf8-boundary/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "scripts/heldout_bench_failure.mjs": "1c4f3bacf819350d161dd20e596fdba0c5b6398f06b072d13104e2044edd8183",
+    "scripts/heldout_check.mjs": "5149d2d2677d3a342fed148f650344fcd53c646cf6dd1f806834197406041308",
+    "scripts/heldout_check.test.mjs": "2c515f6774d0a1a48fe858c771d1b185b7c16ebec24c2001a08e08a6a8194ced",
+    "scripts/heldout_manifest.mjs": "94c37b694edc2c407181d24dd259a0bdd0255978fe4f2df08e68fde8d9a9a8a1",
+    "scripts/heldout_oracles.mjs": "734001553005f2174ea53aaf99110e3ba0fdcc444141561cd75865bb4d1b8174",
+    "scripts/heldout_run.mjs": "0620853df27af2dc7135b5ec0ae2da017206c09260d8cf574b3dc936da9aeeb3",
+    "scripts/live_check.mjs": "6c58e64c0d82766c6b7cb742651c20584ad982ef621e7c5d690cce5d833e0489",
+    "scripts/multifile_archive.mjs": "16b63b6e20596a4c71880c73b43b6681dfd6693827d37b22d09fefeb20ca127e",
+    "scripts/multifile_archive.test.mjs": "04b00115acc9c12045c4fa293e4dba24cc5029795e126699ef08dd38518025db",
+    "scripts/multifile_check.mjs": "a2d2457c2fe618436d7e8e89f3aa65970b1fa2631b018597e3352539cccc07c0",
+    "scripts/multifile_check.test.mjs": "ef87012003480dd07dd6cfc9c463f7ae3fbd02cde85d1a81ce5eba4d354d3949",
+    "scripts/multifile_manifest.mjs": "81899986539985e3944e47e227bc920fd6a624b936c2ed4f5992ad7d3ea7b5b4",
+    "scripts/multifile_oracles.mjs": "67335a20c2be54ba3496827996999ad25b15ebf76fb3778d04d6706eeb6f73f2",
+    "scripts/multifile_run.mjs": "566f6266dc006971e1f666c6de35240a59d8ffe8edd8595323f5c59511492c63"
+  }
+}

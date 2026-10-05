@@ -1,0 +1,119 @@
+{
+  "id": "normalized-registry",
+  "class": "D",
+  "objective": "Fix registry insertion and lookup so both canonicalize names by trimming Unicode whitespace and lowercasing ASCII letters only. Reject empty canonical names and duplicate canonical names without modifying existing entries. Preserve non-ASCII letter case, all public APIs, and unrelated Registry methods. Both implementation files need repair.",
+  "evidence_paths": [
+    "subject/src/reader.rs",
+    "subject/src/writer.rs",
+    "subject/src/lib.rs",
+    "subject/tests/visible.rs",
+    "client/tests/api.rs",
+    "README.md"
+  ],
+  "protected_paths": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "README.md",
+    "bench.json",
+    "client/Cargo.toml",
+    "client/src/lib.rs",
+    "client/tests/api.rs",
+    "subject/Cargo.toml",
+    "subject/src/lib.rs",
+    "subject/tests/holdout.rs",
+    "subject/tests/visible.rs",
+    "unrelated/Cargo.toml",
+    "unrelated/src/lib.rs"
+  ],
+  "change_paths": [
+    "subject/src/reader.rs",
+    "subject/src/writer.rs"
+  ],
+  "contract": {
+    "clauses": [
+      {
+        "kind": "CommandPasses",
+        "command": {
+          "program": "cargo",
+          "args": [
+            "test",
+            "--offline",
+            "--locked"
+          ],
+          "cwd": ".",
+          "env": {},
+          "timeout_ms": 180000
+        }
+      },
+      {
+        "kind": "ChangedPathsWithin",
+        "paths": [
+          "subject/src/reader.rs",
+          "subject/src/writer.rs"
+        ]
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "Cargo.lock"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "README.md"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "bench.json"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/src/lib.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/tests/api.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/src/lib.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/tests/holdout.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/tests/visible.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "unrelated/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "unrelated/src/lib.rs"
+      }
+    ]
+  },
+  "requested_checks": [
+    "normalized-registry",
+    "api-client"
+  ],
+  "available_checks": [
+    "normalized-registry",
+    "api-client",
+    "unrelated"
+  ],
+  "check_note": "Affected checks cover subject and public API consumer; unrelated crate remains protected."
+}
