@@ -1,0 +1,94 @@
+$ sh scripts/perf_gate.sh
+    Finished `release` profile [optimized] target(s) in 0.29s
+     Running tests/perf.rs (target/release/deps/perf-c351af83bb62f046)
+
+running 4 tests
+comp[ipc_frame] n=5000 p50=540ns p95=620ns (encode+decode, no socket)
+test comp_ipc_frame_encode_decode ... ok
+perf[T3] n=200 p50=25.25µs p95=37.01µs target p95<5ms PASS
+perf[T3] PASS
+test t3_local_command_p95_under_5ms ... ok
+perf[T4] n=100 p50=486.126µs p95=1.337677ms target p95<50ms PASS
+perf[T4] PASS
+test t4_first_task_event_p95_under_50ms ... ok
+perf[T6] n=100 p50=633.138µs p95=941.762µs (CreateTask write → Subscribe replay response decode; no target)
+test e2e_create_task_to_first_replayed_entry ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/perf.rs (target/release/deps/perf-a368dadd14d7ba3f)
+
+running 1 test
+comp[model_wait.assemble] n=100 p50=3.21µs p95=3.261µs (trusted context assembly)
+comp[model_wait.invoke_fake] n=100 p50=880ns p95=3.26µs (fake dispatch, no network)
+test comp_model_wait_harness_overhead ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/perf.rs (target/release/deps/perf-2577a94b5a7b56ad)
+
+running 1 test
+comp[index_cold] files=860 first_scan=22.725005ms repeat_scan=18.551183ms build=31.345144ms (report-only; first_scan is cold only when the page cache is)
+perf[T5.split] lookup p50=14.684774ms p95=16.804981ms | lexical_search p50=11.622617ms p95=15.814789ms (indexing profile)
+perf[T5] n=100 p50=26.002857ms p95=30.150209ms target p50<250ms p95<500ms PASS
+perf[T5] PASS
+test t5_warm_symbol_reference_p50_under_250ms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.93s
+
+     Running tests/perf.rs (target/release/deps/perf-97e9af837ad05c6e)
+
+running 1 test
+perf[T1] n=5000 p50=1.37µs p95=2.46µs target p95<2ms PASS
+perf[T1] PASS
+test t1_router_path_p95_under_2ms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/perf.rs (target/release/deps/perf-9d902e0c3dad2cbd)
+
+running 1 test
+perf[T2] n=119 p50=22.981µs p95=54.021µs target p95<1ms PASS (max executor stamp width 40ns)
+perf[T2] PASS
+test t2_dispatch_gap_p95_under_1ms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/perf.rs (target/release/deps/perf-5eca5163dc4b69c7)
+
+running 1 test
+comp[persistence.create_task] n=100 p50=154.822µs p95=998.722µs
+comp[persistence.append_event] n=200 p50=131.082µs p95=600.538µs
+test comp_persistence_commit_latency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/perf.rs (target/release/deps/perf-8c0d24a951837909)
+
+running 1 test
+comp[process_output.baseline] n=20 p50=16.663749ms p95=22.095448ms (empty child, fixed runner overhead)
+comp[process_output.payload] n=20 p50=19.023359ms p95=27.196092ms (stdout_bytes=108894)
+test comp_process_output_handling_latency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests/perf.rs (target/release/deps/perf-205830f38093aca7)
+
+running 1 test
+comp[verification.plan] n=20 p50=65.27µs p95=172.793µs (snapshot + affected-first plan)
+comp[verification.run] n=20 p50=39.992993ms p95=54.972681ms (full run incl. child process)
+
+thread 'comp_verification_plan_and_run_latency' (1892594) panicked at crates/tachyon-verify/tests/perf.rs:163:5:
+verification regression: run p50=39.992993ms >= 31.512ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test comp_verification_plan_and_run_latency ... FAILED
+
+failures:
+
+failures:
+    comp_verification_plan_and_run_latency
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+error: test failed, to rerun pass `-p tachyon-verify --test perf`
+verify: `sh scripts/perf_gate.sh` exited with exit status: 101

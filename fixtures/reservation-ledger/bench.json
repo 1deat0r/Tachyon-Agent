@@ -1,0 +1,119 @@
+{
+  "id": "reservation-ledger",
+  "class": "D",
+  "objective": "Repair atomic reserve and release batches. Aggregate repeated SKU quantities mathematically (u64); include zero-quantity SKUs in validation. Before changing state, validate every SKU exists (smallest unknown SKU first), then all aggregate quantities fit u32 (smallest overflowing SKU first), then stock for reserve or held units for release suffice (smallest deficient SKU first). Return UnknownSku, QuantityOverflow, Insufficient or NotHeld as specified. Every error must leave the entire ledger unchanged. Successful reserve moves stock to held; successful release moves held to stock. Empty batches succeed unchanged. Preserve all public APIs and unrelated methods. Both implementation files need repair.",
+  "evidence_paths": [
+    "subject/src/release.rs",
+    "subject/src/reserve.rs",
+    "subject/src/lib.rs",
+    "subject/tests/visible.rs",
+    "client/tests/api.rs",
+    "README.md"
+  ],
+  "protected_paths": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "README.md",
+    "bench.json",
+    "client/Cargo.toml",
+    "client/src/lib.rs",
+    "client/tests/api.rs",
+    "subject/Cargo.toml",
+    "subject/src/lib.rs",
+    "subject/tests/holdout.rs",
+    "subject/tests/visible.rs",
+    "unrelated/Cargo.toml",
+    "unrelated/src/lib.rs"
+  ],
+  "change_paths": [
+    "subject/src/release.rs",
+    "subject/src/reserve.rs"
+  ],
+  "contract": {
+    "clauses": [
+      {
+        "kind": "CommandPasses",
+        "command": {
+          "program": "cargo",
+          "args": [
+            "test",
+            "--offline",
+            "--locked"
+          ],
+          "cwd": ".",
+          "env": {},
+          "timeout_ms": 180000
+        }
+      },
+      {
+        "kind": "ChangedPathsWithin",
+        "paths": [
+          "subject/src/release.rs",
+          "subject/src/reserve.rs"
+        ]
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "Cargo.lock"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "README.md"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "bench.json"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/src/lib.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "client/tests/api.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/src/lib.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/tests/holdout.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "subject/tests/visible.rs"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "unrelated/Cargo.toml"
+      },
+      {
+        "kind": "FileUnchanged",
+        "path": "unrelated/src/lib.rs"
+      }
+    ]
+  },
+  "requested_checks": [
+    "reservation-ledger",
+    "api-client"
+  ],
+  "available_checks": [
+    "reservation-ledger",
+    "api-client",
+    "unrelated"
+  ],
+  "check_note": "Subject and public API checks; unrelated crate remains protected."
+}

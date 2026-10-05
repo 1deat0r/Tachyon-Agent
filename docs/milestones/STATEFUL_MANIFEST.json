@@ -1,0 +1,220 @@
+{
+  "schema": 1,
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 5
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 5
+    }
+  ],
+  "files": {
+    "crates/tachyon-core/examples/bench_matrix.rs": "412e9826e049b4283405905337c3b2974e793363cf6e08350553aa36a95a451b",
+    "crates/tachyon-core/src/driver.rs": "419b96a05f0e6bf41e18f54334e5161b92e4aa8e43278d451552bc8c15e2a854",
+    "crates/tachyon-core/src/driver/model.rs": "fe372592f3021fcabecdc8610ff17864f32b7f83f7a8693bddf285c335dcdf46",
+    "crates/tachyon-models/src/decision.rs": "22cb6f89298e2c6cffefb9fc2a0fedafc590f01547594372de5921cb4ec421be",
+    "crates/tachyon-models/src/openai_compat.rs": "7cde8f0faf0a064891afc639388d057d225d2c29b0d3bccf3cd2b46b86567ad2",
+    "crates/tachyon-models/src/provider.rs": "3eeb80b8b0d4b429082e793a2c2975ec7231e8ae8e9c87732ff115561176294f",
+    "docs/milestones/HELDOUT_PLAN.md": "f75cfba2e071c43c88061ac49a613e229361769d49fb9e57bba0fc0824093018",
+    "docs/milestones/STATEFUL_PLAN.md": "59ffdb92df71323e0e72f69b031fbfe981d6542d1be4ba31af0537507e8921d3",
+    "fixtures/atomic-transfer/Cargo.lock": "4180f9e83395c4062ca9d7b45ef7e7350301adaef225259ef5c17fd3c524f4f6",
+    "fixtures/atomic-transfer/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/atomic-transfer/README.md": "f6580826401dc54a398399dfe2d20d8ef0eb44358f9b6f78be63a1816147baf2",
+    "fixtures/atomic-transfer/bench.json": "9c44f69762b75e6595501f3a5cfa3de9ba558fc4dc309b14e170f560f4d5ea0e",
+    "fixtures/atomic-transfer/client/Cargo.toml": "2c6a925482b596b6df1a1e731cbebe10c0f5ce371bbe9254723122aa4b5dd923",
+    "fixtures/atomic-transfer/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/atomic-transfer/client/tests/api.rs": "c5b2730fb08abe3afe08d440d28ad9eed2eeef95bc6c11b4c189b2579b0042de",
+    "fixtures/atomic-transfer/subject/Cargo.toml": "25c0cf1190b233947f28b00bc468ee80ede16b115c0e879ffd9c7f7e4cadbfcc",
+    "fixtures/atomic-transfer/subject/src/implementation.rs": "89cb669af9afe65b6e92119e073fa45ab19333791e17b81383affb0459448ae7",
+    "fixtures/atomic-transfer/subject/src/lib.rs": "145883e83fbece1299f8bda87f587ab45416a8765b0948844070f02d73ff5231",
+    "fixtures/atomic-transfer/subject/tests/holdout.rs": "3a3bd998ea310fa7bda4e9622e991103d4a672929fc0849ae9d3dde465ae7b92",
+    "fixtures/atomic-transfer/subject/tests/visible.rs": "231ef15748c98637d1d6b36e6f4bfa14826d318e40414c7e7d2b392a90143f12",
+    "fixtures/atomic-transfer/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/atomic-transfer/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/duplicate-range/Cargo.lock": "ccef95f23ddb595565da4f6b798aeb4281a7b39c0337b1bde605c468374dee53",
+    "fixtures/duplicate-range/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/duplicate-range/README.md": "ae154132b1e3e4f532559714f16ee5e0d61833c79dea3e91aadc2822d5ccda7a",
+    "fixtures/duplicate-range/bench.json": "95d5a25faf601673688ec8b8ec6211995f356bcec665cc0dd63979ab82d6d05f",
+    "fixtures/duplicate-range/client/Cargo.toml": "a84e649c1764d461d7c0dc799f2e2c5f1239cf902d96c7bc744a1a516dd03a9c",
+    "fixtures/duplicate-range/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/duplicate-range/client/tests/api.rs": "cddb699732c82d90dc08e2c8ab4c39a5566606c897ea72fd527ad4a28be84558",
+    "fixtures/duplicate-range/subject/Cargo.toml": "f2f8eccc6bdfec72b37239f6a28354f12389261390a43f45fd2dd86dd882055e",
+    "fixtures/duplicate-range/subject/src/implementation.rs": "c08edc4afd1e2a5345bb74cf7f96d2075f529e768d3537718969a07b3de5aa08",
+    "fixtures/duplicate-range/subject/src/lib.rs": "179a6874ff725033d928482894c7760db20dc75d8ca23c65c7d8f6d085f890a1",
+    "fixtures/duplicate-range/subject/tests/holdout.rs": "edc24075f5f75a84eeccf06d0976d2f37dcba8ebae9d62c401e90257864fa1b2",
+    "fixtures/duplicate-range/subject/tests/visible.rs": "99060c44b841d61e8803de57f110a5da9d9f97ff245099ef595a018bfd24067d",
+    "fixtures/duplicate-range/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/duplicate-range/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/indexed-catalog/Cargo.lock": "434619506adf832fa4942e30c89b2604bdc65450c98933c0843117608f5d9b6a",
+    "fixtures/indexed-catalog/Cargo.toml": "72fa42df8468acbef58f8811f016a0d37fb8cbab61f138eb13cb241f87f58208",
+    "fixtures/indexed-catalog/README.md": "794c8fd9ae35ab34f758fdfa30fb0d7eb283705d52d4416a4f1ee22eb94fb8cc",
+    "fixtures/indexed-catalog/bench.json": "a851e589c6b469ac1de18892f6816d8cddd6d462697a5d829cb2f25f2fe1ffca",
+    "fixtures/indexed-catalog/client/Cargo.toml": "0940c625cab55248d57b7e484e7fb6cb78f5b1fc9749bdda2bd20fc3451d2387",
+    "fixtures/indexed-catalog/client/src/lib.rs": "11d33b76b99b4c2cd233d9e967e03b1522c140a1ac348530277f50326e85c909",
+    "fixtures/indexed-catalog/client/tests/api.rs": "e4ba184e9ddba1da5376012af64e7800d5044d6e9a31fd2bdbfe5e702a657ad4",
+    "fixtures/indexed-catalog/subject/Cargo.toml": "c47557ff76381bb8e8c1f48d2221995d91b6719982f4e9ec9e02ae977eb744ae",
+    "fixtures/indexed-catalog/subject/src/insert.rs": "6566facb92e7104c15aa75bdf6c4e9dca236b0c02e154138542a8bfa177957da",
+    "fixtures/indexed-catalog/subject/src/lib.rs": "f704702efc43ceb8b978e7e09da8bda16ca27bf7c30b398162a407fbfce3e4dd",
+    "fixtures/indexed-catalog/subject/src/remove.rs": "c04b8272120f8113aaa98309e58d86f882430c31cb6480a995cc762776376339",
+    "fixtures/indexed-catalog/subject/src/rename.rs": "cd8635817199a8fa1c7336978e58a07faa43fc59bfabc3805dd45f921956515b",
+    "fixtures/indexed-catalog/subject/tests/holdout.rs": "b430aea31dfa7da7cf46fbfda3e33ab9e8d26b33ca9fd5148205360f9f7b0a35",
+    "fixtures/indexed-catalog/subject/tests/visible.rs": "e375928ff2c2559a25eb04229e7a40ef07b86c045ccf86131aa9fdf57818a67c",
+    "fixtures/indexed-catalog/unrelated/Cargo.toml": "83e3ada0b313260f1c53a2ac3d774daf31789ced0bdab81c5e9c08daa27db272",
+    "fixtures/indexed-catalog/unrelated/src/lib.rs": "e8923230cf947b8567af2413fe80f066705297c734c1a8f9345f47447a1be15a",
+    "fixtures/reservation-ledger/Cargo.lock": "1b81c53fb605b1aa5ce7f9ba46b60eb64bf8f62e53c50aaf4771c65ceaf74855",
+    "fixtures/reservation-ledger/Cargo.toml": "72fa42df8468acbef58f8811f016a0d37fb8cbab61f138eb13cb241f87f58208",
+    "fixtures/reservation-ledger/README.md": "ba2c51a66cad05cce92b86f0b78dad6a0136d503be00fea9dccdc64a4478b87c",
+    "fixtures/reservation-ledger/bench.json": "d6bca0bbbc14cb88e46840eeebdb24b50e02ce4662f555c90243a31aef098805",
+    "fixtures/reservation-ledger/client/Cargo.toml": "436809d644c7bb954eeb2513a2295b4c00e946372fc3b7ade8c27dceb3b5bc28",
+    "fixtures/reservation-ledger/client/src/lib.rs": "11d33b76b99b4c2cd233d9e967e03b1522c140a1ac348530277f50326e85c909",
+    "fixtures/reservation-ledger/client/tests/api.rs": "041f6332939686b6a51e4a6e6e9b55b713725a32cc300d1df623be51f5baf9e5",
+    "fixtures/reservation-ledger/subject/Cargo.toml": "5e954955b2bb1c14ad192dc4811be2fffc163a623619c8fd92e0fb1d18dd4b11",
+    "fixtures/reservation-ledger/subject/src/lib.rs": "e6a14ebde3a02c1a1dfba19d36072bdbcf7d43310e9e7caf53b239ab884fa081",
+    "fixtures/reservation-ledger/subject/src/release.rs": "2f83f2aa5ec7854d45ac9e389c3eb22f61be5293321e8ecec1e6d49f8a662ca1",
+    "fixtures/reservation-ledger/subject/src/reserve.rs": "a385e9b7514a8004427b0fa9438fa68addd9a8041913a866b7b5c1922332f7bd",
+    "fixtures/reservation-ledger/subject/tests/holdout.rs": "5dbf3dfa16b1aee2a4eeb5204be158da398dfdd54b70103ce04c1a93fa3a0342",
+    "fixtures/reservation-ledger/subject/tests/visible.rs": "038bc39e01f64420f2a646ff4eef2273cb1006eae9024e28af52d30e2d7aabaf",
+    "fixtures/reservation-ledger/unrelated/Cargo.toml": "83e3ada0b313260f1c53a2ac3d774daf31789ced0bdab81c5e9c08daa27db272",
+    "fixtures/reservation-ledger/unrelated/src/lib.rs": "e8923230cf947b8567af2413fe80f066705297c734c1a8f9345f47447a1be15a",
+    "fixtures/solutions/atomic-transfer/subject/src/implementation.rs": "cf91b7891a749ac858b666e5aa55aafd42accfe7d32229c7a1d24c3e6df1d96c",
+    "fixtures/solutions/duplicate-range/subject/src/implementation.rs": "6169fbdaa39bcfbb680fe6225335f85503712a3b48c9079d800cd4003a5875fd",
+    "fixtures/solutions/indexed-catalog/subject/src/insert.rs": "e31c8128c85438d6873277cac0db1a5159482cb2a94047e27de297964627e1bb",
+    "fixtures/solutions/indexed-catalog/subject/src/remove.rs": "90d9b03d21421e420fa79be703ce2e6da29dabb84610f6755d643a48e34d99f0",
+    "fixtures/solutions/indexed-catalog/subject/src/rename.rs": "4f267c6c34fa4f3ec197c7d1123e892635b81136fe0b1826b377d687a57b344b",
+    "fixtures/solutions/reservation-ledger/subject/src/release.rs": "0aac529b7904d328dcab4b2641bcff5da754cdaa1922707f338ea85be9d36efe",
+    "fixtures/solutions/reservation-ledger/subject/src/reserve.rs": "07dc542ba2d5a49a3d064c145c749a2d574e0d7251b10f44bc78d22f08882943",
+    "fixtures/solutions/utf8-boundary/subject/src/implementation.rs": "47cd9110acd5d4e45e462fe35d700d4e9e0adb1046eefafe3c4b3436ee1e30b2",
+    "fixtures/utf8-boundary/Cargo.lock": "100437d728cd84ced62e54e54eaf6cfb702822d519951dc53c62430e26b7daa3",
+    "fixtures/utf8-boundary/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/utf8-boundary/README.md": "f94031c628531280ef74328294820c5f3ad4d7b15ae9c389f1e6bc4ba24544b1",
+    "fixtures/utf8-boundary/bench.json": "f0ce16b663022599a4c1f93a222be02c0e0c020288aaff736d66cba93cf71f07",
+    "fixtures/utf8-boundary/client/Cargo.toml": "3c018de8a4c20d6ed8e6f753a73792d90cc9c5fa3cc16f0614153859688edf7c",
+    "fixtures/utf8-boundary/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/utf8-boundary/client/tests/api.rs": "5361ce91cf24b93dbb893a30b90c34eba0631653d5c0a120fcbc4f7d56179158",
+    "fixtures/utf8-boundary/subject/Cargo.toml": "095bf5271221b47f5798255645ed208b329534ac2d7e47a2d51037c07c1453eb",
+    "fixtures/utf8-boundary/subject/src/implementation.rs": "06499ec1985152e953261c91eccf99fd44e533d212a8f87d4dfe964961ab6be0",
+    "fixtures/utf8-boundary/subject/src/lib.rs": "22c7da84f5ba5b1463638351e02891fa38548cdbf5cc7ecfe5a421bc7978c5a1",
+    "fixtures/utf8-boundary/subject/tests/holdout.rs": "c104b06a5098b6c8b923fc5077adbb0450c26e4e6d2ef8573736c7e6ebb2168c",
+    "fixtures/utf8-boundary/subject/tests/visible.rs": "ebde4b0915b042341645380f715b3bae89158c7152e45540b2ad89884b7455bd",
+    "fixtures/utf8-boundary/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/utf8-boundary/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "scripts/heldout_bench_failure.mjs": "1c4f3bacf819350d161dd20e596fdba0c5b6398f06b072d13104e2044edd8183",
+    "scripts/heldout_check.mjs": "5149d2d2677d3a342fed148f650344fcd53c646cf6dd1f806834197406041308",
+    "scripts/heldout_check.test.mjs": "2c515f6774d0a1a48fe858c771d1b185b7c16ebec24c2001a08e08a6a8194ced",
+    "scripts/heldout_manifest.mjs": "94c37b694edc2c407181d24dd259a0bdd0255978fe4f2df08e68fde8d9a9a8a1",
+    "scripts/heldout_oracles.mjs": "734001553005f2174ea53aaf99110e3ba0fdcc444141561cd75865bb4d1b8174",
+    "scripts/heldout_run.mjs": "0620853df27af2dc7135b5ec0ae2da017206c09260d8cf574b3dc936da9aeeb3",
+    "scripts/live_check.mjs": "6c58e64c0d82766c6b7cb742651c20584ad982ef621e7c5d690cce5d833e0489",
+    "scripts/multifile_archive.mjs": "16b63b6e20596a4c71880c73b43b6681dfd6693827d37b22d09fefeb20ca127e",
+    "scripts/multifile_archive.test.mjs": "04b00115acc9c12045c4fa293e4dba24cc5029795e126699ef08dd38518025db",
+    "scripts/stateful_check.mjs": "4f8729125ebea2723d2b19b3eaebcb28f52827cbc958419dcf96e5effa2f81a7",
+    "scripts/stateful_check.test.mjs": "ed5bc4a45cfe3b419dbc3452a8e88e7c7db2dc4e9f8f8528f51bd244c710a7ea",
+    "scripts/stateful_manifest.mjs": "a4066660d320b4400cfdc85abc4b9091f3d3b75f8790fca8e162a93b3ebc151b",
+    "scripts/stateful_oracles.mjs": "6b559098f9960adfe0673383636b3ad29a014d33777e15a6a210c9012d212cc7",
+    "scripts/stateful_run.mjs": "78bda58b11fe0fd4cabc5f9f31a8fb2d17d9d2352847c2fbf2372799b3d6b1ec"
+  }
+}
