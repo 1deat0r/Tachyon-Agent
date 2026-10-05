@@ -101,6 +101,50 @@ pub struct ModelUsage {
     pub provenance: UsageProvenance,
 }
 
+/// Outcome and usage of one call, including a rejected model response.
+#[derive(Clone, Debug)]
+pub struct ModelInvocation {
+    pub result: Result<ModelResult, ModelError>,
+    pub usage: ModelUsage,
+}
+
+/// Safe accounting record. Contains no model text or provider error body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelCallRecord {
+    pub attempt: u32,
+    pub latency_ms: f64,
+    pub usage: ModelUsage,
+    pub error: Option<String>,
+    /// Safe malformed-output class; never contains model text.
+    pub output_failure: Option<String>,
+}
+
+impl ModelUsage {
+    /// Totals are available only when every call supplied that counter.
+    #[must_use]
+    pub fn total(calls: &[ModelCallRecord]) -> Self {
+        if calls.is_empty() {
+            return Self::default();
+        }
+        let provenance = calls
+            .first()
+            .map_or(UsageProvenance::Unknown, |c| c.usage.provenance);
+        Self {
+            input_tokens: calls
+                .iter()
+                .try_fold(0u32, |sum, c| sum.checked_add(c.usage.input_tokens?)),
+            output_tokens: calls
+                .iter()
+                .try_fold(0u32, |sum, c| sum.checked_add(c.usage.output_tokens?)),
+            provenance: if calls.iter().any(|c| c.usage.provenance != provenance) {
+                UsageProvenance::Unknown
+            } else {
+                provenance
+            },
+        }
+    }
+}
+
 /// The committed outcome of one model call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelResult {
@@ -171,6 +215,46 @@ pub enum ModelError {
 }
 
 impl ModelError {
+    /// Stable classification for receipts; never includes an error body.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidRequest(_) => "invalid_request",
+            Self::Unauthorized => "unauthorized",
+            Self::RateLimited { .. } => "rate_limited",
+            Self::ProviderUnavailable(_) => "provider_unavailable",
+            Self::Timeout { .. } => "timeout",
+            Self::MalformedOutput(_) => "malformed_output",
+            Self::ContextOverflow { .. } => "context_overflow",
+            Self::Transport(_) => "transport",
+            Self::Cancelled => "cancelled",
+            Self::Internal(_) => "internal",
+        }
+    }
+
+    /// Bounded diagnostic class for malformed output, with no response text.
+    #[must_use]
+    pub fn output_failure(&self) -> Option<&'static str> {
+        let Self::MalformedOutput(detail) = self else {
+            return None;
+        };
+        Some(if detail == "empty model content" {
+            "empty_content"
+        } else if detail.starts_with("invalid decision JSON: Data") {
+            "invalid_decision"
+        } else if detail.starts_with("invalid decision JSON:") {
+            "invalid_json"
+        } else if detail.starts_with("response has no choices") {
+            "missing_content"
+        } else if detail.starts_with("response is not JSON:") {
+            "invalid_response"
+        } else if detail.starts_with("stream chunk is not JSON:") {
+            "invalid_stream"
+        } else {
+            "unclassified"
+        })
+    }
+
     /// Whether the scheduler may retry the call. Mirrors the crash-recovery
     /// rule: rerun only while no result committed (spec §41).
     #[must_use]
@@ -204,10 +288,21 @@ pub trait ModelProvider: Send + Sync {
     /// providers must not invent precision here.
     fn estimate(&self, request: &ModelRequest) -> ProviderEstimate;
 
-    /// Runs one reasoning call, streaming progress into `sink` and returning
-    /// the committed [`ModelResult`]. Emits `Done` before returning `Ok`.
-    /// A provider failure routes around the provider rather than failing the
-    /// harness — the caller decides fallback.
+    /// Runs exactly one call and preserves any reported usage on failure.
+    /// Existing providers default to unknown usage when they return an error.
+    async fn invoke_observed(
+        &self,
+        request: ModelRequest,
+        sink: ModelEventSink,
+    ) -> ModelInvocation {
+        let result = self.invoke(request, sink).await;
+        let usage = result
+            .as_ref()
+            .map_or_else(|_| ModelUsage::default(), |r| r.usage);
+        ModelInvocation { result, usage }
+    }
+
+    /// Runs one call. The caller decides fallback; providers never retry.
     async fn invoke(
         &self,
         request: ModelRequest,

@@ -33,6 +33,7 @@ tokio-util = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 # (async-trait is a regular dependency: the ADR-0006 evidence executor
 # implements the scheduler's async Executor trait.)
 

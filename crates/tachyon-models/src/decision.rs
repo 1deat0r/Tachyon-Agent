@@ -77,15 +77,29 @@ pub enum AgentDecision {
 /// executed.
 pub fn parse_decision(text: &str) -> Result<AgentDecision, crate::ModelError> {
     let trimmed = text.trim();
-    if let Ok(decision) = serde_json::from_str::<AgentDecision>(trimmed) {
-        return Ok(decision);
+    if trimmed.is_empty() {
+        return Err(crate::ModelError::MalformedOutput(
+            "empty model content".into(),
+        ));
     }
-    if let Some(fenced) = extract_fenced_json(trimmed)
-        && let Ok(decision) = serde_json::from_str::<AgentDecision>(&fenced)
-    {
-        return Ok(decision);
-    }
-    Err(crate::ModelError::MalformedOutput(snippet(trimmed)))
+    let direct_error = match serde_json::from_str::<AgentDecision>(trimmed) {
+        Ok(decision) => return Ok(decision),
+        Err(error) => error,
+    };
+    let error = if let Some(fenced) = extract_fenced_json(trimmed) {
+        match serde_json::from_str::<AgentDecision>(&fenced) {
+            Ok(decision) => return Ok(decision),
+            Err(error) => error,
+        }
+    } else {
+        direct_error
+    };
+    Err(crate::ModelError::MalformedOutput(format!(
+        "invalid decision JSON: {:?} at line {} column {}",
+        error.classify(),
+        error.line(),
+        error.column(),
+    )))
 }
 
 /// Extracts the first fenced `json` (or bare fence) block, if any.
@@ -107,11 +121,6 @@ fn split_first_line(text: &str) -> (&str, &str) {
         Some(index) => (&text[..index], &text[index + 1..]),
         None => (text, ""),
     }
-}
-
-/// First 120 characters of `text`, for error diagnostics.
-fn snippet(text: &str) -> String {
-    text.chars().take(120).collect()
 }
 
 #[cfg(test)]
@@ -147,5 +156,18 @@ mod tests {
         let error = parse_decision("just run rm -rf /").expect_err("must fail");
         assert!(matches!(error, crate::ModelError::MalformedOutput(_)));
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn malformed_diagnostics_never_copy_response_text() {
+        for text in [
+            "private-secret-do-not-log",
+            r#"{"decision":"private-secret-do-not-log"}"#,
+            "```json\nprivate-secret-do-not-log\n```",
+        ] {
+            let error = parse_decision(text).expect_err("invalid contract");
+            assert!(!error.to_string().contains("private-secret"));
+            assert!(error.output_failure().is_some());
+        }
     }
 }

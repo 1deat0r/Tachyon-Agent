@@ -303,3 +303,54 @@ async fn fake_usage_is_scripted_even_for_zero_and_arbitrary_provider_ids() {
         );
     }
 }
+
+#[tokio::test]
+async fn malformed_response_retains_reported_usage_without_accepting_text() {
+    for content in [serde_json::Value::Null, json!(""), json!("not JSON")] {
+        let response = json!({
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 17, "completion_tokens": 9}
+        });
+        let provider = OpenAiCompatProvider::new(
+            ProviderId("malformed-usage".into()),
+            OpenAiCompatConfig::default(),
+            StubTransport(response.to_string()),
+        );
+        let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
+        let attempt = provider.invoke_observed(request(), sink).await;
+        assert!(matches!(
+            attempt.result,
+            Err(ModelError::MalformedOutput(_))
+        ));
+        assert_eq!(attempt.usage.input_tokens, Some(17));
+        assert_eq!(attempt.usage.output_tokens, Some(9));
+        assert_eq!(attempt.usage.provenance, UsageProvenance::ProviderReported);
+    }
+}
+
+#[test]
+fn attempt_totals_do_not_turn_missing_usage_into_zero() {
+    use tachyon_models::ModelCallRecord;
+    let mut calls = vec![ModelCallRecord {
+        attempt: 1,
+        latency_ms: 1.0,
+        error: Some("malformed_output".into()),
+        output_failure: Some("invalid_json".into()),
+        usage: ModelUsage {
+            input_tokens: Some(17),
+            output_tokens: Some(9),
+            provenance: UsageProvenance::ProviderReported,
+        },
+    }];
+    calls.push(ModelCallRecord {
+        attempt: 2,
+        error: None,
+        ..calls[0].clone()
+    });
+    assert_eq!(ModelUsage::total(&calls).input_tokens, Some(34));
+    calls[0].usage.output_tokens = None;
+    assert_eq!(ModelUsage::total(&calls).output_tokens, None);
+    calls[0].usage.input_tokens = Some(u32::MAX);
+    assert_eq!(ModelUsage::total(&calls).input_tokens, None);
+    assert_eq!(ModelUsage::total(&[]), ModelUsage::default());
+}

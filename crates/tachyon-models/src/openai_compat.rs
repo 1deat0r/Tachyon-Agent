@@ -919,16 +919,12 @@ fn wire_message(block: &ContextBlock) -> WireMessage {
 /// tested: missing choices or content is `MalformedOutput`, never silently
 /// treated as empty success. Usage metadata is separate from legacy numeric
 /// counters: unavailable counts must not be mistaken for reported zeroes.
-fn parse_completions(body: &str) -> Result<(String, u32, u32, ModelUsage), ModelError> {
+fn parse_completions(
+    body: &str,
+    observed_usage: &mut ModelUsage,
+) -> Result<(String, u32, u32, ModelUsage), ModelError> {
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|error| ModelError::MalformedOutput(format!("response is not JSON: {error}")))?;
-    let content = value
-        .pointer("/choices/0/message/content")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ModelError::MalformedOutput("response has no choices[0].message.content".to_owned())
-        })?;
     let prompt_tokens = usage_tokens(&value, "prompt_tokens");
     let completion_tokens = usage_tokens(&value, "completion_tokens");
     let usage = ModelUsage {
@@ -940,6 +936,14 @@ fn parse_completions(body: &str) -> Result<(String, u32, u32, ModelUsage), Model
             UsageProvenance::Unknown
         },
     };
+    *observed_usage = usage;
+    let content = value
+        .pointer("/choices/0/message/content")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ModelError::MalformedOutput("response has no choices[0].message.content".to_owned())
+        })?;
     Ok((
         content,
         // Keep legacy zero-filling/saturation without claiming those values
@@ -1076,6 +1080,27 @@ impl<T: HttpTransport> ModelProvider for OpenAiCompatProvider<T> {
         request: ModelRequest,
         sink: crate::ModelEventSink,
     ) -> Result<ModelResult, ModelError> {
+        self.invoke_observed(request, sink).await.result
+    }
+
+    async fn invoke_observed(
+        &self,
+        request: ModelRequest,
+        sink: crate::ModelEventSink,
+    ) -> crate::ModelInvocation {
+        let mut usage = ModelUsage::default();
+        let result = self.invoke_recorded(request, sink, &mut usage).await;
+        crate::ModelInvocation { result, usage }
+    }
+}
+
+impl<T: HttpTransport> OpenAiCompatProvider<T> {
+    async fn invoke_recorded(
+        &self,
+        request: ModelRequest,
+        sink: crate::ModelEventSink,
+        observed_usage: &mut ModelUsage,
+    ) -> Result<ModelResult, ModelError> {
         let started = Instant::now();
         // The key resolved at construction wins: registration and this
         // header then read the same bytes, so a rotated or changed
@@ -1128,11 +1153,12 @@ impl<T: HttpTransport> ModelProvider for OpenAiCompatProvider<T> {
         let (content, usage, input_tokens, output_tokens) = if let Some(text) = reply.streamed_text
         {
             let usage = stream_usage(reply.streamed_usage.as_ref());
+            *observed_usage = usage;
             let input = usage.input_tokens.unwrap_or(0);
             let output = usage.output_tokens.unwrap_or(0);
             (text, usage, input, output)
         } else {
-            let (text, input, output, usage) = parse_completions(&reply.raw)?;
+            let (text, input, output, usage) = parse_completions(&reply.raw, observed_usage)?;
             let _ignored = sink.send(ModelEvent::Delta(text.clone()));
             (text, usage, input, output)
         };

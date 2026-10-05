@@ -52,7 +52,7 @@ pub use openai_compat::{
     HttpTransport, OpenAiCompatConfig, OpenAiCompatProvider, TcpHttpTransport,
 };
 pub use provider::{
-    BoxFuture, ModelError, ModelEvent, ModelEventSink, ModelProvider, ModelRequest, ModelResult,
-    ModelUsage, ProviderEstimate, UsageProvenance,
+    BoxFuture, ModelCallRecord, ModelError, ModelEvent, ModelEventSink, ModelInvocation,
+    ModelProvider, ModelRequest, ModelResult, ModelUsage, ProviderEstimate, UsageProvenance,
 };
 pub use registry::{ModelRegistry, RegisteredProvider, Role, RoleMap, SelectedProvider};

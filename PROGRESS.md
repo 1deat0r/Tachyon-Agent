@@ -4,9 +4,11 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 15 — none planned; MVP frozen at Milestone 14. Post-MVP scope is
-defined by the docs/04/§46 deferrals; use GitHub Issues when durable shared
-tracking materially helps. See `MVP_REPORT.md`.
+Milestone 15 — reliable live-model completion of bounded coding tasks. The
+MVP remains frozen at Milestone 14. This follow-up adds bounded pre-mutation
+output retry, strict proposal shaping, complete live-attempt accounting, and
+a matched 20-run reliability gate in each evidence mode. See
+`docs/agents/model-retry-capability.md` and `MVP_REPORT.md`.
 
 ## Completed gates
 

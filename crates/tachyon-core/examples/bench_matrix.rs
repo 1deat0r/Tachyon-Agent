@@ -33,8 +33,9 @@ use tachyon_core::driver::{DriveHost, EvidenceMode, RunPlan, TaskModelContext, d
 use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds, evidence_concurrency, max_overlap};
 use tachyon_models::fake::{FakeModelProvider, FakeResponse};
 use tachyon_models::{
-    ModelCapabilities, ModelError, ModelEventSink, ModelProvider, ModelRequest, ModelResult,
-    OpenAiCompatConfig, OpenAiCompatProvider, ProviderEstimate, UsageProvenance,
+    ModelCallRecord, ModelCapabilities, ModelError, ModelEventSink, ModelInvocation, ModelProvider,
+    ModelRequest, ModelResult, ModelUsage, OpenAiCompatConfig, OpenAiCompatProvider,
+    ProviderEstimate, UsageProvenance,
 };
 use tachyon_mutation::blake3_hex;
 use tachyon_policy::Policy;
@@ -67,45 +68,45 @@ struct Descriptor {
     check_note: String,
 }
 
-/// Provider decorator that times every invoke so the report carries real
-/// model-call durations instead of an assumption. This wrapper only
-/// accumulates time; call counts come from the inner fake when the
-/// scripted path feeds it (`request_count`), and are unavailable (None)
-/// on the live path where no scripted queue exists.
+/// Counts every real call and preserves failed-attempt usage.
 struct TimedProvider {
     inner: Arc<dyn ModelProvider>,
-    scripted: Option<Arc<FakeModelProvider>>,
-    total: Mutex<Duration>,
+    calls: Mutex<Vec<ModelCallRecord>>,
 }
 
 impl TimedProvider {
     fn scripted(inner: Arc<FakeModelProvider>) -> Self {
-        Self {
-            inner: inner.clone(),
-            scripted: Some(inner),
-            total: Mutex::new(Duration::ZERO),
-        }
+        Self::live(inner)
     }
-
     fn live(inner: Arc<dyn ModelProvider>) -> Self {
         Self {
             inner,
-            scripted: None,
-            total: Mutex::new(Duration::ZERO),
+            calls: Mutex::new(Vec::new()),
         }
     }
-
-    fn stats(&self) -> Duration {
-        *self
-            .total
+    fn records(&self) -> Vec<ModelCallRecord> {
+        self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
+    fn stats(&self) -> Duration {
+        Duration::from_secs_f64(self.records().iter().map(|c| c.latency_ms).sum::<f64>() / 1_000.0)
+    }
+}
 
-    fn scripted_calls(&self) -> Option<u64> {
-        self.scripted
-            .as_ref()
-            .map(|fake| fake.request_count() as u64)
+/// Dropped provider futures remain counted and explicitly interrupted.
+struct CallGuard<'a> {
+    calls: &'a Mutex<Vec<ModelCallRecord>>,
+    index: usize,
+    started: Instant,
+}
+impl Drop for CallGuard<'_> {
+    fn drop(&mut self) {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)[self.index]
+            .latency_ms = self.started.elapsed().as_secs_f64() * 1_000.0;
     }
 }
 
@@ -114,27 +115,64 @@ impl ModelProvider for TimedProvider {
     fn id(&self) -> ProviderId {
         self.inner.id()
     }
-
     fn capabilities(&self) -> ModelCapabilities {
         self.inner.capabilities()
     }
-
     fn estimate(&self, request: &ModelRequest) -> ProviderEstimate {
         self.inner.estimate(request)
     }
-
     async fn invoke(
         &self,
         request: ModelRequest,
         sink: ModelEventSink,
     ) -> Result<ModelResult, ModelError> {
-        let started = Instant::now();
-        let result = self.inner.invoke(request, sink).await;
-        *self
-            .total
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) += started.elapsed();
-        result
+        self.invoke_observed(request, sink).await.result
+    }
+    async fn invoke_observed(
+        &self,
+        request: ModelRequest,
+        sink: ModelEventSink,
+    ) -> ModelInvocation {
+        let index = {
+            let mut calls = self
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let index = calls.len();
+            calls.push(ModelCallRecord {
+                attempt: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                latency_ms: 0.0,
+                usage: ModelUsage::default(),
+                error: Some("interrupted".into()),
+                output_failure: None,
+            });
+            index
+        };
+        let guard = CallGuard {
+            calls: &self.calls,
+            index,
+            started: Instant::now(),
+        };
+        let invocation = self.inner.invoke_observed(request, sink).await;
+        {
+            let mut calls = self
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            calls[index].usage = invocation.usage;
+            calls[index].output_failure = invocation
+                .result
+                .as_ref()
+                .err()
+                .and_then(|e| e.output_failure().map(str::to_owned));
+            calls[index].error = invocation
+                .result
+                .as_ref()
+                .err()
+                .map(|e| e.code().to_owned());
+        }
+        drop(guard);
+        invocation
     }
 }
 
@@ -545,9 +583,11 @@ async fn run_sample(
     std::fs::create_dir_all(&mutation_dir).map_err(|error| format!("mutation dir: {error}"))?;
 
     let mut store_holder: Option<Arc<StoreWriter>> = None;
+    let mut failure_handle = None;
     let host = match store {
         Some((task, store)) => {
             store_holder = Some(store.clone());
+            failure_handle = Some(task.clone());
             DriveHost::Supervisor {
                 handle: task,
                 store,
@@ -593,13 +633,59 @@ async fn run_sample(
     };
     let drive_start = Instant::now();
     let drive_result = drive(host, context, provider.clone(), plan).await;
-    // Always close the store, including on drive failure, before
-    // propagating the error: a leaked open writer is a lifecycle break.
-    // (`close` only shuts the pool down; errors are logged, not fatal.)
+    let outcome = match drive_result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let code = match &error {
+                tachyon_core::driver::DriveError::Provider(e) => e.code(),
+                tachyon_core::driver::DriveError::RunCancelled => "cancelled",
+                tachyon_core::driver::DriveError::Core(
+                    tachyon_core::CoreError::VerificationBlocked(_),
+                ) => "verification_failed",
+                _ => "driver_failure",
+            };
+            let reason = format!("drive failed: {code}");
+            let mut failure_durable = false;
+            let mut recovered_status = None;
+            if let Some(handle) = failure_handle {
+                failure_durable = handle.mark_failed(reason.clone()).await.is_ok();
+                let task_id = handle.task_id();
+                let _ = handle.shutdown().await;
+                if let Some(store) = &store_holder
+                    && let Ok(recovered) = tachyon_core::recover_task(task_id, store.clone()).await
+                {
+                    recovered_status = recovered.get_state().await.ok().map(|s| s.status.name());
+                    let _ = recovered.shutdown().await;
+                }
+            }
+            if let Some(store) = store_holder {
+                store.close().await;
+            }
+            let calls = provider.records();
+            let usage = ModelUsage::total(&calls);
+            let observed = observed_changes(&fixture, &ws);
+            return Ok(serde_json::json!({
+                "fixture": descriptor.id, "mode": mode, "sample": sample,
+                "provider": if live { "bench-live".to_owned() } else { format!("bench-script-{}", descriptor.id) },
+                "model": model_name, "outcome": "error", "error": reason, "error_code": code,
+                "verified": false, "broken_first_failed": true,
+                "task_wall_ms": as_millis_u64(drive_start.elapsed()),
+                "completion_ms": as_millis_u64(drive_start.elapsed()),
+                "model_calls": calls.len(), "model_ms": as_millis_f64(provider.stats()),
+                "model_attempts": calls, "retries": calls.len().saturating_sub(1),
+                "provider_failures": calls.iter().filter(|c| c.error.is_some()).count(),
+                "verification_failures": usize::from(code == "verification_failed"), "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens, "usage_provenance": usage.provenance,
+                "protected_unchanged": before == snapshot_paths(&ws, &descriptor.protected_paths),
+                "observed_changes": observed, "expected_changes": descriptor.change_paths,
+                "failure_durable": failure_durable, "recovery": recovered_status,
+                "scratch": scratch.display().to_string(),
+            }));
+        }
+    };
     if let Some(store) = store_holder {
         store.close().await;
     }
-    let outcome = drive_result.map_err(|error| format!("drive: {error}"))?;
     let drive_ms = as_millis_u64(drive_start.elapsed());
 
     // Reference keeps its declared control-loop verification tail.
@@ -645,9 +731,8 @@ async fn run_sample(
     let after = snapshot_paths(&ws, &descriptor.protected_paths);
     let observed = observed_changes(&fixture, &ws);
     let model_ms = provider.stats();
-    // Live runs have no scripted queue, so the count is unavailable
-    // (None) instead of an invented zero the rule could misread.
-    let model_calls = provider.scripted_calls();
+    let calls = provider.records();
+    let model_calls = calls.len();
     let usage_provenance = match outcome.usage.provenance {
         UsageProvenance::ProviderReported => "provider_reported",
         UsageProvenance::Scripted => "scripted",
@@ -704,8 +789,9 @@ async fn run_sample(
         "input_tokens": outcome.usage.input_tokens,
         "output_tokens": outcome.usage.output_tokens,
         "usage_provenance": usage_provenance,
-        "retries": 0u64,
-        "provider_failures": 0u64,
+        "model_attempts": calls,
+        "retries": calls.len().saturating_sub(1),
+        "provider_failures": calls.iter().filter(|c| c.error.is_some()).count(),
         "verification_failures": u64::from(!verified),
         "user_interventions": 0u64,
         "user_interventions_note": "trusted-workspace policy auto-allows every fixture operation; a parked approval would surface as a driver error",
@@ -783,7 +869,12 @@ async fn main() {
         std::process::exit(2);
     }
     match run_sample(&descriptor, &mode, sample).await {
-        Ok(report) => println!("{report}"),
+        Ok(report) => {
+            println!("{report}");
+            if report["outcome"] == "error" {
+                std::process::exit(1);
+            }
+        }
         Err(error) => {
             println!(
                 "{}",
