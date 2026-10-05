@@ -34,7 +34,7 @@ use tachyon_core::runtime::{EvidenceRequest, RuntimeBounds, evidence_concurrency
 use tachyon_models::fake::{FakeModelProvider, FakeResponse};
 use tachyon_models::{
     ModelCapabilities, ModelError, ModelEventSink, ModelProvider, ModelRequest, ModelResult,
-    ProviderEstimate, UsageProvenance,
+    OpenAiCompatConfig, OpenAiCompatProvider, ProviderEstimate, UsageProvenance,
 };
 use tachyon_mutation::blake3_hex;
 use tachyon_policy::Policy;
@@ -68,17 +68,29 @@ struct Descriptor {
 }
 
 /// Provider decorator that times every invoke so the report carries real
-/// model-call durations instead of an assumption. Call counts come from
-/// the inner fake (`request_count`); this wrapper only accumulates time.
+/// model-call durations instead of an assumption. This wrapper only
+/// accumulates time; call counts come from the inner fake when the
+/// scripted path feeds it (`request_count`), and are unavailable (None)
+/// on the live path where no scripted queue exists.
 struct TimedProvider {
-    inner: Arc<FakeModelProvider>,
+    inner: Arc<dyn ModelProvider>,
+    scripted: Option<Arc<FakeModelProvider>>,
     total: Mutex<Duration>,
 }
 
 impl TimedProvider {
-    fn new(inner: Arc<FakeModelProvider>) -> Self {
+    fn scripted(inner: Arc<FakeModelProvider>) -> Self {
+        Self {
+            inner: inner.clone(),
+            scripted: Some(inner),
+            total: Mutex::new(Duration::ZERO),
+        }
+    }
+
+    fn live(inner: Arc<dyn ModelProvider>) -> Self {
         Self {
             inner,
+            scripted: None,
             total: Mutex::new(Duration::ZERO),
         }
     }
@@ -88,6 +100,12 @@ impl TimedProvider {
             .total
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn scripted_calls(&self) -> Option<u64> {
+        self.scripted
+            .as_ref()
+            .map(|fake| fake.request_count() as u64)
     }
 }
 
@@ -152,6 +170,35 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Builds the live provider from `TACHYON_LIVE_*` env, defaulting to the
+/// operator's configured provider (currently the mimo endpoint + model;
+/// key stays in its `TACHYON_*` env var, never in a flag or a file).
+/// Refuses to run live without a model name: a wrong-model run would
+/// spend budget on data the plan cannot compare.
+fn live_provider() -> Result<(Arc<dyn ModelProvider>, String), String> {
+    let base_url = std::env::var("TACHYON_LIVE_BASE_URL")
+        .unwrap_or_else(|_| "https://api.xiaomimimo.com".to_owned());
+    let model =
+        std::env::var("TACHYON_LIVE_MODEL").unwrap_or_else(|_| "mimo-v2.6-flash".to_owned());
+    let api_key_env = std::env::var("TACHYON_LIVE_API_KEY_ENV")
+        .unwrap_or_else(|_| "TACHYON_MIMO_API_KEY".to_owned());
+    if model.trim().is_empty() {
+        return Err("TACHYON_LIVE_MODEL must name the pinned live model".to_owned());
+    }
+    OpenAiCompatConfig::validate_base_url(&base_url, false)
+        .map_err(|error| format!("live base_url: {error}"))?;
+    let provider = OpenAiCompatProvider::local(
+        ProviderId("bench-live".into()),
+        OpenAiCompatConfig {
+            base_url,
+            model: model.clone(),
+            api_key_env: Some(api_key_env),
+            ..OpenAiCompatConfig::default()
+        },
+    );
+    Ok((Arc::new(provider), model))
 }
 
 /// A fixture or descriptor path is trusted only when it stays inside its
@@ -421,18 +468,31 @@ async fn run_sample(
         }
     }
 
+    // Provider selection: `TACHYON_BENCH_LIVE=1` routes the model call to
+    // the live provider named by `TACHYON_LIVE_*` env; otherwise the run
+    // uses the pinned scripted fake (LIVE_MODEL_PLAN.md: identical model
+    // across every mode by construction, zero live spend by default).
+    let live = std::env::var("TACHYON_BENCH_LIVE").as_deref() == Ok("1");
     let script = build_script(descriptor, &ws)?;
-    let fake = Arc::new(FakeModelProvider::new(ProviderId(format!(
-        "bench-script-{}",
-        descriptor.id
-    ))));
-    fake.push_response(FakeResponse {
-        text: script.to_string(),
-        decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
-        input_tokens: 0,
-        output_tokens: 0,
-    });
-    let provider = Arc::new(TimedProvider::new(fake.clone()));
+    let (provider, model_name) = if live {
+        let (provider, model) = live_provider()?;
+        (Arc::new(TimedProvider::live(provider)), model)
+    } else {
+        let fake = Arc::new(FakeModelProvider::new(ProviderId(format!(
+            "bench-script-{}",
+            descriptor.id
+        ))));
+        fake.push_response(FakeResponse {
+            text: script.to_string(),
+            decision: serde_json::from_value(script.clone()).expect("typed proposal fixture"),
+            input_tokens: 0,
+            output_tokens: 0,
+        });
+        (
+            Arc::new(TimedProvider::scripted(fake)),
+            "scripted-replay-1".to_owned(),
+        )
+    };
 
     let requests: Vec<EvidenceRequest> = descriptor
         .evidence_paths
@@ -518,7 +578,7 @@ async fn run_sample(
         risk: VerificationRisk::Affected,
         mutation_dir,
         batch_id: "bench-batch-1".into(),
-        model: "scripted-replay-1".into(),
+        model: model_name.clone(),
         task_context: TaskModelContext {
             revision: None,
             objective: descriptor.objective.clone(),
@@ -585,7 +645,9 @@ async fn run_sample(
     let after = snapshot_paths(&ws, &descriptor.protected_paths);
     let observed = observed_changes(&fixture, &ws);
     let model_ms = provider.stats();
-    let model_calls = fake.request_count() as u64;
+    // Live runs have no scripted queue, so the count is unavailable
+    // (None) instead of an invented zero the rule could misread.
+    let model_calls = provider.scripted_calls();
     let usage_provenance = match outcome.usage.provenance {
         UsageProvenance::ProviderReported => "provider_reported",
         UsageProvenance::Scripted => "scripted",
@@ -616,9 +678,9 @@ async fn run_sample(
         "class": descriptor.class,
         "mode": mode,
         "sample": sample,
-        "provider": format!("bench-script-{}", descriptor.id),
-        "model": "scripted-replay-1",
-        "provider_note": "pinned scripted FakeModelProvider (docs/11 #11): identical model across every mode by construction",
+        "provider": if live { "bench-live".to_owned() } else { format!("bench-script-{}", descriptor.id) },
+        "model": model_name,
+        "provider_note": if live { "live provider named by TACHYON_LIVE_* env (LIVE_MODEL_PLAN.md): identical model across every mode by construction" } else { "pinned scripted FakeModelProvider (docs/11 #11): identical model across every mode by construction" },
         "coincides_with": coincides_with,
         "mode_note": mode_note,
         "outcome": label,

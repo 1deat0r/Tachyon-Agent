@@ -883,6 +883,7 @@ fn build_request_body(
         "model": config.model,
         "messages": messages,
         "max_tokens": request.max_output_tokens,
+        "temperature": 0,
         "stream": config.stream,
     });
     if config.stream {

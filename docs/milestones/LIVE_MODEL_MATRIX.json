@@ -1,0 +1,38 @@
+{
+  "generated": "2026-10-05T05:00:15.611Z",
+  "provider": "bench-live",
+  "model": "mimo-v2.6-flash",
+  "fixture": "auth-refresh",
+  "usage_provenance": "provider_reported",
+  "modes": {
+    "full": {
+      "n": 20,
+      "verified": 10,
+      "errors": 10,
+      "wall_ms": {
+        "p50": 15757,
+        "p95": 25824,
+        "min": 9817,
+        "max": 25824
+      },
+      "model_ms_med": 15107.7425835,
+      "input_tokens": 16540,
+      "output_tokens": 10406
+    },
+    "serial": {
+      "n": 20,
+      "verified": 13,
+      "errors": 7,
+      "wall_ms": {
+        "p50": 15480,
+        "p95": 30510,
+        "min": 8808,
+        "max": 30510
+      },
+      "model_ms_med": 15175.957886999999,
+      "input_tokens": 21502,
+      "output_tokens": 16293
+    }
+  },
+  "decision_rule_arm": "third: verified success unreliable in at least one mode; prompt/model contract is the problem; do not publish comparisons"
+}

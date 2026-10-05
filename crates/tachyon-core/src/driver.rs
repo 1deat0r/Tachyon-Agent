@@ -690,7 +690,11 @@ async fn stage_model(
     plan: &RunPlan,
     items: &[EvidenceItem],
 ) -> Result<(Vec<ProposedFile>, ModelUsage), DriveError> {
-    const OUTPUT_BUDGET_TOKENS: u32 = 1024;
+    // Live-model leg (LIVE_MODEL_PLAN.md, 2026-10-05): the 1024 reserve
+    // truncated this model's patches mid-JSON (`finish: length`; the same
+    // prompt completes as valid JSON at 4096, ~930 completion tokens
+    // including reasoning). The reserve must fit reasoning + patch text.
+    const OUTPUT_BUDGET_TOKENS: u32 = 4096;
 
     // M12 fault point: kill here = model-call enter with no committed result.
     tachyon_tools::fault::reach("model.enter").await;
