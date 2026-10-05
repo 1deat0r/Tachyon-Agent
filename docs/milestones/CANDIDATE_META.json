@@ -1,0 +1,203 @@
+{
+  "schema": 1,
+  "source_commit": "14ffb3132c8921b98f72d0bb8dfb072f81523e05",
+  "binary_sha256": "c4b3e5455a39377080bad7a67d9d620da3477507d3d82294b99ea67244267021",
+  "manifest_sha256": "de910a7d70118b598d6794a90c4b35b762d9c3c4830ae8a92db2dbccbd38fb4d",
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "planned_order": [
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 4,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 4,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 5,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 5,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 4,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 4,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 5,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 5,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 4,
+      "proposal_variant": "boundary-guidance"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 4,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 5,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 5,
+      "proposal_variant": "boundary-guidance"
+    }
+  ],
+  "runner_state": {
+    "complete": true,
+    "recorded_samples": 30,
+    "in_flight": null
+  }
+}

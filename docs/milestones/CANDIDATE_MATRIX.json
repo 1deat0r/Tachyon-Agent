@@ -1,0 +1,223 @@
+{
+  "schema": 1,
+  "eval_valid": true,
+  "scope": "one development task and two new held-out tasks; five full-mode samples per arm",
+  "source_commit": "14ffb3132c8921b98f72d0bb8dfb072f81523e05",
+  "binary_sha256": "c4b3e5455a39377080bad7a67d9d620da3477507d3d82294b99ea67244267021",
+  "manifest_sha256": "de910a7d70118b598d6794a90c4b35b762d9c3c4830ae8a92db2dbccbd38fb4d",
+  "tasks": {
+    "duplicate-range": {
+      "baseline": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 58609,
+          "p95": 79013
+        },
+        "verified_task_wall_ms": {
+          "p50": 58609,
+          "p95": 79013
+        },
+        "verified_first_edit_ms": {
+          "p50": 58273,
+          "p95": 78669
+        },
+        "model_ms": {
+          "p50": 58268.724323999995,
+          "p95": 78663.898506
+        },
+        "known_input_tokens": 7115,
+        "known_output_tokens": 2449,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "boundary-guidance": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 6652,
+          "p95": 9900
+        },
+        "verified_task_wall_ms": {
+          "p50": 6652,
+          "p95": 9900
+        },
+        "verified_first_edit_ms": {
+          "p50": 6302,
+          "p95": 9566
+        },
+        "model_ms": {
+          "p50": 6297.533310000001,
+          "p95": 9561.517624
+        },
+        "known_input_tokens": 7330,
+        "known_output_tokens": 2530,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    },
+    "signed-midpoint": {
+      "baseline": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 9009,
+          "p95": 22132
+        },
+        "verified_task_wall_ms": {
+          "p50": 9009,
+          "p95": 22132
+        },
+        "verified_first_edit_ms": {
+          "p50": 8702,
+          "p95": 21821
+        },
+        "model_ms": {
+          "p50": 8697.943153,
+          "p95": 21816.595533
+        },
+        "known_input_tokens": 6330,
+        "known_output_tokens": 4354,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "boundary-guidance": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 22373,
+          "p95": 47097
+        },
+        "verified_task_wall_ms": {
+          "p50": 22373,
+          "p95": 47097
+        },
+        "verified_first_edit_ms": {
+          "p50": 22068,
+          "p95": 46800
+        },
+        "model_ms": {
+          "p50": 22063.379379,
+          "p95": 46795.314618
+        },
+        "known_input_tokens": 6545,
+        "known_output_tokens": 6176,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    },
+    "ceiling-division": {
+      "baseline": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 13393,
+          "p95": 17747
+        },
+        "verified_task_wall_ms": {
+          "p50": 13393,
+          "p95": 17747
+        },
+        "verified_first_edit_ms": {
+          "p50": 13091,
+          "p95": 17432
+        },
+        "model_ms": {
+          "p50": 13086.442785,
+          "p95": 17427.405114999998
+        },
+        "known_input_tokens": 6495,
+        "known_output_tokens": 2475,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "boundary-guidance": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 11854,
+          "p95": 14498
+        },
+        "verified_task_wall_ms": {
+          "p50": 11854,
+          "p95": 14498
+        },
+        "verified_first_edit_ms": {
+          "p50": 11543,
+          "p95": 14198
+        },
+        "model_ms": {
+          "p50": 11538.37961,
+          "p95": 14193.173107
+        },
+        "known_input_tokens": 6710,
+        "known_output_tokens": 2438,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    }
+  },
+  "development_improved": false,
+  "no_heldout_regression": true,
+  "candidate_reference_met": true,
+  "eligible_for_production_design": false,
+  "production_adopted": false,
+  "comparison_allowed": false,
+  "cost_usd": null,
+  "model_calls": 30,
+  "decision": "Do not adopt: strict development improvement and held-out nonregression/reference conditions were not all met."
+}

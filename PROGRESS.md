@@ -4,16 +4,26 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 18 — proposed candidate improvement and new frozen held-out eval.
-Milestone 17 is complete. Integer-boundary development controls reject the
-retained overflow patch and wrapping/saturating variants in debug and release.
-The known safe solution passes independent boundary and API checks.
-No model call or production prompt change was made. The M16 live baseline
-remains fixed at 29/30. Use the development eval to test a bounded candidate,
-then freeze new tasks before a later reliability claim. See
-`docs/milestones/INTEGER_BOUNDARY_REPORT.md`.
+Milestone 19 — proposed frozen multi-file/API-preservation eval.
+Milestone 18 is complete. Baseline and generic boundary-guidance candidate
+both verified 15/15 full-mode runs, including two new held-out tasks.
+The declared strict-improvement rule blocks adoption on this tie.
+Production prompt and acceptance remain unchanged. The next eval should
+increase task difficulty beyond one-file arithmetic and retain independent
+API, regression, change-path, and recovery checks. See
+`docs/milestones/CANDIDATE_REPORT.md`.
 
 ## Completed gates
+
+- 2026-10-06 Milestone 18 — froze one opt-in benchmark guidance candidate,
+  a reused development task, and two new held-out arithmetic tasks before
+  30 matched full-mode runs. Baseline and candidate each verified 15/15,
+  with 30 model calls and no retries. All protected paths and recovery
+  checks passed. Strict development improvement was absent, so adoption
+  remains blocked. The candidate is outside persisted production context
+  provenance; no production prompt change was made. VERIFY/FULL, forwarding
+  and negative scoring controls, and both review axes passed. Report:
+  `docs/milestones/CANDIDATE_REPORT.md`.
 
 - 2026-10-06 Milestone 17 — converted the retained M16 integer-overflow
   failure into a deterministic development eval at the public `equal_range`

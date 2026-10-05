@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Milestone 18 boundary-guidance candidate experiment: opt-in benchmark
+  instrumentation and two frozen held-out tasks, with committed inputs,
+  strict variant/order accounting, and API/numeric oracles. Baseline and
+  candidate tied at 15/15 verified runs each, using 30 calls and no retries.
+  The declared rule blocks adoption; production behavior stays unchanged.
+  Historical M16 hashes remain anchored to their original source commit.
+  See `docs/milestones/CANDIDATE_REPORT.md`.
+
 - Milestone 17 integer-boundary development eval: FULL now checks the exact
   retained overflow patch and wrapping/saturating variants in debug and
   release against independent linear-count oracles. The safe solution
