@@ -647,6 +647,9 @@ async fn run_sample(
             let reason = format!("drive failed: {code}");
             let mut failure_durable = false;
             let mut recovered_status = None;
+            let failed_task_id = failure_handle
+                .as_ref()
+                .map(|handle| handle.task_id().to_string());
             if let Some(handle) = failure_handle {
                 failure_durable = handle.mark_failed(reason.clone()).await.is_ok();
                 let task_id = handle.task_id();
@@ -673,6 +676,7 @@ async fn run_sample(
                 "provider": if live { "bench-live".to_owned() } else { format!("bench-script-{}", descriptor.id) },
                 "model": model_name, "outcome": "error", "error": reason, "error_code": code,
                 "verified": false, "broken_first_failed": true,
+                "task_id": failed_task_id,
                 "task_wall_ms": as_millis_u64(drive_start.elapsed()),
                 "completion_ms": as_millis_u64(drive_start.elapsed()),
                 "model_calls": calls.len(), "model_ms": as_millis_f64(provider.stats()),

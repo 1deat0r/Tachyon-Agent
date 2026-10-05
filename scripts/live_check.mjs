@@ -26,14 +26,16 @@ function total(calls, field) {
   return sum <= 0xffffffff ? sum : null;
 }
 
-export function validateSamples(samples, expectedN = 20) {
+const DEFAULT_FIXTURE = { id: "auth-refresh", change_paths: ["auth-session/src/session.rs"] };
+
+export function validateSamples(samples, expectedN = 20, fixture = DEFAULT_FIXTURE) {
   assert(integer(expectedN) && expectedN > 0, "sample count must be positive");
   assert(samples.length === 2 * expectedN, `expected ${2 * expectedN} samples`);
   const identities = new Set();
   const first = samples[0];
   for (const s of samples) {
     const where = `${s.fixture}/${s.mode}/${s.sample}`;
-    assert(s.fixture === "auth-refresh" && MODES.includes(s.mode), `${where}: unexpected cell`);
+    assert(s.fixture === fixture.id && MODES.includes(s.mode), `${where}: unexpected cell`);
     assert(integer(s.sample) && s.sample >= 1 && s.sample <= expectedN, `${where}: invalid sample id`);
     assert(!identities.has(`${s.mode}/${s.sample}`), `${where}: duplicate sample`);
     identities.add(`${s.mode}/${s.sample}`);
@@ -44,7 +46,7 @@ export function validateSamples(samples, expectedN = 20) {
     assert(["completed", "verification_failed", "error"].includes(s.outcome), `${where}: invalid outcome`);
     assert(s.verified === (s.outcome === "completed"), `${where}: contradictory verified flag`);
     assert(s.broken_first_failed === true && s.protected_unchanged === true, `${where}: fixture protection failed`);
-    assert(Array.isArray(s.observed_changes) && equal(s.expected_changes, ["auth-session/src/session.rs"]), `${where}: missing or incorrect change sets`);
+    assert(Array.isArray(s.observed_changes) && equal(s.expected_changes, fixture.change_paths), `${where}: missing or incorrect change sets`);
     assert(s.observed_changes.every((p) => s.expected_changes.includes(p)) && new Set(s.observed_changes).size === s.observed_changes.length, `${where}: forbidden or duplicate changes`);
     assert(finite(s.task_wall_ms) && finite(s.completion_ms) && finite(s.model_ms), `${where}: missing duration`);
     assert(s.task_wall_ms >= s.model_ms, `${where}: model time exceeds task time`);
@@ -96,8 +98,8 @@ export function validateSamples(samples, expectedN = 20) {
   return samples;
 }
 
-export function aggregate(samples, expectedN = 20) {
-  validateSamples(samples, expectedN);
+export function aggregate(samples, expectedN = 20, fixture = DEFAULT_FIXTURE) {
+  validateSamples(samples, expectedN, fixture);
   const modes = {};
   for (const mode of MODES) {
     const own = samples.filter((s) => s.mode === mode);
@@ -126,7 +128,7 @@ export function aggregate(samples, expectedN = 20) {
   }
   const reliable = expectedN >= 20 && MODES.every((m) => modes[m].verified / expectedN >= 0.95);
   return { generated: new Date().toISOString(), provider: samples[0].provider, model: samples[0].model,
-    fixture: "auth-refresh", modes, reliable, cost_note: "No verified price supplied; token counts are measured, monetary cost is unavailable.",
+    fixture: fixture.id, modes, reliable, cost_note: "No verified price supplied; token counts are measured, monetary cost is unavailable.",
     comparison_allowed: reliable && modes.full.verified === modes.serial.verified,
     decision_rule_arm: reliable ? "reliability gate met; compare latency only at equal verified success" :
       "third: reliability gate unmet; continue shaping diagnosis; no speed comparison" };
