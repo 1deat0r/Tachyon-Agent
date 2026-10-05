@@ -53,7 +53,7 @@ export function validateSamples(samples, expectedN = 20) {
     for (const [i, c] of calls.entries()) {
       assert(c.attempt === i + 1 && finite(c.latency_ms), `${where}: malformed attempt`);
       assert(c.error === null || ERRORS.has(c.error), `${where}: invalid error class`);
-      assert(c.error === "malformed_output" ? ["empty_content", "invalid_json", "invalid_decision", "missing_content", "invalid_response", "invalid_stream", "unclassified"].includes(c.output_failure) : c.output_failure === null, `${where}: invalid output failure class`);
+      assert(c.error === "malformed_output" ? ["empty_content", "invalid_json", "invalid_decision", "missing_decision", "missing_decision_field", "unknown_decision", "invalid_decision_type", "missing_content", "invalid_response", "invalid_stream", "unclassified"].includes(c.output_failure) : c.output_failure === null, `${where}: invalid output failure class`);
       assert(c.usage && ["provider_reported", "unknown"].includes(c.usage.provenance), `${where}: invalid usage provenance`);
       assert(counter(c.usage.input_tokens) && counter(c.usage.output_tokens), `${where}: invalid usage counters`);
       if (c.usage.provenance === "unknown") {
@@ -72,7 +72,7 @@ export function validateSamples(samples, expectedN = 20) {
     if (s.outcome === "error") {
       assert(typeof s.error === "string" && s.error.length > 0, `${where}: missing failure reason`);
       assert(ERRORS.has(s.error_code) || ["driver_failure", "verification_failed"].includes(s.error_code), `${where}: invalid failure code`);
-      assert(s.failure_durable === true && s.recovery === "failed", `${where}: failure not recovered`);
+      assert(s.failure_durable === true && ["recovered_failed", "failed", "Failed"].includes(s.recovery), `${where}: failure not recovered`);
       assert(s.verification_failures === Number(s.error_code === "verification_failed"), `${where}: incorrect verification failure count`);
       if (!ERRORS.has(s.error_code)) assert(last.error === null, `${where}: failed model call claimed post-model failure`);
       if (last.error !== null) assert(s.observed_changes.length === 0, `${where}: failed model call mutated workspace`);

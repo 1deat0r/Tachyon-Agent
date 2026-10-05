@@ -14,7 +14,9 @@ reasoning stage.
   preserves typed result and reported usage even when output is rejected.
   `ModelCallRecord` carries ordinal, measured latency, usage, a stable error
   code, and a safe malformed-output class. It carries no output text or error
-  body. The prompt gives explicit JSON escaping instructions and an example.
+  body. The prompt gives explicit JSON escaping instructions and a complete
+  response example serialized from `AgentDecision`. It names every required
+  level and field. A partial file object is not a response example.
 - Access set: none for the model call. Evidence and mutation keep their existing
   access sets, workspace pin, and run-held workspace lease.
 - Effect class: metered inference; no workspace mutation until a valid proposal

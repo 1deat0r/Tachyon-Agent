@@ -29,6 +29,12 @@ test("all failure samples need complete safe accounting", () => {
   s.model_attempts[0].error = "malformed_output";
   s.model_attempts[0].output_failure = "invalid_json";
   assert.equal(aggregate(rows).modes.full.provider_failures, 1);
+  // The first measured candidate emitted TaskStatus::name's enum spelling.
+  // Both recognized failure spellings still prove a failed recovery state.
+  s.recovery = "Failed";
+  validateSamples(rows);
+  s.recovery = "recovered_failed";
+  validateSamples(rows);
   delete s.model_attempts;
   assert.throws(() => validateSamples(rows), /invalid attempts/);
 });

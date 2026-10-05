@@ -9,7 +9,8 @@ This is a small fixture gate, not proof of general coding-agent reliability.
 
 - Keep the same `auth-refresh` fixture, live provider, model, acceptance
   contract, and 4096-token output reserve in both modes.
-- State the JSON output contract and escaping rules explicitly.
+- State the JSON output contract and escaping rules explicitly. Serialize a
+  complete example from the typed `AgentDecision` contract.
 - Preserve typed model errors. Retry malformed output once before mutation.
   Use identical requests and one total model-stage deadline.
 - Keep strict parsing, revision fences, patch validation, policy checks,
@@ -67,6 +68,9 @@ fails, protected files stay unchanged, the observed change set is exact, and
 completion survives task recovery. Alternate full and serial runs to reduce
 order bias. Finish builds before using live samples for latency measurement.
 
-The six prompt-shaping pilot samples are separate from the final corpus.
-They do not count toward its acceptance gate. JSON escaping instructions
-follow the provider's [structured-output guidance](https://mimo.mi.com/docs/en-US/quick-start/usage-guide/text-generation/structured-output).
+Prompt-shaping pilot samples and failed candidate batches are separate from
+the final corpus. They do not count toward its acceptance gate. Preserve them
+and report them. The provider's [structured-output guidance](https://mimo.mi.com/docs/en-US/quick-start/usage-guide/text-generation/structured-output)
+states that JSON mode ensures syntax; the prompt controls field structure.
+Use the complete typed example to state that structure. Keep strict parsing
+and deterministic proposal validation even when JSON mode is enabled.

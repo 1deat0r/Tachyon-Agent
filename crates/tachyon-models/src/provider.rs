@@ -240,6 +240,14 @@ impl ModelError {
         };
         Some(if detail == "empty model content" {
             "empty_content"
+        } else if detail.starts_with("invalid decision JSON: DataMissingDecision") {
+            "missing_decision"
+        } else if detail.starts_with("invalid decision JSON: DataMissingField") {
+            "missing_decision_field"
+        } else if detail.starts_with("invalid decision JSON: DataUnknownDecision") {
+            "unknown_decision"
+        } else if detail.starts_with("invalid decision JSON: DataInvalidType") {
+            "invalid_decision_type"
         } else if detail.starts_with("invalid decision JSON: Data") {
             "invalid_decision"
         } else if detail.starts_with("invalid decision JSON:") {

@@ -94,9 +94,29 @@ pub fn parse_decision(text: &str) -> Result<AgentDecision, crate::ModelError> {
     } else {
         direct_error
     };
+    let category = match error.classify() {
+        serde_json::error::Category::Data => {
+            // Inspect only fixed parser prefixes. Never retain the response
+            // value or the parser's message (which may contain that value).
+            let detail = error.to_string();
+            if detail.starts_with("missing field `decision`") {
+                "DataMissingDecision"
+            } else if detail.starts_with("missing field ") {
+                "DataMissingField"
+            } else if detail.starts_with("unknown variant ") {
+                "DataUnknownDecision"
+            } else if detail.starts_with("invalid type: ") {
+                "DataInvalidType"
+            } else {
+                "Data"
+            }
+        }
+        serde_json::error::Category::Syntax => "Syntax",
+        serde_json::error::Category::Eof => "Eof",
+        serde_json::error::Category::Io => "Io",
+    };
     Err(crate::ModelError::MalformedOutput(format!(
-        "invalid decision JSON: {:?} at line {} column {}",
-        error.classify(),
+        "invalid decision JSON: {category} at line {} column {}",
         error.line(),
         error.column(),
     )))
@@ -168,6 +188,27 @@ mod tests {
             let error = parse_decision(text).expect_err("invalid contract");
             assert!(!error.to_string().contains("private-secret"));
             assert!(error.output_failure().is_some());
+        }
+    }
+
+    #[test]
+    fn typed_output_failures_are_safe_and_distinct() {
+        for (text, expected) in [
+            ("{}", "missing_decision"),
+            (
+                r#"{"decision":"private-secret-do-not-log"}"#,
+                "unknown_decision",
+            ),
+            (r#"{"decision":"respond"}"#, "missing_decision_field"),
+            (
+                r#"{"decision":"respond","message":null}"#,
+                "invalid_decision_type",
+            ),
+        ] {
+            let error = parse_decision(text).expect_err("invalid contract");
+            assert_eq!(error.output_failure(), Some(expected));
+            assert!(!error.to_string().contains("private-secret"));
+            assert_eq!(error.code(), "malformed_output");
         }
     }
 }

@@ -654,7 +654,11 @@ async fn run_sample(
                 if let Some(store) = &store_holder
                     && let Ok(recovered) = tachyon_core::recover_task(task_id, store.clone()).await
                 {
-                    recovered_status = recovered.get_state().await.ok().map(|s| s.status.name());
+                    recovered_status = recovered
+                        .get_state()
+                        .await
+                        .ok()
+                        .map(|s| format!("recovered_{:?}", s.status).to_lowercase());
                     let _ = recovered.shutdown().await;
                 }
             }
