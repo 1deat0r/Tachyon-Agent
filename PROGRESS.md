@@ -4,16 +4,26 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 17 — proposed development eval for integer-boundary failures.
-Milestone 16 is complete. Its frozen three-task baseline verified 29/30
-runs with 30 calls. A valid duplicate-range patch overflowed at `i64::MAX`;
-acceptance refused completion and recovery preserved failed state.
-Keep this baseline fixed. Use the retained failure as development data,
-then freeze new held-out tasks before a later reliability claim.
-The MVP remains frozen at Milestone 14. See
-`docs/milestones/HELDOUT_REPORT.md`.
+Milestone 18 — proposed candidate improvement and new frozen held-out eval.
+Milestone 17 is complete. Integer-boundary development controls reject the
+retained overflow patch and wrapping/saturating variants in debug and release.
+The known safe solution passes independent boundary and API checks.
+No model call or production prompt change was made. The M16 live baseline
+remains fixed at 29/30. Use the development eval to test a bounded candidate,
+then freeze new tasks before a later reliability claim. See
+`docs/milestones/INTEGER_BOUNDARY_REPORT.md`.
 
 ## Completed gates
+
+- 2026-10-06 Milestone 17 — converted the retained M16 integer-overflow
+  failure into a deterministic development eval at the public `equal_range`
+  interface. Enumerated 126 sorted sequences and nine queries (1,134 cases
+  per profile). The exact patch, wrapping-add, and saturating-add variants
+  compile and pass visible tests but fail the independent boundary oracle
+  in debug and release. The safe solution passes the full workspace/API
+  tests in both profiles. The eval is part of FULL. Zero model calls;
+  no claim that model proposals improved. Report:
+  `docs/milestones/INTEGER_BOUNDARY_REPORT.md`.
 
 - 2026-10-06 Milestone 16 — froze three new synthetic tasks, API consumers,
   protected files, hidden edge oracles, known solutions, and safe call

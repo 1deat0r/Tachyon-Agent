@@ -6,13 +6,15 @@ genuine unresolved uncertainty.
 
 > LLMs are reasoning accelerators, not Tachyon's operating system.
 
-**Status (Oct 2026):** Milestone 16 frozen held-out baseline complete.
-Three new bounded tasks verified 29/30 runs with 30 live model calls.
-The duplicate-range serial cell scored 4/5; its overflow failure remains
-published. See the [held-out report](docs/milestones/HELDOUT_REPORT.md).
+**Status (Oct 2026):** Milestone 17 integer-boundary development eval complete.
+The retained overflow patch and wrapping/saturating variants are rejected
+in debug and release. The safe solution passes 1,134 boundary cases per
+profile plus API checks. See the
+[development report](docs/milestones/INTEGER_BOUNDARY_REPORT.md).
+The M16 [live baseline](docs/milestones/HELDOUT_REPORT.md) remains 29/30.
 The MVP remains frozen at Milestone 14; see
 [`PROGRESS.md`](PROGRESS.md) and [`MVP_REPORT.md`](MVP_REPORT.md).
-This small baseline does not establish general coding-agent reliability.
+These oracle controls do not establish improved model reliability.
 
 Read the frozen MVP matrix numbers as **harness overhead**: every cell runs a pinned
 scripted provider (no live-model leg), so they show path and verification

@@ -95,6 +95,11 @@ fn full_checks() -> Result<(), String> {
     // G6, G3, G4, G5
     run_shell_script("scripts/m14_suites.sh", None)?;
     run_shell_script("scripts/m14_fixture_gate.sh", None)?;
+    run_gate(
+        node(&["scripts/integer_boundary_eval.mjs"]),
+        "node scripts/integer_boundary_eval.mjs (development oracle controls)",
+        "integer boundary development eval passed",
+    )?;
     run_shell_script(
         "scripts/m14_matrix.sh",
         env::var_os("M14_SAMPLES").as_deref(),

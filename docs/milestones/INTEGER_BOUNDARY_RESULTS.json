@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "scope": "deterministic development oracle controls; no model-quality score",
+  "model_calls": 0,
+  "fixture": "duplicate-range",
+  "sorted_sequences": 126,
+  "queries_per_sequence": 9,
+  "cases_per_profile": 1134,
+  "retained_source": "docs/milestones/HELDOUT_FAILED_DUPLICATE_RANGE_SERIAL_3.rs.txt",
+  "retained_sha256": "d9c1a2b12985f16adf2430a47eda7f837325b50eece65d6b9afce48942bbcc1f",
+  "oracle_sha256": "b181147b04d0ba0d0fae72a15649b179b48c06a9f9050eb74d1cb6dd4464242d",
+  "results": [
+    {
+      "variant": "known-safe",
+      "profile": "debug",
+      "source_sha256": "6169fbdaa39bcfbb680fe6225335f85503712a3b48c9079d800cd4003a5875fd",
+      "expected_pass": true,
+      "exit": 0,
+      "diagnostic": "passed",
+      "control_passed": true
+    },
+    {
+      "variant": "known-safe",
+      "profile": "release",
+      "source_sha256": "6169fbdaa39bcfbb680fe6225335f85503712a3b48c9079d800cd4003a5875fd",
+      "expected_pass": true,
+      "exit": 0,
+      "diagnostic": "passed",
+      "control_passed": true
+    },
+    {
+      "variant": "retained-overflow",
+      "profile": "debug",
+      "source_sha256": "d9c1a2b12985f16adf2430a47eda7f837325b50eece65d6b9afce48942bbcc1f",
+      "expected_pass": false,
+      "exit": 101,
+      "diagnostic": "attempt to add with overflow",
+      "control_passed": true
+    },
+    {
+      "variant": "retained-overflow",
+      "profile": "release",
+      "source_sha256": "d9c1a2b12985f16adf2430a47eda7f837325b50eece65d6b9afce48942bbcc1f",
+      "expected_pass": false,
+      "exit": 101,
+      "diagnostic": "assertion `left == right` failed",
+      "control_passed": true
+    },
+    {
+      "variant": "wrapping-add",
+      "profile": "debug",
+      "source_sha256": "7b13a86344cd315f8053a740c8b4616c3c8e44671c8fb1c785a406257771d597",
+      "expected_pass": false,
+      "exit": 101,
+      "diagnostic": "assertion `left == right` failed",
+      "control_passed": true
+    },
+    {
+      "variant": "wrapping-add",
+      "profile": "release",
+      "source_sha256": "7b13a86344cd315f8053a740c8b4616c3c8e44671c8fb1c785a406257771d597",
+      "expected_pass": false,
+      "exit": 101,
+      "diagnostic": "assertion `left == right` failed",
+      "control_passed": true
+    },
+    {
+      "variant": "saturating-add",
+      "profile": "debug",
+      "source_sha256": "f3a99af4da3461c6a189cadc5984fba5c9e512698b1f83ee1535f14d8e84d740",
+      "expected_pass": false,
+      "exit": 101,
+      "diagnostic": "assertion `left == right` failed",
+      "control_passed": true
+    },
+    {
+      "variant": "saturating-add",
+      "profile": "release",
+      "source_sha256": "f3a99af4da3461c6a189cadc5984fba5c9e512698b1f83ee1535f14d8e84d740",
+      "expected_pass": false,
+      "exit": 101,
+      "diagnostic": "assertion `left == right` failed",
+      "control_passed": true
+    }
+  ]
+}

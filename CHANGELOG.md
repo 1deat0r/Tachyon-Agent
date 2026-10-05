@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Milestone 17 integer-boundary development eval: FULL now checks the exact
+  retained overflow patch and wrapping/saturating variants in debug and
+  release against independent linear-count oracles. The safe solution
+  passes 1,134 cases per profile and public API checks. This uses no model
+  calls and leaves the M16 baseline unchanged. See
+  `docs/milestones/INTEGER_BOUNDARY_REPORT.md`.
+
 - Milestone 16 frozen held-out baseline: three new bounded tasks with
   independent edge oracles, public API consumers, protected-file checks,
   committed input hashes, and complete live call records. The unchanged
