@@ -1,0 +1,88 @@
+{
+  "generated": "2026-10-05T11:15:26.979Z",
+  "provider": "bench-live",
+  "model": "mimo-v2.6-flash",
+  "fixture": "auth-refresh",
+  "modes": {
+    "full": {
+      "n": 20,
+      "verified": 15,
+      "errors": 5,
+      "verification_failures": 0,
+      "first_attempt_valid": 13,
+      "first_attempt_verified": 13,
+      "model_calls": 27,
+      "retries": 7,
+      "provider_failures": 12,
+      "all_task_wall_ms": {
+        "p50": 19326,
+        "p95": 58631
+      },
+      "verified_task_wall_ms": {
+        "p50": 16857,
+        "p95": 49550
+      },
+      "verified_first_edit_ms": {
+        "p50": 16560,
+        "p95": 49239
+      },
+      "model_ms": {
+        "p50": 19010.417457,
+        "p95": 58625.438294
+      },
+      "known_input_tokens": 47061,
+      "known_output_tokens": 25814,
+      "unavailable_usage_attempts": 0,
+      "cost_usd": null,
+      "output_failures": {
+        "invalid_decision": 10,
+        "invalid_json": 2
+      },
+      "error_classes": {
+        "malformed_output": 12
+      }
+    },
+    "serial": {
+      "n": 20,
+      "verified": 17,
+      "errors": 3,
+      "verification_failures": 0,
+      "first_attempt_valid": 14,
+      "first_attempt_verified": 14,
+      "model_calls": 26,
+      "retries": 6,
+      "provider_failures": 9,
+      "all_task_wall_ms": {
+        "p50": 17804,
+        "p95": 48119
+      },
+      "verified_task_wall_ms": {
+        "p50": 16043,
+        "p95": 39970
+      },
+      "verified_first_edit_ms": {
+        "p50": 14636,
+        "p95": 39647
+      },
+      "model_ms": {
+        "p50": 17482.048122,
+        "p95": 48113.79232
+      },
+      "known_input_tokens": 43575,
+      "known_output_tokens": 21541,
+      "unavailable_usage_attempts": 1,
+      "cost_usd": null,
+      "output_failures": {
+        "invalid_decision": 8
+      },
+      "error_classes": {
+        "malformed_output": 8,
+        "transport": 1
+      }
+    }
+  },
+  "reliable": false,
+  "cost_note": "No verified price supplied; token counts are measured, monetary cost is unavailable.",
+  "comparison_allowed": false,
+  "decision_rule_arm": "third: reliability gate unmet; continue shaping diagnosis; no speed comparison"
+}

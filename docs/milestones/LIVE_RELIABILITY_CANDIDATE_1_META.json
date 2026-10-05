@@ -1,0 +1,10 @@
+{
+  "code_commit": "8dcd7e3c46d19db561cc44cba5e0d7bc401f1c00",
+  "binary_sha256": "75ec0d77ab7f2c69ce7f4b0c236fb72f3c64797bd4c9880eff8c1fd183ebba36",
+  "provider_endpoint": "https://api.xiaomimimo.com",
+  "model": "mimo-v2.6-flash",
+  "output_budget_tokens": 4096,
+  "max_attempts": 2,
+  "samples_per_mode": 20,
+  "order": "full, serial per sample; sequential"
+}
