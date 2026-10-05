@@ -163,6 +163,26 @@ async fn registered_key_is_scrubbed_before_any_client_can_read_it() {
         "key leaked into a GetTask frame: {rendered}"
     );
 
+    // 4. Issue #72: the failed run leaves canonical Failed status plus
+    // the scrubbed text on the GetTask payload (poll: the supervisor
+    // journal lands after the failure record).
+    let mut observed = None;
+    for _ in 0..100 {
+        let view = common::ok(&socket, Command::GetTask { task_id: task_key }).await;
+        let status = view["task"]["status"].as_str().unwrap_or("").to_owned();
+        if status == "Failed" {
+            observed = Some(view);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let view = observed.expect("a failed run must leave task status Failed");
+    let exposed = view["failure"].as_str().unwrap_or("");
+    assert!(
+        exposed.contains("[redacted:provider-api-key"),
+        "GetTask must expose the scrubbed failure: {view}"
+    );
+
     gateway.shutdown().await;
 }
 

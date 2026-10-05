@@ -156,6 +156,9 @@ fn run_ps_and_the_aliases_drive_a_live_gateway() {
     .unwrap();
 
     // `run`: session + task + StartRun; prints the fake provider label.
+    // The config-built fake ships an empty script queue, so the spawned
+    // run fails asynchronously ("fake model script exhausted") and —
+    // since issue #72 — lands the task in Failed with the reason.
     let (ok, stdout, stderr) = run_cli(
         &config,
         &[
@@ -179,14 +182,54 @@ fn run_ps_and_the_aliases_drive_a_live_gateway() {
     assert!(stdout.contains("ID"), "table header missing:\n{stdout}");
     assert!(stdout.contains("STATUS"), "table header missing:\n{stdout}");
 
-    // Recover the task id from JSON `ps` (exactly one task exists).
+    // Recover the task id from JSON `ps` (exactly one task exists) and
+    // wait for the failed run to land Failed with its reason.
     let (_, json, _) = run_cli(&config, &["--json", "ps"]);
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("json ps output");
     let tasks = parsed["Ok"]["payload"]["tasks"]
         .as_array()
         .expect("tasks array");
     assert_eq!(tasks.len(), 1, "one task after run: {json}");
-    let task_id = tasks[0]["id"].as_str().expect("task id").to_owned();
+    let run_task_id = tasks[0]["id"].as_str().expect("task id").to_owned();
+    let mut failed = None;
+    for _ in 0..100 {
+        let (_, json, _) = run_cli(&config, &["task", "get", &run_task_id]);
+        if json.contains("Failed") {
+            failed = Some(json);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let failed = failed.expect("the exhausted-script run must land Failed");
+    assert!(
+        failed.contains("fake model script exhausted"),
+        "failure reason missing: {failed}"
+    );
+
+    // Aliases map onto the existing task machinery, end to end — on a
+    // fresh live task (the run task above is terminally Failed).
+    let (_, json, _) = run_cli(&config, &["--json", "session", "create"]);
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json session output");
+    let session_id = parsed["Ok"]["payload"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let (_, json, _) = run_cli(
+        &config,
+        &[
+            "--json",
+            "task",
+            "create",
+            "--session",
+            &session_id,
+            "alias probe",
+        ],
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("json task output");
+    let task_id = parsed["Ok"]["payload"]["task_id"]
+        .as_str()
+        .expect("task id")
+        .to_owned();
 
     // Aliases map onto the existing task machinery, end to end.
     let (ok, _, stderr) = run_cli(&config, &["pause", &task_id]);

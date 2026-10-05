@@ -729,6 +729,10 @@ enum SupervisorCommand {
     Cancel {
         reply: oneshot::Sender<Result<TaskState, CoreError>>,
     },
+    MarkFailed {
+        reason: String,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    },
     DecideApproval {
         approval: ApprovalId,
         granted: bool,
@@ -1020,6 +1024,19 @@ impl SupervisorHandle {
     pub async fn cancel(&self) -> Result<TaskState, CoreError> {
         let (reply, rx) = oneshot::channel();
         self.send(SupervisorCommand::Cancel { reply }).await;
+        receive(rx).await?
+    }
+
+    /// Marks the task failed with the run's scrubbed failure text; terminal.
+    ///
+    /// Called by the gateway when a spawned run fails: terminal like
+    /// [`cancel`](Self::cancel), never resumes, and recovery after a
+    /// restart reconciles it as `Failed` (never `Recovering`) via the
+    /// stored journal row.
+    pub async fn mark_failed(&self, reason: String) -> Result<TaskState, CoreError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(SupervisorCommand::MarkFailed { reason, reply })
+            .await;
         receive(rx).await?
     }
 
@@ -2247,6 +2264,35 @@ impl Loop {
         }
     }
 
+    /// Journals the scrubbed run-failure reason as a `run` stage, then
+    /// moves the task to terminal [`TaskStatus::Failed`] — issue #72.
+    ///
+    /// A failed run wins over an approval wait exactly like Cancel: the
+    /// pending row expires and the parked worker drains first.
+    async fn mark_failed(
+        &mut self,
+        reason: String,
+        reply: oneshot::Sender<Result<TaskState, CoreError>>,
+    ) {
+        if self.state.status == TaskStatus::WaitingApproval {
+            self.release_parked(ApprovalResolution::Cancelled).await;
+        }
+        match self
+            .transition_journalled(StateEvent::Stage {
+                record: StageRecord {
+                    stage: "run".to_string(),
+                    detail: format!("failed: {reason}"),
+                },
+            })
+            .await
+        {
+            Ok(_) => self.control(TaskStatus::Failed, reply).await,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
+
     async fn handle(&mut self, command: SupervisorCommand) {
         match command {
             SupervisorCommand::Execution(command) => self.handle_execution(command).await,
@@ -2303,6 +2349,9 @@ impl Loop {
                     self.release_parked(ApprovalResolution::Cancelled).await;
                 }
                 self.control(TaskStatus::Cancelled, reply).await;
+            }
+            SupervisorCommand::MarkFailed { reason, reply } => {
+                self.mark_failed(reason, reply).await;
             }
             SupervisorCommand::DecideApproval {
                 approval,
@@ -3451,6 +3500,37 @@ mod tests {
 
         let cancelled = handle.cancel().await.unwrap();
         assert_eq!(cancelled.status, TaskStatus::Cancelled);
+        let err = handle.add_message("too late".to_owned()).await.unwrap_err();
+        assert!(matches!(err, super::CoreError::IllegalTransition { .. }));
+        handle.shutdown().await.unwrap();
+        store.close().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mark_failed_reaches_failed_with_reason() {
+        // Issue #72: `TaskStatus::Failed` was unreachable from live code.
+        let (store, dir) = open_test_store().await;
+        let session = SessionId::generate();
+        store.create_session(&session.to_string()).await.unwrap();
+        let handle = create_task(
+            session,
+            WorkspaceId::generate(),
+            "flaky run".to_owned(),
+            store.clone(),
+        )
+        .await
+        .unwrap();
+
+        let failed = handle.mark_failed("boom".to_owned()).await.unwrap();
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert!(
+            failed
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "run" && stage.detail.contains("boom")),
+            "failure reason must be visible on the task"
+        );
         let err = handle.add_message("too late".to_owned()).await.unwrap_err();
         assert!(matches!(err, super::CoreError::IllegalTransition { .. }));
         handle.shutdown().await.unwrap();

@@ -218,11 +218,21 @@ fn provider_label(state: &GatewayState) -> Option<Value> {
 
 /// `GetTask` payload: the task object plus the optional top-level
 /// `provider_label` key (plan G5 / M11 — key name and position are a
-/// wire contract with the TUI reader).
+/// wire contract with the TUI reader) and the optional top-level
+/// `failure` key (issue #72: the scrubbed text of a failed run this
+/// gateway spawned, when the live handle is gone and the row is gone
+/// with it). Callers MUST pass through `with_live_supervisor` so the
+/// failure store of the owning background task loop is visible even when
+/// the handle has been dropped.
 fn get_task_payload(state: &GatewayState, task: &tachyon_core::TaskState) -> Value {
     let mut payload = json!({ "task": task });
     if let Some(label) = provider_label(state) {
         payload["provider_label"] = label;
+    }
+    if let Ok(store) = state.failures.try_lock()
+        && let Some(failure) = store.get(&task.id).cloned()
+    {
+        payload["failure"] = Value::String(failure);
     }
     payload
 }
@@ -3319,7 +3329,21 @@ fn spawn_driver(
                 // can read (spec §35).
                 let scrubbed = redactor.redact(&error.to_string());
                 tracing::error!(task = %task_id, error = %scrubbed, "shared-driver run failed");
-                spawn_state.failures.lock().await.insert(task_id, scrubbed);
+                spawn_state
+                    .failures
+                    .lock()
+                    .await
+                    .insert(task_id, scrubbed.clone());
+                // Issue #72: a failed run must leave Failed in canonical
+                // task status, not just in-memory failure text. Journal
+                // through the supervisor's single-writer path so the
+                // transition is durable and visible to task get.
+                let failure_handle = spawn_state.supervisors.lock().await.get(&task_id).cloned();
+                if let Some(handle) = failure_handle
+                    && let Err(mark_error) = handle.mark_failed(scrubbed).await
+                {
+                    tracing::warn!(task = %task_id, error = %mark_error, "run failed but status stayed non-terminal");
+                }
                 RunExit::Failed
             }
             Err(error) => {
