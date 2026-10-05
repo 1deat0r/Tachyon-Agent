@@ -28,14 +28,15 @@ function total(calls, field) {
 
 const DEFAULT_FIXTURE = { id: "auth-refresh", change_paths: ["auth-session/src/session.rs"] };
 
-export function validateSamples(samples, expectedN = 20, fixture = DEFAULT_FIXTURE) {
+export function validateSamples(samples, expectedN = 20, fixture = DEFAULT_FIXTURE, selectedModes = MODES) {
   assert(integer(expectedN) && expectedN > 0, "sample count must be positive");
-  assert(samples.length === 2 * expectedN, `expected ${2 * expectedN} samples`);
+  assert(Array.isArray(selectedModes) && selectedModes.length > 0 && new Set(selectedModes).size === selectedModes.length && selectedModes.every(m => MODES.includes(m)), "invalid mode selection");
+  assert(samples.length === selectedModes.length * expectedN, `expected ${selectedModes.length * expectedN} samples`);
   const identities = new Set();
   const first = samples[0];
   for (const s of samples) {
     const where = `${s.fixture}/${s.mode}/${s.sample}`;
-    assert(s.fixture === fixture.id && MODES.includes(s.mode), `${where}: unexpected cell`);
+    assert(s.fixture === fixture.id && selectedModes.includes(s.mode), `${where}: unexpected cell`);
     assert(integer(s.sample) && s.sample >= 1 && s.sample <= expectedN, `${where}: invalid sample id`);
     assert(!identities.has(`${s.mode}/${s.sample}`), `${where}: duplicate sample`);
     identities.add(`${s.mode}/${s.sample}`);
@@ -98,10 +99,10 @@ export function validateSamples(samples, expectedN = 20, fixture = DEFAULT_FIXTU
   return samples;
 }
 
-export function aggregate(samples, expectedN = 20, fixture = DEFAULT_FIXTURE) {
-  validateSamples(samples, expectedN, fixture);
+export function aggregate(samples, expectedN = 20, fixture = DEFAULT_FIXTURE, selectedModes = MODES) {
+  validateSamples(samples, expectedN, fixture, selectedModes);
   const modes = {};
-  for (const mode of MODES) {
+  for (const mode of selectedModes) {
     const own = samples.filter((s) => s.mode === mode);
     const ok = own.filter((s) => s.verified);
     const calls = own.flatMap((s) => s.model_attempts);
@@ -126,7 +127,7 @@ export function aggregate(samples, expectedN = 20, fixture = DEFAULT_FIXTURE) {
         .map((code) => [code, calls.filter((c) => c.error === code).length])),
     };
   }
-  const reliable = expectedN >= 20 && MODES.every((m) => modes[m].verified / expectedN >= 0.95);
+  const reliable = selectedModes.length === 2 && expectedN >= 20 && MODES.every((m) => modes[m].verified / expectedN >= 0.95);
   return { generated: new Date().toISOString(), provider: samples[0].provider, model: samples[0].model,
     fixture: fixture.id, modes, reliable, cost_note: "No verified price supplied; token counts are measured, monetary cost is unavailable.",
     comparison_allowed: reliable && modes.full.verified === modes.serial.verified,

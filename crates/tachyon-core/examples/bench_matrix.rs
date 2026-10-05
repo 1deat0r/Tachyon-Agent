@@ -72,6 +72,7 @@ struct Descriptor {
 struct TimedProvider {
     inner: Arc<dyn ModelProvider>,
     calls: Mutex<Vec<ModelCallRecord>>,
+    boundary_guidance: bool,
 }
 
 impl TimedProvider {
@@ -82,6 +83,7 @@ impl TimedProvider {
         Self {
             inner,
             calls: Mutex::new(Vec::new()),
+            boundary_guidance: false,
         }
     }
     fn records(&self) -> Vec<ModelCallRecord> {
@@ -93,6 +95,32 @@ impl TimedProvider {
     fn stats(&self) -> Duration {
         Duration::from_secs_f64(self.records().iter().map(|c| c.latency_ms).sum::<f64>() / 1_000.0)
     }
+}
+
+// Evaluation-only transform after production context assembly. This is not
+// part of the persisted ContextSlice or the default production prompt.
+const BOUNDARY_GUIDANCE: &str = "Before proposing replacement code, check integer-limit, empty-input, and failure-state behavior against the required contract. Preserve public APIs and unrelated behavior. Do not rely on wrapping or saturating arithmetic unless the contract requires it.";
+
+fn proposal_variant(value: Option<&str>) -> Result<&'static str, String> {
+    match value {
+        None | Some("baseline") => Ok("baseline"),
+        Some("boundary-guidance") => Ok("boundary-guidance"),
+        _ => Err("unknown benchmark proposal variant".into()),
+    }
+}
+
+fn candidate_request(mut request: ModelRequest) -> Result<ModelRequest, ModelError> {
+    use tachyon_models::context::{ContextKind, TrustLevel};
+    let system = request
+        .context
+        .iter_mut()
+        .find(|block| block.kind == ContextKind::System && block.trust == TrustLevel::System)
+        .ok_or_else(|| {
+            ModelError::InvalidRequest("benchmark candidate requires trusted system context".into())
+        })?;
+    system.content.push('\n');
+    system.content.push_str(BOUNDARY_GUIDANCE);
+    Ok(request)
 }
 
 /// Dropped provider futures remain counted and explicitly interrupted.
@@ -133,6 +161,19 @@ impl ModelProvider for TimedProvider {
         request: ModelRequest,
         sink: ModelEventSink,
     ) -> ModelInvocation {
+        let request = if self.boundary_guidance {
+            match candidate_request(request) {
+                Ok(request) => request,
+                Err(error) => {
+                    return ModelInvocation {
+                        result: Err(error),
+                        usage: ModelUsage::default(),
+                    };
+                }
+            }
+        } else {
+            request
+        };
         let index = {
             let mut calls = self
                 .calls
@@ -510,11 +551,14 @@ async fn run_sample(
     // the live provider named by `TACHYON_LIVE_*` env; otherwise the run
     // uses the pinned scripted fake (LIVE_MODEL_PLAN.md: identical model
     // across every mode by construction, zero live spend by default).
+    let variant = proposal_variant(std::env::var("TACHYON_BENCH_VARIANT").ok().as_deref())?;
     let live = std::env::var("TACHYON_BENCH_LIVE").as_deref() == Ok("1");
     let script = build_script(descriptor, &ws)?;
     let (provider, model_name) = if live {
         let (provider, model) = live_provider()?;
-        (Arc::new(TimedProvider::live(provider)), model)
+        let mut timed = TimedProvider::live(provider);
+        timed.boundary_guidance = variant == "boundary-guidance";
+        (Arc::new(timed), model)
     } else {
         let fake = Arc::new(FakeModelProvider::new(ProviderId(format!(
             "bench-script-{}",
@@ -672,7 +716,7 @@ async fn run_sample(
             let usage = ModelUsage::total(&calls);
             let observed = observed_changes(&fixture, &ws);
             return Ok(serde_json::json!({
-                "fixture": descriptor.id, "mode": mode, "sample": sample,
+                "fixture": descriptor.id, "mode": mode, "sample": sample, "proposal_variant": variant,
                 "provider": if live { "bench-live".to_owned() } else { format!("bench-script-{}", descriptor.id) },
                 "model": model_name, "outcome": "error", "error": reason, "error_code": code,
                 "verified": false, "broken_first_failed": true,
@@ -773,6 +817,7 @@ async fn run_sample(
         "sample": sample,
         "provider": if live { "bench-live".to_owned() } else { format!("bench-script-{}", descriptor.id) },
         "model": model_name,
+        "proposal_variant": variant,
         "provider_note": if live { "live provider named by TACHYON_LIVE_* env (LIVE_MODEL_PLAN.md): identical model across every mode by construction" } else { "pinned scripted FakeModelProvider (docs/11 #11): identical model across every mode by construction" },
         "coincides_with": coincides_with,
         "mode_note": mode_note,
@@ -890,5 +935,71 @@ async fn main() {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+    use tachyon_models::Role;
+    use tachyon_models::context::{ContextBlock, ContextKind, TrustLevel};
+    use tachyon_types::Timestamp;
+
+    fn request(trust: TrustLevel) -> ModelRequest {
+        ModelRequest {
+            role: Role::Primary,
+            model: "test".into(),
+            context: vec![ContextBlock {
+                kind: ContextKind::System,
+                provenance: "test".into(),
+                trust,
+                content: "original".into(),
+                priority: 0,
+                created_at: Timestamp::now(),
+            }],
+            max_output_tokens: 4096,
+            require_structured_output: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_boundary_applies_guidance_only_when_opted_in() {
+        let fake = Arc::new(FakeModelProvider::new(ProviderId("test".into())));
+        let mut provider = TimedProvider::live(fake.clone());
+        let original = request(TrustLevel::System);
+        let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        for _ in 0..2 {
+            fake.push_response(FakeResponse {
+                text: "ok".into(),
+                decision: tachyon_models::AgentDecision::Respond {
+                    message: "ok".into(),
+                },
+                input_tokens: 0,
+                output_tokens: 0,
+            });
+        }
+        let _ = provider
+            .invoke_observed(original.clone(), sink.clone())
+            .await;
+        assert_eq!(fake.last_request(), Some(original.clone()));
+        provider.boundary_guidance = true;
+        let _ = provider.invoke_observed(original.clone(), sink).await;
+        let mut expected = original;
+        expected.context[0].content.push('\n');
+        expected.context[0].content.push_str(BOUNDARY_GUIDANCE);
+        assert_eq!(fake.last_request(), Some(expected));
+        assert_eq!(provider.records().len(), 2);
+    }
+
+    #[test]
+    fn candidate_cannot_promote_untrusted_context_or_silently_select_an_arm() {
+        assert!(candidate_request(request(TrustLevel::WorkspaceData)).is_err());
+        assert_eq!(proposal_variant(None).unwrap(), "baseline");
+        assert_eq!(proposal_variant(Some("baseline")).unwrap(), "baseline");
+        assert_eq!(
+            proposal_variant(Some("boundary-guidance")).unwrap(),
+            "boundary-guidance"
+        );
+        assert!(proposal_variant(Some("typo")).is_err());
     }
 }
