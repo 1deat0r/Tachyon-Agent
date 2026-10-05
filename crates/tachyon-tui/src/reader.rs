@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tachyon_protocol::{
     Command, CommandResult, EventEnvelope, GatewayEvent, PROTOCOL_VERSION, ResponseEnvelope,
-    ServerFrame, decode_server_frame, encode_frame,
+    ServerFrame, decode_server_frame, encode_frame, frame_body_len,
 };
 use tachyon_types::{EventId, TaskId, Timestamp};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -523,7 +523,8 @@ async fn read_frame(stream: Option<&mut Stream>) -> std::io::Result<Option<Serve
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(error) => return Err(error),
     }
-    let len = u32::from_le_bytes(prefix) as usize;
+    let len = frame_body_len(prefix)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body).await?;
     // `decode_server_frame` parses the length prefix itself (the frame
@@ -833,5 +834,51 @@ mod tests {
             provider_label, None,
             "an ack without the key carries no label — absence, not a panic"
         );
+    }
+
+    /// T1 §2.4: a `0xFFFF_FFFF` prefix errors before any 4 GiB
+    /// allocation. The shared protocol cap rejects the length right
+    /// after the prefix, so the reader never builds the body.
+    #[tokio::test]
+    async fn oversize_prefix_errors_without_huge_allocation() {
+        use tokio::io::AsyncWriteExt as _;
+
+        use tachyon_gateway::transport::Listener;
+
+        let sock = std::env::temp_dir().join(format!(
+            "t24-reader-{}-{}.sock",
+            std::process::id(),
+            tachyon_types::EventId::generate()
+        ));
+        let _ = std::fs::remove_file(&sock);
+        let listener = Listener::bind(&sock).expect("binds");
+        let address = listener.local_address();
+        let server = tokio::spawn(async move {
+            let mut stream = listener.accept().await.expect("accepts");
+            stream
+                .write_all(&[0xFF; 4])
+                .await
+                .expect("writes the bad prefix");
+            // Hold the connection open: the client must fail on the
+            // prefix alone, without waiting for a body that never comes.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let mut client = tachyon_gateway::transport::connect(&address)
+            .await
+            .expect("connects");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            super::read_frame(Some(&mut client)),
+        )
+        .await
+        .expect("the oversize prefix fails fast, never hanging");
+        let err = outcome.expect_err("0xFFFFFFFF must be an error, not a frame");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::InvalidData,
+            "oversize prefix maps to InvalidData"
+        );
+        server.abort();
+        let _ = std::fs::remove_file(&sock);
     }
 }

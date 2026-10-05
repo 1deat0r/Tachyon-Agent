@@ -24,6 +24,22 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Length prefix size in bytes (little-endian `u32`).
 pub const FRAME_PREFIX_LEN: usize = 4;
 
+/// Returns the frame body length from its 4-byte little-endian prefix.
+///
+/// Shared by async readers so every path enforces one cap before
+/// allocation. Rejects `len > MAX_FRAME_BYTES - FRAME_PREFIX_LEN`
+/// with `FrameTooLarge` so a `0xFFFF_FFFF` prefix errors without
+/// a 4 GiB allocation.
+pub fn frame_body_len(prefix: [u8; 4]) -> Result<usize, ProtocolError> {
+    let len = usize::try_from(u32::from_le_bytes(prefix)).unwrap_or(usize::MAX);
+    if len > MAX_FRAME_BYTES - FRAME_PREFIX_LEN {
+        return Err(ProtocolError::FrameTooLarge {
+            size: len + FRAME_PREFIX_LEN,
+        });
+    }
+    Ok(len)
+}
+
 /// Errors produced while framing or validating protocol messages.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -606,12 +622,7 @@ pub fn decode_frame<T: DeserializeOwned>(buf: &[u8]) -> Result<(T, usize), Proto
     }
     let mut prefix = [0_u8; FRAME_PREFIX_LEN];
     prefix.copy_from_slice(&buf[..FRAME_PREFIX_LEN]);
-    let len = usize::try_from(u32::from_le_bytes(prefix)).unwrap_or(usize::MAX);
-    if len > MAX_FRAME_BYTES - FRAME_PREFIX_LEN {
-        return Err(ProtocolError::FrameTooLarge {
-            size: len + FRAME_PREFIX_LEN,
-        });
-    }
+    let len = frame_body_len(prefix)?;
     if buf.len() < FRAME_PREFIX_LEN + len {
         return Err(ProtocolError::Truncated {
             need: FRAME_PREFIX_LEN + len,
@@ -736,6 +747,13 @@ mod tests {
             decode_frame::<RequestEnvelope>(&bad_json).unwrap_err(),
             ProtocolError::InvalidJson(_)
         ));
+    }
+
+    #[test]
+    fn frame_body_len_rejects_max_prefix_without_allocation() {
+        let err = super::frame_body_len([0xFF; 4]).unwrap_err();
+        assert!(matches!(err, ProtocolError::FrameTooLarge { .. }));
+        assert_eq!(super::frame_body_len([4, 0, 0, 0]).unwrap(), 4);
     }
 
     #[test]

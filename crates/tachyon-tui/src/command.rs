@@ -13,7 +13,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use tachyon_protocol::{
-    Command, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, decode_server_frame, encode_frame,
+    Command, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, decode_server_frame,
+    encode_frame, frame_body_len,
 };
 use tachyon_types::EventId;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, split};
@@ -182,7 +183,8 @@ async fn read_response(
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(error) => return Err(error),
     }
-    let len = u32::from_le_bytes(prefix) as usize;
+    let len = frame_body_len(prefix)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut body = vec![0u8; len];
     read_half.read_exact(&mut body).await?;
     // `decode_server_frame` parses the length prefix itself (the frame
@@ -368,5 +370,45 @@ mod tests {
         for round in 0..ROUNDS {
             teardown_round(round).await;
         }
+    }
+
+    /// T1 §2.4: a `0xFFFF_FFFF` prefix errors before any 4 GiB
+    /// allocation. Same shared cap as the subscription reader.
+    #[tokio::test]
+    async fn oversize_prefix_errors_without_huge_allocation() {
+        let sock = std::env::temp_dir().join(format!(
+            "t24-command-{}-{}.sock",
+            std::process::id(),
+            tachyon_types::EventId::generate()
+        ));
+        let _ = std::fs::remove_file(&sock);
+        let listener = Listener::bind(&sock).expect("binds");
+        let address = listener.local_address();
+        let server = tokio::spawn(async move {
+            let mut stream = listener.accept().await.expect("accepts");
+            stream
+                .write_all(&[0xFF; 4])
+                .await
+                .expect("writes the bad prefix");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let stream = tachyon_gateway::transport::connect(&address)
+            .await
+            .expect("connects");
+        let (mut read_half, _) = tokio::io::split(stream);
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(500),
+            super::read_response(&mut read_half),
+        )
+        .await
+        .expect("the oversize prefix fails fast, never hanging");
+        let err = outcome.expect_err("0xFFFFFFFF must be an error, not a frame");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::InvalidData,
+            "oversize prefix maps to InvalidData"
+        );
+        server.abort();
+        let _ = std::fs::remove_file(&sock);
     }
 }
