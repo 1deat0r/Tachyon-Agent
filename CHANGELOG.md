@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Milestone 15 bounded live-model reliability: one malformed-output retry
+  before mutation, a complete typed response example, safe failure classes,
+  and actual model-call/usage accounting. The matched `auth-refresh` batch
+  verified 19/20 full and 20/20 serial runs. Strict parsing and acceptance
+  remain required. Failed candidates, interrupted trials, pilots, and the
+  rejected compile-error patch remain published as eval evidence. See
+  `docs/milestones/LIVE_RELIABILITY_REPORT.md`. Unequal verified success
+  prohibits a speed comparison; the result covers one fixture and model.
+
 - Provider adapter: HTTPS and incremental streaming behind the existing
   `HttpTransport` boundary (handoff priority 3). `https://` targets are
   now accepted and verified against the platform trust store plus any

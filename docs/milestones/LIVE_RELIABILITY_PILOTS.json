@@ -1,0 +1,718 @@
+{
+  "note": "Exploratory trials. Not pooled with a matched gate batch. Early trials used evolving implementation and lack complete binary provenance. Missing fields remain missing.",
+  "trials": [
+    {
+      "trial": "retry-only exploratory pilot",
+      "gate_eligible": false,
+      "samples": [
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 1,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 32995.938324999996,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 1818,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1654,
+          "output_tokens": 1818,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 33312,
+          "model_ms": 32995.938324999996,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 1,
+          "verified": false,
+          "outcome": "error",
+          "error_code": "malformed_output",
+          "model_calls": 2,
+          "retries": 1,
+          "provider_failures": 2,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": "malformed_output",
+              "latency_ms": 18388.469319,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 810,
+                "provenance": "provider_reported"
+              }
+            },
+            {
+              "attempt": 2,
+              "error": "malformed_output",
+              "latency_ms": 13401.046442,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 748,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 3308,
+          "output_tokens": 1558,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 31795,
+          "model_ms": 31789.515761,
+          "protected_unchanged": true,
+          "observed_changes": [],
+          "recovery": "Failed",
+          "failure_durable": true
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 2,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 2,
+          "retries": 1,
+          "provider_failures": 1,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": "malformed_output",
+              "latency_ms": 29547.439886,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 2004,
+                "provenance": "provider_reported"
+              }
+            },
+            {
+              "attempt": 2,
+              "error": null,
+              "latency_ms": 11354.502779,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 622,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 3308,
+          "output_tokens": 2626,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 43133,
+          "model_ms": 40901.942665,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 2,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 2,
+          "retries": 1,
+          "provider_failures": 1,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": "malformed_output",
+              "latency_ms": 15175.566315999999,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 666,
+                "provenance": "provider_reported"
+              }
+            },
+            {
+              "attempt": 2,
+              "error": null,
+              "latency_ms": 20607.788395,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 620,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 3308,
+          "output_tokens": 1286,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 36175,
+          "model_ms": 35783.354711,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 3,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 17525.835191,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 862,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1654,
+          "output_tokens": 862,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 17829,
+          "model_ms": 17525.835191,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 3,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 17680.758129,
+              "usage": {
+                "input_tokens": 1654,
+                "output_tokens": 735,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1654,
+          "output_tokens": 735,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 20180,
+          "model_ms": 17680.758129,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        }
+      ]
+    },
+    {
+      "trial": "explicit JSON escaping pilot",
+      "gate_eligible": false,
+      "samples": [
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 1,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 38933.579298,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 839,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 839,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 39275,
+          "model_ms": 38933.579298,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 1,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 10022.354583,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 616,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 616,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 10339,
+          "model_ms": 10022.354583,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 2,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 12183.553847000001,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 643,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 643,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 12484,
+          "model_ms": 12183.553847000001,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 2,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 51400.986123,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 1618,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 1618,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 51699,
+          "model_ms": 51400.986123,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 3,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 24707.781747999998,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 1306,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 1306,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 25049,
+          "model_ms": 24707.781747999998,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 3,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 13092.688584,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 700,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 700,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 13391,
+          "model_ms": 13092.688584,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        }
+      ]
+    },
+    {
+      "trial": "complete typed response pilot",
+      "gate_eligible": false,
+      "samples": [
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 1,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 16275.636513999998,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1835,
+                "output_tokens": 735,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1835,
+          "output_tokens": 735,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 16591,
+          "model_ms": 16275.636513999998,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 1,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 14924.636095,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1835,
+                "output_tokens": 844,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1835,
+          "output_tokens": 844,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 15279,
+          "model_ms": 14924.636095,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 2,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 109003.234721,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1835,
+                "output_tokens": 736,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1835,
+          "output_tokens": 736,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 109330,
+          "model_ms": 109003.234721,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 2,
+          "verified": false,
+          "outcome": "error",
+          "error_code": "timeout",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 1,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": "timeout",
+              "latency_ms": 120000.491909,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "provenance": "unknown"
+              }
+            }
+          ],
+          "input_tokens": null,
+          "output_tokens": null,
+          "usage_provenance": "unknown",
+          "task_wall_ms": 120006,
+          "model_ms": 120000.491909,
+          "protected_unchanged": true,
+          "observed_changes": [],
+          "recovery": "recovered_failed",
+          "failure_durable": true
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 3,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 79249.246708,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1835,
+                "output_tokens": 589,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1835,
+          "output_tokens": 589,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 79564,
+          "model_ms": 79249.246708,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        },
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "serial",
+          "sample": 3,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 100028.504089,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1835,
+                "output_tokens": 763,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1835,
+          "output_tokens": 763,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 100332,
+          "model_ms": 100028.504089,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        }
+      ]
+    },
+    {
+      "trial": "safe typed diagnostics probe",
+      "gate_eligible": false,
+      "samples": [
+        {
+          "fixture": "auth-refresh",
+          "provider": "bench-live",
+          "model": "mimo-v2.6-flash",
+          "mode": "full",
+          "sample": 1,
+          "verified": true,
+          "outcome": "completed",
+          "model_calls": 1,
+          "retries": 0,
+          "provider_failures": 0,
+          "model_attempts": [
+            {
+              "attempt": 1,
+              "error": null,
+              "latency_ms": 23990.546447,
+              "output_failure": null,
+              "usage": {
+                "input_tokens": 1743,
+                "output_tokens": 775,
+                "provenance": "provider_reported"
+              }
+            }
+          ],
+          "input_tokens": 1743,
+          "output_tokens": 775,
+          "usage_provenance": "provider_reported",
+          "task_wall_ms": 24413,
+          "model_ms": 23990.546447,
+          "protected_unchanged": true,
+          "observed_changes": [
+            "auth-session/src/session.rs"
+          ],
+          "recovery": "recovered_completed"
+        }
+      ]
+    }
+  ]
+}

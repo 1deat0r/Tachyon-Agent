@@ -1,0 +1,82 @@
+{
+  "generated": "2026-10-05T19:18:26.194Z",
+  "provider": "bench-live",
+  "model": "mimo-v2.6-flash",
+  "fixture": "auth-refresh",
+  "modes": {
+    "full": {
+      "n": 20,
+      "verified": 19,
+      "errors": 1,
+      "verification_failures": 1,
+      "first_attempt_valid": 20,
+      "first_attempt_verified": 19,
+      "model_calls": 20,
+      "retries": 0,
+      "provider_failures": 0,
+      "all_task_wall_ms": {
+        "p50": 12189,
+        "p95": 46089
+      },
+      "verified_task_wall_ms": {
+        "p50": 12189,
+        "p95": 50810
+      },
+      "verified_first_edit_ms": {
+        "p50": 11876,
+        "p95": 50513
+      },
+      "model_ms": {
+        "p50": 11871.568154,
+        "p95": 45801.596336
+      },
+      "known_input_tokens": 36700,
+      "known_output_tokens": 17682,
+      "unavailable_usage_attempts": 0,
+      "cost_usd": null,
+      "output_failures": {},
+      "error_classes": {}
+    },
+    "serial": {
+      "n": 20,
+      "verified": 20,
+      "errors": 0,
+      "verification_failures": 0,
+      "first_attempt_valid": 19,
+      "first_attempt_verified": 19,
+      "model_calls": 21,
+      "retries": 1,
+      "provider_failures": 1,
+      "all_task_wall_ms": {
+        "p50": 11579,
+        "p95": 25058
+      },
+      "verified_task_wall_ms": {
+        "p50": 11579,
+        "p95": 25058
+      },
+      "verified_first_edit_ms": {
+        "p50": 11283,
+        "p95": 24772
+      },
+      "model_ms": {
+        "p50": 11279.582105,
+        "p95": 24767.227499
+      },
+      "known_input_tokens": 38535,
+      "known_output_tokens": 18352,
+      "unavailable_usage_attempts": 0,
+      "cost_usd": null,
+      "output_failures": {
+        "missing_decision_field": 1
+      },
+      "error_classes": {
+        "malformed_output": 1
+      }
+    }
+  },
+  "reliable": true,
+  "cost_note": "No verified price supplied; token counts are measured, monetary cost is unavailable.",
+  "comparison_allowed": false,
+  "decision_rule_arm": "reliability gate met; compare latency only at equal verified success"
+}

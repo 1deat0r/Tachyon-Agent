@@ -4,13 +4,26 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 15 — reliable live-model completion of bounded coding tasks. The
-MVP remains frozen at Milestone 14. This follow-up adds bounded pre-mutation
-output retry, strict proposal shaping, complete live-attempt accounting, and
-a matched 20-run reliability gate in each evidence mode. See
-`docs/agents/model-retry-capability.md` and `MVP_REPORT.md`.
+Milestone 16 — proposed held-out bounded-task eval. Milestone 15 is complete.
+The matched
+`auth-refresh` batch verified 19/20 full and 20/20 serial runs. This is one
+fixture gate, not general coding-agent reliability. The MVP remains frozen
+at Milestone 14. See `docs/milestones/LIVE_RELIABILITY_REPORT.md` and
+`docs/agents/model-retry-capability.md`. The next eval should use frozen,
+held-out bounded tasks and API-preservation oracles.
 
 ## Completed gates
+
+- 2026-10-06 Milestone 15 — added one bounded pre-mutation malformed-output
+  retry, a complete typed response example, safe error classes, and actual
+  call/usage accounting. Strict parsing and acceptance remain unchanged.
+  The final matched live batch verified 39/40 runs with 41 calls. One
+  malformed response recovered through retry; one patch with a compile error
+  was refused by acceptance and recovered as failed. The failed earlier
+  batch, interrupted batch, pilots, and failed patch remain separate
+  evidence. VERIFY: 887 passed, zero failed, 15 ignored. FULL passed.
+  Unequal verified success prohibits a speed comparison. Report:
+  `docs/milestones/LIVE_RELIABILITY_REPORT.md`.
 
 - 2026-09-28 Post-MVP follow-up #55 — added ignore-gated release
   measurement T6 for the gateway composition from the CreateTask request
@@ -381,7 +394,10 @@ a matched 20-run reliability gate in each evidence mode. See
 
 ## Measurements
 
-No benchmark measurements yet.
+The frozen MVP matrix is in `MVP_REPORT.md`. Live-model fixture measurements,
+including failed and interrupted candidates, are in
+`docs/milestones/LIVE_RELIABILITY_REPORT.md`. Gateway latency measurements
+are in `docs/milestones/POST_MVP_TTFR_REPORT.md`.
 
 ## Blockers
 

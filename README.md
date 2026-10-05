@@ -6,13 +6,14 @@ genuine unresolved uncertainty.
 
 > LLMs are reasoning accelerators, not Tachyon's operating system.
 
-**Status (Sep 2026):** MVP frozen at Milestone 14
-(benchmark matrix + security/recovery suites + `MVP_REPORT.md`) —
-see [`PROGRESS.md`](PROGRESS.md) and
-[`MVP_REPORT.md`](MVP_REPORT.md). Not yet a daily
-driver — watch this repo if the architecture interests you.
+**Status (Oct 2026):** Milestone 15 bounded live-model fixture gate complete.
+The matched batch verified 19/20 full and 20/20 serial runs. See the
+[live reliability report](docs/milestones/LIVE_RELIABILITY_REPORT.md).
+The MVP remains frozen at Milestone 14; see
+[`PROGRESS.md`](PROGRESS.md) and [`MVP_REPORT.md`](MVP_REPORT.md).
+This fixture result does not establish general coding-agent reliability.
 
-Read the matrix numbers as **harness overhead**: every cell runs a pinned
+Read the frozen MVP matrix numbers as **harness overhead**: every cell runs a pinned
 scripted provider (no live-model leg), so they show path and verification
 cost, not end-to-end model latency.
 
