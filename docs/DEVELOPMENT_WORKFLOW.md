@@ -6,14 +6,14 @@ Tachyon's normal development loop is local and Git-based:
 task and relevant context → inspect → implement → verify locally → review diff → atomic commit
 ```
 
-GitHub backs up and synchronizes the work and hosts long-lived tracking when useful. Pull requests and GitHub CI are retired: every verified change lands as a direct commit to `main`, gated only by local `cargo verify`.
+GitHub backs up and synchronizes the work and hosts long-lived tracking when useful. Pull requests are retired: every verified change lands as a direct commit to `main`, gated only by local `cargo verify`. A read-only CI mirror (`.github/workflows/ci-mirror.yml`) repeats the VERIFY tier plus platform tests and `cargo deny` for external visibility; it never gates, publishes, or pushes.
 
 ## Choose the smallest useful process
 
 - Start with `AGENTS.md`, the relevant domain context, and the specific architecture or ADR references touched by the change. Do not read unrelated documentation just because it exists.
 - Keep routine work in the current working tree and commit directly to `main`. Branches exist only for genuinely isolated experiments; land them back into `main` with a fast-forward or merge and delete them.
 - GitHub Issues are optional. Use one when it materially helps with deferred backlog, multi-session work, dependencies, coordination, architectural decisions, or an externally reported problem. A small task that can be completed now needs no Issue.
-- Do not open pull requests or add GitHub Actions workflows; the repository no longer uses them.
+- Do not open pull requests. The read-only CI mirror (`.github/workflows/ci-mirror.yml`) runs `cargo verify` on Linux plus platform tests and `cargo deny` for external visibility; it never gates, publishes, or pushes. Local `cargo verify` remains the only commit gate.
 - Skills are tools for planning, implementation, tests, debugging, and review. This repository policy overrides a skill's default request to publish an Issue, create a branch, or open a PR when that step adds no value. Apply the task and relevant spec to choose routine ticket breakdowns and test seams; proceed without approval checkpoints for those choices. Ask only when a material requirement, safety/security boundary, architecture decision, or external authorization is unresolved.
 
 ## Skills and hooks

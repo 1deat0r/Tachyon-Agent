@@ -47,7 +47,8 @@ fn usage() -> &'static str {
      fast: formatting and workspace compile checks\n\
      verify (default): fast checks, workspace tests, and strict Clippy\n\
      platform: workspace tests for supported-platform CI runners\n\
-     full: verify plus every GATES.json gate (security/recovery, fixture, benchmark\n\
+     full: verify plus the dependency audit and every GATES.json gate
+     (security/recovery, fixture, benchmark\n\
      matrix, projection, report/progress/changelog reconciliation) and the perf gate"
 }
 
@@ -143,11 +144,19 @@ fn full_checks() -> Result<(), String> {
         "node scripts/m14_reconcile_check.mjs  # G11",
         "m14 reconcile ok",
     )?;
+    run_dependency_audit()?;
     run_shell_script("scripts/perf_gate.sh", None)
 }
 
 /// G10's check, kept byte-identical to the `check` field in `GATES.json`.
 const G10_CHANGELOG: &str = r#"const t=require("fs").readFileSync("CHANGELOG.md","utf8");if(!/- Milestone 14:/.test(t)){process.exit(1)};console.log("changelog ok")"#;
+
+/// Dependency audit gate: fail the FULL tier on a known-vulnerable
+/// advisory for the locked dependency tree. `cargo audit` is resolved
+/// at runtime so the normal VERIFY tier never needs the tool.
+fn run_dependency_audit() -> Result<(), String> {
+    run_cargo(&["audit", "--deny", "warnings"])
+}
 
 fn ensure_full_tools() -> Result<(), String> {
     if cfg!(windows) {

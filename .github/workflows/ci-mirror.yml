@@ -1,0 +1,58 @@
+# Read-only CI mirror.
+#
+# Local `cargo verify` remains the only commit gate: routine work lands as a
+# direct commit to `main` after a green local run (docs/DEVELOPMENT_WORKFLOW.md).
+# This workflow mirrors the VERIFY tier on hosted runners for external
+# visibility. It never blocks, never publishes, and never pushes: all jobs
+# run with read-only permissions.
+#
+# Linux runs the full VERIFY tier. Windows and macOS run the platform tier
+# (workspace tests) so platform-specific failures stay visible.
+
+name: ci-mirror
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - name: Verify (fast, tests, strict clippy)
+        run: cargo verify
+
+  platform:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - name: Platform tests
+        run: cargo verify platform
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          log-level: warning
+          command: check

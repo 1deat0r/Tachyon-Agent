@@ -82,7 +82,7 @@ Implement these only after the MVP exit gate or an approved ADR.
 
 ## Local-first development
 
-Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the local loop, verification tiers, and atomic commits. Routine work: implement in the working tree, run `cargo verify`, inspect the diff, commit directly to `main` — one logical change per commit, each compiling and `--locked`-clean on its own. The `post-commit` hook pushes every commit to `1deat0r/Tachyon-Agent` immediately, so an intermediate commit is a published commit; never end a session with verified work uncommitted, and never squash unrelated changes. Pull requests and GitHub CI are retired — direct commits to `main`, gated only by local `cargo verify`; add no Issue, branch, PR, hook, or CI wait. Skill process steps never override this policy.
+Follow [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) for the local loop, verification tiers, and atomic commits. Routine work: implement in the working tree, run `cargo verify`, inspect the diff, commit directly to `main` — one logical change per commit, each compiling and `--locked`-clean on its own. The `post-commit` hook pushes every commit to `1deat0r/Tachyon-Agent` immediately, so an intermediate commit is a published commit; never end a session with verified work uncommitted, and never squash unrelated changes. Pull requests are retired — direct commits to `main`, gated only by local `cargo verify`; add no Issue, branch, PR, hook, or CI wait. The read-only CI mirror (`.github/workflows/ci-mirror.yml`) repeats the VERIFY tier plus platform tests and `cargo deny` for external visibility and never gates. Skill process steps never override this policy.
 
 ### References
 
