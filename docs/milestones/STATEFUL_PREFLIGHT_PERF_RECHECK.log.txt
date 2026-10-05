@@ -1,0 +1,97 @@
+$ sh scripts/perf_gate.sh
+   Compiling tokio-rustls v0.26.6
+   Compiling tachyon-models v0.0.1 (/run/media/ideator/Projects/AI Agents/Tachyon Agent/crates/tachyon-models)
+   Compiling tachyon-core v0.0.1 (/run/media/ideator/Projects/AI Agents/Tachyon Agent/crates/tachyon-core)
+   Compiling tachyon-gateway v0.0.1 (/run/media/ideator/Projects/AI Agents/Tachyon Agent/crates/tachyon-gateway)
+   Compiling tachyon-router v0.0.1 (/run/media/ideator/Projects/AI Agents/Tachyon Agent/crates/tachyon-router)
+    Finished `release` profile [optimized] target(s) in 39.61s
+     Running tests/perf.rs (target/release/deps/perf-c351af83bb62f046)
+
+running 4 tests
+comp[ipc_frame] n=5000 p50=300ns p95=330ns (encode+decode, no socket)
+test comp_ipc_frame_encode_decode ... ok
+perf[T3] n=200 p50=17.59µs p95=23.391µs target p95<5ms PASS
+perf[T3] PASS
+test t3_local_command_p95_under_5ms ... ok
+perf[T4] n=100 p50=207.943µs p95=265.544µs target p95<50ms PASS
+perf[T4] PASS
+test t4_first_task_event_p95_under_50ms ... ok
+perf[T6] n=100 p50=368.845µs p95=475.337µs (CreateTask write → Subscribe replay response decode; no target)
+test e2e_create_task_to_first_replayed_entry ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/perf.rs (target/release/deps/perf-a368dadd14d7ba3f)
+
+running 1 test
+comp[model_wait.assemble] n=100 p50=1.69µs p95=1.77µs (trusted context assembly)
+comp[model_wait.invoke_fake] n=100 p50=520ns p95=2.13µs (fake dispatch, no network)
+test comp_model_wait_harness_overhead ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/perf.rs (target/release/deps/perf-2577a94b5a7b56ad)
+
+running 1 test
+comp[index_cold] files=861 first_scan=11.330834ms repeat_scan=10.724025ms build=16.870228ms (report-only; first_scan is cold only when the page cache is)
+perf[T5.split] lookup p50=10.161908ms p95=11.433555ms | lexical_search p50=8.389194ms p95=9.822133ms (indexing profile)
+perf[T5] n=100 p50=17.940303ms p95=20.328806ms target p50<250ms p95<500ms PASS
+perf[T5] PASS
+test t5_warm_symbol_reference_p50_under_250ms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+
+     Running tests/perf.rs (target/release/deps/perf-97e9af837ad05c6e)
+
+running 1 test
+perf[T1] n=5000 p50=850ns p95=1.79µs target p95<2ms PASS
+perf[T1] PASS
+test t1_router_path_p95_under_2ms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/perf.rs (target/release/deps/perf-9d902e0c3dad2cbd)
+
+running 1 test
+perf[T2] n=119 p50=21.75µs p95=34.481µs target p95<1ms PASS (max executor stamp width 30ns)
+perf[T2] PASS
+test t2_dispatch_gap_p95_under_1ms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/perf.rs (target/release/deps/perf-5eca5163dc4b69c7)
+
+running 1 test
+comp[persistence.create_task] n=100 p50=88.312µs p95=108.861µs
+comp[persistence.append_event] n=200 p50=75.651µs p95=96.211µs
+test comp_persistence_commit_latency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/perf.rs (target/release/deps/perf-8c0d24a951837909)
+
+running 1 test
+comp[process_output.baseline] n=20 p50=9.372987ms p95=10.780736ms (empty child, fixed runner overhead)
+comp[process_output.payload] n=20 p50=9.723782ms p95=11.07571ms (stdout_bytes=108894)
+test comp_process_output_handling_latency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+     Running tests/perf.rs (target/release/deps/perf-205830f38093aca7)
+
+running 1 test
+comp[verification.plan] n=20 p50=69.031µs p95=121.032µs (snapshot + affected-first plan)
+comp[verification.run] n=20 p50=19.668307ms p95=21.973027ms (full run incl. child process)
+test comp_verification_plan_and_run_latency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running unittests src/lib.rs (target/release/deps/tachyon_tools-11d9f0e15061852c)
+
+running 1 test
+perf[process_wait] n=20 p50=4.042505ms target p50<8ms
+perf[process_wait] PASS
+test process::tests::comp_wait_for_exit_fast_window_latency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.29s
+perf gate ok

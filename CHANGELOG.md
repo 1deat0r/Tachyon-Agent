@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Milestone 20 frozen stateful cross-module baseline: independent sequence
+  oracles and eight partial-repair controls across two new tasks. Baseline
+  verified 16/20 trials with 20 calls and no retries; reference line unmet.
+  One incomplete repair, one transport failure, and two timeouts are retained.
+  Three calls have unknown usage. Protected files and recovery passed.
+  Preflight performance failures are disclosed despite a passing FULL rerun.
+  Production behavior stays unchanged. See `docs/milestones/STATEFUL_REPORT.md`.
+
 - Milestone 19 frozen multi-file API-preservation baseline: two new tasks,
   independent wire/state oracles, four partial-repair controls, API consumers,
   and safe failure-artifact retention. All 20 full/serial runs verified,

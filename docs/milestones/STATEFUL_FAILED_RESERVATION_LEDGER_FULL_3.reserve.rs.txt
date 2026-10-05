@@ -1,0 +1,47 @@
+use crate::{Ledger, LedgerError};
+use std::collections::BTreeMap;
+impl Ledger {
+    pub fn reserve(&mut self, batch: &[(u8, u32)]) -> Result<(), LedgerError> {
+        // Aggregate repeated SKU quantities mathematically as u64.
+        // A BTreeMap keeps SKUs in ascending order, so every validation
+        // pass reports the smallest offending SKU first. Zero-quantity
+        // SKUs are retained in the map and therefore still validated.
+        let mut wanted: BTreeMap<u8, u64> = BTreeMap::new();
+        for (sku, quantity) in batch {
+            *wanted.entry(*sku).or_insert(0) += u64::from(*quantity);
+        }
+
+        // Phase 1: every SKU must exist (smallest unknown SKU first).
+        for sku in wanted.keys() {
+            if !self.stock.contains_key(sku) {
+                return Err(LedgerError::UnknownSku(*sku));
+            }
+        }
+
+        // Phase 2: every aggregate quantity must fit in u32
+        // (smallest overflowing SKU first).
+        for (sku, quantity) in &wanted {
+            if *quantity > u64::from(u32::MAX) {
+                return Err(LedgerError::QuantityOverflow(*sku));
+            }
+        }
+
+        // Phase 3: aggregate stock must suffice (smallest deficient SKU first).
+        for (sku, quantity) in &wanted {
+            let available = self.stock[sku];
+            if u64::from(available) < *quantity {
+                return Err(LedgerError::Insufficient(*sku));
+            }
+        }
+
+        // All checks passed: apply the whole batch atomically.
+        for (sku, quantity) in &wanted {
+            let quantity = *quantity as u32;
+            *self.stock.get_mut(sku).unwrap() -= quantity;
+            let held = self.held.entry(*sku).or_insert(0);
+            *held = (u64::from(*held) + u64::from(quantity))
+                .min(u64::from(u32::MAX)) as u32;
+        }
+        Ok(())
+    }
+}

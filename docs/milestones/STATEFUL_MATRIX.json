@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "eval_valid": true,
+  "scope": "two new stateful cross-module synthetic tasks, five runs per mode, unchanged production baseline",
+  "source_commit": "2377df6baba42fcf2668406394f6e461ceaa1f19",
+  "binary_sha256": "c4b3e5455a39377080bad7a67d9d620da3477507d3d82294b99ea67244267021",
+  "manifest_sha256": "4e7122c55593004e7710ad9529217c6b8ee7f4d9c9426e61495e30544d060b3d",
+  "tasks": {
+    "reservation-ledger": {
+      "full": {
+        "n": 5,
+        "verified": 3,
+        "errors": 2,
+        "verification_failures": 1,
+        "first_attempt_valid": 4,
+        "first_attempt_verified": 3,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 1,
+        "all_task_wall_ms": {
+          "p50": 94528,
+          "p95": 120006
+        },
+        "verified_task_wall_ms": {
+          "p50": 82989,
+          "p95": 94528
+        },
+        "verified_first_edit_ms": {
+          "p50": 82481,
+          "p95": 93930
+        },
+        "model_ms": {
+          "p50": 93921.29173,
+          "p95": 120000.79369600001
+        },
+        "known_input_tokens": 8952,
+        "known_output_tokens": 9210,
+        "unavailable_usage_attempts": 1,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {
+          "timeout": 1
+        }
+      },
+      "serial": {
+        "n": 5,
+        "verified": 3,
+        "errors": 2,
+        "verification_failures": 0,
+        "first_attempt_valid": 3,
+        "first_attempt_verified": 3,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 2,
+        "all_task_wall_ms": {
+          "p50": 33382,
+          "p95": 120006
+        },
+        "verified_task_wall_ms": {
+          "p50": 31261,
+          "p95": 33382
+        },
+        "verified_first_edit_ms": {
+          "p50": 30746,
+          "p95": 32857
+        },
+        "model_ms": {
+          "p50": 32852.225733,
+          "p95": 120000.934354
+        },
+        "known_input_tokens": 6714,
+        "known_output_tokens": 4908,
+        "unavailable_usage_attempts": 2,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {
+          "transport": 1,
+          "timeout": 1
+        }
+      }
+    },
+    "indexed-catalog": {
+      "full": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 13630,
+          "p95": 26539
+        },
+        "verified_task_wall_ms": {
+          "p50": 13630,
+          "p95": 26539
+        },
+        "verified_first_edit_ms": {
+          "p50": 13111,
+          "p95": 25991
+        },
+        "model_ms": {
+          "p50": 13106.833338999999,
+          "p95": 25986.58854
+        },
+        "known_input_tokens": 12320,
+        "known_output_tokens": 7768,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "serial": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 30604,
+          "p95": 36811
+        },
+        "verified_task_wall_ms": {
+          "p50": 30604,
+          "p95": 36811
+        },
+        "verified_first_edit_ms": {
+          "p50": 30034,
+          "p95": 36313
+        },
+        "model_ms": {
+          "p50": 30028.942051,
+          "p95": 36307.813225
+        },
+        "known_input_tokens": 12320,
+        "known_output_tokens": 10287,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    }
+  },
+  "verified": 16,
+  "total": 20,
+  "model_calls": 20,
+  "reference_line_met": false,
+  "comparison_allowed": false,
+  "cost_usd": null,
+  "decision": "Retain all failures. Small per-cell samples support no general reliability or speed claim."
+}

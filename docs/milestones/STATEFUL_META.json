@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "source_commit": "2377df6baba42fcf2668406394f6e461ceaa1f19",
+  "binary_sha256": "c4b3e5455a39377080bad7a67d9d620da3477507d3d82294b99ea67244267021",
+  "manifest_sha256": "4e7122c55593004e7710ad9529217c6b8ee7f4d9c9426e61495e30544d060b3d",
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 5
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "indexed-catalog",
+      "mode": "serial",
+      "sample": 5
+    }
+  ],
+  "runner_state": {
+    "complete": true,
+    "recorded_samples": 20,
+    "in_flight": null
+  }
+}

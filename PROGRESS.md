@@ -4,16 +4,27 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 20 — proposed frozen stateful cross-module repair eval.
-Milestone 19 is complete. Two new multi-file tasks verified 20/20 runs,
-with 20 model calls and no retries. Every task/mode cell verified 5/5.
-The exploratory reference line was met. These small synthetic samples
-support no general reliability or speed claim. The next eval should test
-state preservation across modules with independent operation sequences.
-Production behavior stays unchanged. See
-`docs/milestones/MULTIFILE_REPORT.md`.
+Milestone 21 — proposed deterministic production replay of M20 failures.
+Milestone 20 is complete as an evaluation. The unchanged baseline verified
+16/20 runs; both the overall and per-cell reference conditions failed.
+Retain the exact partial repair, transport failure, and two timeout records.
+Next, prove these failure classes through deterministic production-driver
+regressions before selecting prompt, retry, or deadline changes. Production
+behavior stays unchanged. Intermittent preflight verification performance
+failures remain unresolved despite a passing FULL rerun. See
+`docs/milestones/STATEFUL_REPORT.md`.
 
 ## Completed gates
+
+- 2026-10-06 Milestone 20 — froze two stateful cross-module tasks before
+  20 live trials. Baseline verified 16/20 using 20 calls and no retries.
+  Reference line unmet. One partial repair, one transport error, and two
+  timeouts were retained; three provider calls have unknown usage. All
+  protection and completed/failed recovery checks passed. Eight partial
+  repair controls, independent state sequences, API consumers, strict scoring,
+  safe retention, VERIFY/FULL, and both review axes passed. Earlier FULL
+  performance failures remain disclosed and unresolved. Report:
+  `docs/milestones/STATEFUL_REPORT.md`.
 
 - 2026-10-06 Milestone 19 — froze two cross-file API-preservation tasks
   before 20 live runs. All 20 verified with 20 calls and no retries.

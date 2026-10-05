@@ -6,10 +6,11 @@ genuine unresolved uncertainty.
 
 > LLMs are reasoning accelerators, not Tachyon's operating system.
 
-**Status (Oct 2026):** Milestone 19 multi-file evaluation complete.
-Two new tasks verified 20/20 runs across full and serial modes, with
-20 model calls and no retries. API, protected-path, and recovery checks passed.
-See the [multi-file report](docs/milestones/MULTIFILE_REPORT.md).
+**Status (Oct 2026):** Milestone 20 stateful evaluation complete.
+The baseline verified 16/20 runs. The registered reference line was not met.
+Four failures are retained: one partial repair, one transport error, and two
+timeouts. Protected files and completed/failed recovery passed. See the
+[stateful report](docs/milestones/STATEFUL_REPORT.md).
 Production behavior remains unchanged. The M18 candidate remains unselected.
 The M16 [live baseline](docs/milestones/HELDOUT_REPORT.md) remains 29/30.
 The MVP remains frozen at Milestone 14; see

@@ -1,0 +1,82 @@
+Retained partial repair: full sample 3, one model call; no repair retry.
+
+compile: cargo test --offline --locked --no-run; exit=0
+   Compiling reservation-ledger v0.1.0 (/tmp/tachyon-stateful-retained-V02ogH/ws/subject)
+   Compiling unrelated v0.1.0 (/tmp/tachyon-stateful-retained-V02ogH/ws/unrelated)
+   Compiling api-client v0.1.0 (/tmp/tachyon-stateful-retained-V02ogH/ws/client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+  Executable unittests src/lib.rs (target/debug/deps/api_client-6ef9f7f694b13578)
+  Executable tests/api.rs (target/debug/deps/api-8d7d7ba45e383001)
+  Executable unittests src/lib.rs (target/debug/deps/reservation_ledger-a0aba5b1569797bb)
+  Executable tests/holdout.rs (target/debug/deps/holdout-cfe66cebef8e0eb9)
+  Executable tests/visible.rs (target/debug/deps/visible-32026fa64ee9513f)
+  Executable unittests src/lib.rs (target/debug/deps/unrelated-7918b7d8c9b94099)
+
+visible: cargo test --offline --locked -p reservation-ledger --test visible; exit=101
+
+running 2 tests
+test visible_reserve_is_atomic ... ok
+test visible_release_is_atomic ... FAILED
+
+failures:
+
+---- visible_release_is_atomic stdout ----
+
+thread 'visible_release_is_atomic' (2159194) panicked at subject/tests/visible.rs:18:5:
+assertion `left == right` failed
+  left: [(0, 2, 1), (1, 2, 1)]
+ right: [(0, 1, 2), (1, 2, 1)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    visible_release_is_atomic
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+     Running tests/visible.rs (target/debug/deps/visible-32026fa64ee9513f)
+error: test failed, to rerun pass `-p reservation-ledger --test visible`
+
+hidden: cargo test --offline --locked -p reservation-ledger --test holdout; exit=101
+
+running 3 tests
+test integer_limits_and_error_precedence_preserve_state ... FAILED
+test smallest_sku_precedence_does_not_follow_batch_order ... FAILED
+test sequences_match_independent_state_oracle ... FAILED
+
+failures:
+
+---- integer_limits_and_error_precedence_preserve_state stdout ----
+
+thread 'integer_limits_and_error_precedence_preserve_state' (2159208) panicked at subject/tests/holdout.rs:115:5:
+assertion `left == right` failed
+  left: Err(NotHeld(0))
+ right: Err(QuantityOverflow(0))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- smallest_sku_precedence_does_not_follow_batch_order stdout ----
+
+thread 'smallest_sku_precedence_does_not_follow_batch_order' (2159210) panicked at subject/tests/holdout.rs:145:5:
+assertion `left == right` failed
+  left: Err(NotHeld(1))
+ right: Err(NotHeld(0))
+
+---- sequences_match_independent_state_oracle stdout ----
+
+thread 'sequences_match_independent_state_oracle' (2159209) panicked at subject/tests/holdout.rs:88:25:
+assertion `left == right` failed
+  left: [(0, 1, 0), (1, 2, 0)]
+ right: [(0, 0, 1), (1, 2, 0)]
+
+
+failures:
+    integer_limits_and_error_precedence_preserve_state
+    sequences_match_independent_state_oracle
+    smallest_sku_precedence_does_not_follow_batch_order
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+     Running tests/holdout.rs (target/debug/deps/holdout-cfe66cebef8e0eb9)
+error: test failed, to rerun pass `-p reservation-ledger --test holdout`
