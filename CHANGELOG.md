@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Milestone 16 frozen held-out baseline: three new bounded tasks with
+  independent edge oracles, public API consumers, protected-file checks,
+  committed input hashes, and complete live call records. The unchanged
+  prompt verified 29/30 runs with 30 calls. The rejected integer-overflow
+  patch and its test failure remain published. The exploratory reference
+  line was met; this small baseline supports no speed or general reliability
+  claim. See `docs/milestones/HELDOUT_REPORT.md`.
+
 - Milestone 15 bounded live-model reliability: one malformed-output retry
   before mutation, a complete typed response example, safe failure classes,
   and actual model-call/usage accounting. The matched `auth-refresh` batch

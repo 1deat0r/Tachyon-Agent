@@ -4,15 +4,26 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 16 — proposed held-out bounded-task eval. Milestone 15 is complete.
-The matched
-`auth-refresh` batch verified 19/20 full and 20/20 serial runs. This is one
-fixture gate, not general coding-agent reliability. The MVP remains frozen
-at Milestone 14. See `docs/milestones/LIVE_RELIABILITY_REPORT.md` and
-`docs/agents/model-retry-capability.md`. The next eval should use frozen,
-held-out bounded tasks and API-preservation oracles.
+Milestone 17 — proposed development eval for integer-boundary failures.
+Milestone 16 is complete. Its frozen three-task baseline verified 29/30
+runs with 30 calls. A valid duplicate-range patch overflowed at `i64::MAX`;
+acceptance refused completion and recovery preserved failed state.
+Keep this baseline fixed. Use the retained failure as development data,
+then freeze new held-out tasks before a later reliability claim.
+The MVP remains frozen at Milestone 14. See
+`docs/milestones/HELDOUT_REPORT.md`.
 
 ## Completed gates
+
+- 2026-10-06 Milestone 16 — froze three new synthetic tasks, API consumers,
+  protected files, hidden edge oracles, known solutions, and safe call
+  accounting before live measurement. The unchanged production prompt
+  verified 15/15 full and 14/15 serial runs, with one overflow failure and
+  no retries. All 30 proposals parsed; all protected files remained intact.
+  The failure recovered as failed. The corpus validator, oracle controls,
+  VERIFY, FULL, and both review axes passed. The exploratory reference line
+  was met; five samples per cell do not support a speed or general
+  reliability claim. Report: `docs/milestones/HELDOUT_REPORT.md`.
 
 - 2026-10-06 Milestone 15 — added one bounded pre-mutation malformed-output
   retry, a complete typed response example, safe error classes, and actual

@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+     Running tests/holdout.rs (/tmp/tachyon-m14-duplicate-range-01a10da0-a3e4-776f-9d62-e5b62cb3b0f5/ws/target/debug/deps/holdout-82b139d59b59ea4a)
+
+running 1 test
+test duplicate_and_absent_boundaries_match_linear_oracle ... FAILED
+
+failures:
+
+---- duplicate_and_absent_boundaries_match_linear_oracle stdout ----
+
+thread 'duplicate_and_absent_boundaries_match_linear_oracle' (624943) panicked at subject/src/implementation.rs:4:53:
+attempt to add with overflow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    duplicate_and_absent_boundaries_match_linear_oracle
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p sorted-range --test holdout`

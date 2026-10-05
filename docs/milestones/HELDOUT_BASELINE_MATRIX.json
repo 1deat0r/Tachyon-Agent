@@ -1,0 +1,233 @@
+{
+  "schema": 1,
+  "generated": "2026-10-05T19:57:50.547Z",
+  "eval_valid": true,
+  "scope": "three synthetic held-out bounded tasks, five runs per mode; no prompt changes",
+  "source_commit": "1e3e2e178b549ce21d88d29c50b9b0f38e8a4046",
+  "binary_sha256": "c8f4da8000cce9fec741c6408c28ba633545b34c42820f2c85f704fd6c6ff43a",
+  "manifest_sha256": "6e9705fbb10ea6adfd4aa67eeee96084fd420ef512d8eed3f38e9992ea6228f9",
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "tasks": {
+    "utf8-boundary": {
+      "full": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 12851,
+          "p95": 15012
+        },
+        "verified_task_wall_ms": {
+          "p50": 12851,
+          "p95": 15012
+        },
+        "verified_first_edit_ms": {
+          "p50": 12543,
+          "p95": 14694
+        },
+        "model_ms": {
+          "p50": 12538.632715,
+          "p95": 14689.395094
+        },
+        "known_input_tokens": 7035,
+        "known_output_tokens": 3417,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "serial": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 13708,
+          "p95": 35980
+        },
+        "verified_task_wall_ms": {
+          "p50": 13708,
+          "p95": 35980
+        },
+        "verified_first_edit_ms": {
+          "p50": 13402,
+          "p95": 35661
+        },
+        "model_ms": {
+          "p50": 13398.011367000001,
+          "p95": 35656.781748999994
+        },
+        "known_input_tokens": 7035,
+        "known_output_tokens": 4182,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    },
+    "atomic-transfer": {
+      "full": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 9418,
+          "p95": 19676
+        },
+        "verified_task_wall_ms": {
+          "p50": 9418,
+          "p95": 19676
+        },
+        "verified_first_edit_ms": {
+          "p50": 9110,
+          "p95": 19353
+        },
+        "model_ms": {
+          "p50": 9105.306369999998,
+          "p95": 19348.73926
+        },
+        "known_input_tokens": 7725,
+        "known_output_tokens": 2691,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "serial": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 9586,
+          "p95": 33787
+        },
+        "verified_task_wall_ms": {
+          "p50": 9586,
+          "p95": 33787
+        },
+        "verified_first_edit_ms": {
+          "p50": 9267,
+          "p95": 33465
+        },
+        "model_ms": {
+          "p50": 9262.59887,
+          "p95": 33460.999095
+        },
+        "known_input_tokens": 7725,
+        "known_output_tokens": 3506,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    },
+    "duplicate-range": {
+      "full": {
+        "n": 5,
+        "verified": 5,
+        "errors": 0,
+        "verification_failures": 0,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 5,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 19121,
+          "p95": 47099
+        },
+        "verified_task_wall_ms": {
+          "p50": 19121,
+          "p95": 47099
+        },
+        "verified_first_edit_ms": {
+          "p50": 18787,
+          "p95": 46766
+        },
+        "model_ms": {
+          "p50": 18782.065018,
+          "p95": 46760.259537000005
+        },
+        "known_input_tokens": 7115,
+        "known_output_tokens": 3339,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      },
+      "serial": {
+        "n": 5,
+        "verified": 4,
+        "errors": 1,
+        "verification_failures": 1,
+        "first_attempt_valid": 5,
+        "first_attempt_verified": 4,
+        "model_calls": 5,
+        "retries": 0,
+        "provider_failures": 0,
+        "all_task_wall_ms": {
+          "p50": 12005,
+          "p95": 14796
+        },
+        "verified_task_wall_ms": {
+          "p50": 9165,
+          "p95": 14796
+        },
+        "verified_first_edit_ms": {
+          "p50": 8796,
+          "p95": 14464
+        },
+        "model_ms": {
+          "p50": 11661.807815,
+          "p95": 14459.818808
+        },
+        "known_input_tokens": 7115,
+        "known_output_tokens": 2819,
+        "unavailable_usage_attempts": 0,
+        "cost_usd": null,
+        "output_failures": {},
+        "error_classes": {}
+      }
+    }
+  },
+  "verified": 29,
+  "total": 30,
+  "model_calls": 30,
+  "reference_line_met": true,
+  "comparison_allowed": false,
+  "cost_usd": null,
+  "cost_note": "No verified price supplied; interrupted calls may also have unreconciled billing.",
+  "decision": "Exploratory reference line met. Retain failures; use new held-out tasks for later claims."
+}

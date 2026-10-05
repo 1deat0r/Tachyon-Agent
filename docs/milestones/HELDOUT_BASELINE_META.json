@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "source_commit": "1e3e2e178b549ce21d88d29c50b9b0f38e8a4046",
+  "binary_sha256": "c8f4da8000cce9fec741c6408c28ba633545b34c42820f2c85f704fd6c6ff43a",
+  "manifest_sha256": "6e9705fbb10ea6adfd4aa67eeee96084fd420ef512d8eed3f38e9992ea6228f9",
+  "protocol": {
+    "samples_per_cell": 5,
+    "model": "mimo-v2.6-flash",
+    "endpoint": "https://api.xiaomimimo.com",
+    "temperature": 0,
+    "output_budget_tokens": 4096,
+    "model_stage_deadline_ms": 120000,
+    "deadline_tolerance_ms": 1000,
+    "max_attempts": 2
+  },
+  "planned_order": [
+    {
+      "fixture": "utf8-boundary",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 1
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "serial",
+      "sample": 1
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "serial",
+      "sample": 2
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "full",
+      "sample": 2
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 3
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "serial",
+      "sample": 3
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "serial",
+      "sample": 4
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 4
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "serial",
+      "sample": 5
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "serial",
+      "sample": 5
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "full",
+      "sample": 5
+    },
+    {
+      "fixture": "utf8-boundary",
+      "mode": "serial",
+      "sample": 5
+    }
+  ],
+  "runner_state": {
+    "complete": true,
+    "recorded_samples": 30,
+    "in_flight": null
+  }
+}
