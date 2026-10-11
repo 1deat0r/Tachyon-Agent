@@ -4,19 +4,20 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+license.workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
 async-trait = { workspace = true }
 tachyon-ir = { workspace = true }
-tachyon-scheduler = { path = "../tachyon-scheduler" }
-tachyon-tools = { path = "../tachyon-tools" }
-tachyon-policy = { path = "../tachyon-policy" }
+tachyon-scheduler = { version = "0.0.1", path = "../tachyon-scheduler" }
+tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
+tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tachyon-intent = { path = "../tachyon-intent" }
+tachyon-intent = { version = "0.0.1", path = "../tachyon-intent" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

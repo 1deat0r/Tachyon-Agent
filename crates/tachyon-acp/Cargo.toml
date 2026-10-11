@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+license.workspace = true
 
 [[bin]]
 name = "tachyon-acp"
@@ -23,8 +24,8 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 blake3 = { workspace = true }
-tachyon-models = { path = "../tachyon-models" }
-tachyon-tools = { path = "../tachyon-tools" }
+tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
+tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
 # `test-util` powers the paused-clock turn-timeout proof
 # (`turn_timeout_is_suspended_during_an_outstanding_request` crosses
 # the 300 s window in virtual time); dev-only, never in build ships.

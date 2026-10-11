@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+license.workspace = true
 
 [[bin]]
 name = "tachyon"
@@ -21,7 +22,7 @@ tachyon-gateway = { workspace = true }
 tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
 tachyon-protocol = { workspace = true }
 # `tachyon attach` wires the frozen TUI entrypoint (writer B crate).
-tachyon-tui = { path = "../tachyon-tui" }
+tachyon-tui = { version = "0.0.1", path = "../tachyon-tui" }
 tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
