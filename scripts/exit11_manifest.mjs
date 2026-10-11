@@ -1,0 +1,62 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {root, sha256, requireTrue, filesUnder} from './heldout_manifest.mjs';
+export {root, sha256, requireTrue};
+
+export const manifestPath = path.join(root, 'docs/milestones/EXIT11_MANIFEST.json');
+
+export const rows = [];
+for (const sample of [1, 2, 3]) {
+  rows.push({fixture: 'reservation-ledger', mode: 'full', sample, proposal_variant: 'baseline'});
+  rows.push({fixture: 'reservation-ledger', mode: 'serial', sample, proposal_variant: 'baseline'});
+}
+
+export function plannedOrder() { return rows; }
+
+export function frozenFiles() {
+  const retained = [
+    'docs/milestones/EXIT11_PLAN.md',
+    'docs/milestones/M22_TRIAL_MANIFEST.md',
+    'scripts/exit11_manifest.mjs',
+    'scripts/exit11_run.mjs',
+    'crates/tachyon-core/src/driver.rs',
+    'crates/tachyon-core/examples/bench_matrix.rs',
+  ];
+  return [
+    ...filesUnder(path.join(root, 'fixtures', 'reservation-ledger')),
+    ...filesUnder(path.join(root, 'fixtures/solutions', 'reservation-ledger')),
+    ...retained,
+  ]
+    .map((p) => path.relative(root, p).replaceAll('\\', '/'))
+    .sort();
+}
+
+export function makeManifest() {
+  const files = {};
+  for (const rel of frozenFiles()) {
+    files[rel] = sha256(fs.readFileSync(path.join(root, rel)));
+  }
+  return {schema: 1, model: 'meta/muse-spark-1.3-contributor', planned_order: plannedOrder(), files};
+}
+
+export function assertFrozen(m) {
+  const current = makeManifest();
+  requireTrue(m.schema === 1, 'schema changed');
+  requireTrue(m.model === current.model, 'model changed');
+  requireTrue(JSON.stringify(m.planned_order) === JSON.stringify(current.planned_order), 'row order changed');
+  requireTrue(JSON.stringify(m.files) === JSON.stringify(current.files), 'frozen input hash mismatch');
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    if (process.argv.includes('--freeze')) {
+      fs.writeFileSync(manifestPath, JSON.stringify(makeManifest(), null, 2) + '\n', {flag: 'wx'});
+    }
+    assertFrozen(JSON.parse(fs.readFileSync(manifestPath, 'utf8')));
+    console.log('exit11 manifest valid');
+  } catch (e) {
+    console.error(e.message);
+    process.exitCode = 1;
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "model": "meta/muse-spark-1.3-contributor",
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    }
+  ],
+  "files": {
+    "crates/tachyon-core/examples/bench_matrix.rs": "0a563602f23370452bf119662e9a92febe08c24b71ee745564c4e87832c05329",
+    "crates/tachyon-core/src/driver.rs": "419b96a05f0e6bf41e18f54334e5161b92e4aa8e43278d451552bc8c15e2a854",
+    "docs/milestones/EXIT11_PLAN.md": "c7e8309a21f65fa3195c1507eaaab550c30b236c98fdcdbcf8386c80917a3ac9",
+    "docs/milestones/M22_TRIAL_MANIFEST.md": "bc8d3e0007e71ce626e69fcce0eb6df884c982bf67f273d6bb7c751efc12833b",
+    "fixtures/reservation-ledger/Cargo.lock": "1b81c53fb605b1aa5ce7f9ba46b60eb64bf8f62e53c50aaf4771c65ceaf74855",
+    "fixtures/reservation-ledger/Cargo.toml": "72fa42df8468acbef58f8811f016a0d37fb8cbab61f138eb13cb241f87f58208",
+    "fixtures/reservation-ledger/README.md": "ba2c51a66cad05cce92b86f0b78dad6a0136d503be00fea9dccdc64a4478b87c",
+    "fixtures/reservation-ledger/bench.json": "d6bca0bbbc14cb88e46840eeebdb24b50e02ce4662f555c90243a31aef098805",
+    "fixtures/reservation-ledger/client/Cargo.toml": "436809d644c7bb954eeb2513a2295b4c00e946372fc3b7ade8c27dceb3b5bc28",
+    "fixtures/reservation-ledger/client/src/lib.rs": "11d33b76b99b4c2cd233d9e967e03b1522c140a1ac348530277f50326e85c909",
+    "fixtures/reservation-ledger/client/tests/api.rs": "041f6332939686b6a51e4a6e6e9b55b713725a32cc300d1df623be51f5baf9e5",
+    "fixtures/reservation-ledger/subject/Cargo.toml": "5e954955b2bb1c14ad192dc4811be2fffc163a623619c8fd92e0fb1d18dd4b11",
+    "fixtures/reservation-ledger/subject/src/lib.rs": "e6a14ebde3a02c1a1dfba19d36072bdbcf7d43310e9e7caf53b239ab884fa081",
+    "fixtures/reservation-ledger/subject/src/release.rs": "2f83f2aa5ec7854d45ac9e389c3eb22f61be5293321e8ecec1e6d49f8a662ca1",
+    "fixtures/reservation-ledger/subject/src/reserve.rs": "a385e9b7514a8004427b0fa9438fa68addd9a8041913a866b7b5c1922332f7bd",
+    "fixtures/reservation-ledger/subject/tests/holdout.rs": "5dbf3dfa16b1aee2a4eeb5204be158da398dfdd54b70103ce04c1a93fa3a0342",
+    "fixtures/reservation-ledger/subject/tests/visible.rs": "038bc39e01f64420f2a646ff4eef2273cb1006eae9024e28af52d30e2d7aabaf",
+    "fixtures/reservation-ledger/unrelated/Cargo.toml": "83e3ada0b313260f1c53a2ac3d774daf31789ced0bdab81c5e9c08daa27db272",
+    "fixtures/reservation-ledger/unrelated/src/lib.rs": "e8923230cf947b8567af2413fe80f066705297c734c1a8f9345f47447a1be15a",
+    "fixtures/solutions/reservation-ledger/subject/src/release.rs": "0aac529b7904d328dcab4b2641bcff5da754cdaa1922707f338ea85be9d36efe",
+    "fixtures/solutions/reservation-ledger/subject/src/reserve.rs": "07dc542ba2d5a49a3d064c145c749a2d574e0d7251b10f44bc78d22f08882943",
+    "scripts/exit11_manifest.mjs": "686263827fe8e35ba03e357c26a873c920eaa07def72fcdb5871d4a5d5263ac3",
+    "scripts/exit11_run.mjs": "c71b5de93e54f4a0002717097cdab1f2aa8fdec1f776a10541b97fea71a11ef3"
+  }
+}
