@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "source_commit": "a539eaa92275de4c52bf1bf3aad1302c3fcc5343",
+  "binary_sha256": "64cb7dfea0b609ffabde453262f033c27962830ca14690643ce6da5a10e6aa6e",
+  "manifest_sha256": "b44d0eae2e8df29ccf99338ed1759c464ed8fe87c34e34406770a468e7b495e8",
+  "protocol": "m23b-same-model-speed",
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    }
+  ]
+}
