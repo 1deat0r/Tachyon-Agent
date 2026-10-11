@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "source_commit": "1bbb1b94f14938d02d3e07726b243ad51f98c636",
+  "binary_sha256": "64cb7dfea0b609ffabde453262f033c27962830ca14690643ce6da5a10e6aa6e",
+  "manifest_sha256": "3ef422feca696aca96d12108ed2f63fc70da4f670e6c089729ba605acbe10345",
+  "protocol": "m26-heldout-eval",
+  "planned_order": [
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    }
+  ]
+}
