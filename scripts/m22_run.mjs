@@ -28,7 +28,7 @@ try {
   requireTrue(sha256(committed)===sha256(fs.readFileSync(path.join(root,file))),'uncommitted frozen input');
  }
  fs.mkdirSync(path.dirname(output),{recursive:true});save();
- fs.writeFileSync(metaPath,JSON.stringify({schema:1,source_commit:commit,binary_sha256:binaryHash,manifest_sha256:sha256(manifestText),protocol:protocol??'m22-matched-proximity',planned_order:plannedOrder()},null,2)+'\n',{flag:'wx'});
+ fs.writeFileSync(metaPath,JSON.stringify({schema:1,source_commit:commit,binary_sha256:binaryHash,manifest_sha256:sha256(manifestText),protocol:'m22-matched-proximity',planned_order:plannedOrder()},null,2)+'\n',{flag:'wx'});
  const fd=fs.openSync(output,'wx');
  try {
   for(const cell of plannedOrder()) {

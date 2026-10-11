@@ -46,6 +46,6 @@
     "fixtures/solutions/reservation-ledger/subject/src/release.rs": "0aac529b7904d328dcab4b2641bcff5da754cdaa1922707f338ea85be9d36efe",
     "fixtures/solutions/reservation-ledger/subject/src/reserve.rs": "07dc542ba2d5a49a3d064c145c749a2d574e0d7251b10f44bc78d22f08882943",
     "scripts/m22_manifest.mjs": "43fccca01f6caac8d60fda0f4d97c6a87d2f946efd2b14565e3484dadaa50397",
-    "scripts/m22_run.mjs": "a265f825a4c25be572b91fbbd78d75fbd73d1a8f37f8b9ea5468798cc8a13a48"
+    "scripts/m22_run.mjs": "00b586d18c0afe0404726913a0cbd8566a50e87b6e009d13bdf24fac418fcbe7"
   }
 }
