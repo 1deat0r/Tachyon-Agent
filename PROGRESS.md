@@ -4,17 +4,48 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 21 — proposed deterministic production replay of M20 failures.
-Milestone 20 is complete as an evaluation. The unchanged baseline verified
-16/20 runs; both the overall and per-cell reference conditions failed.
-Retain the exact partial repair, transport failure, and two timeout records.
-Next, prove these failure classes through deterministic production-driver
-regressions before selecting prompt, retry, or deadline changes. Production
-behavior stays unchanged. Intermittent preflight verification performance
-failures remain unresolved despite a passing FULL rerun. See
-`docs/milestones/STATEFUL_REPORT.md`.
+Milestone 22 — proposed candidate selection against the M21
+evidence. Milestone 21 is complete as deterministic
+development data: the four retained M20 failure classes
+replay through the production driver with no live calls, and
+the intermittent preflight verification performance failure
+is root-caused with its limits preserved. Production
+behavior stays unchanged. No prompt, retry, or deadline
+candidate has been selected; the M21 regressions are the
+evidence base for that selection. Any candidate must be
+frozen, measured against these regressions and new frozen
+live trials, and gated before adoption. See
+`docs/milestones/M21_REPORT.md` and
+`docs/milestones/PREFLIGHT_PERF_DIAGNOSIS.md`.
 
 ## Completed gates
+
+- 2026-10-11 Milestone 21 — deterministic production-driver replay
+  of the four retained M20 failure classes, frozen in `78ef4e1`
+  before implementation. The retained partial patch (BLAKE3-pinned)
+  applies exactly `subject/src/reserve.rs`, then the acceptance
+  gate refuses it (`required acceptance failed`) with the same
+  visible and hidden tests failing as the retained replay log;
+  one call, no retry, provider-reported usage, durable
+  `recovered_failed`. The transport error and both model-stage
+  deadlines (250 ms replay deadline, production `timeout_at`
+  mechanism) each make one attempt with no blind retry, a durable
+  `model_attempt` record with `UsageProvenance::Unknown` and no
+  counters, no mutation directory, zero workspace changes, and
+  durable `recovered_failed`.   `cargo test -p tachyon-core --test
+  m21_replay`: 4 passed, 0 failed; strict Clippy clean.
+  VERIFY tier exit 0; FULL tier exit 0 (every GATES.json
+  gate, the perf gate, `m21_replay` 4/4). Three transient
+  load-induced workspace-test flakes in earlier FULL
+  attempts (acp SIGKILL, evidence_crash seam-wait,
+  cli_surface endpoint waits) each pass alone and in
+  lighter runs; disclosed in the report. The
+  preflight verification performance failure is root-caused
+  (load-sensitive spawn latency vs a process-count-scaled budget;
+  no code, threshold, affinity, or timeout change; not reproduced
+  on demand; limits preserved). Report:
+  `docs/milestones/M21_REPORT.md`, diagnosis:
+  `docs/milestones/PREFLIGHT_PERF_DIAGNOSIS.md`.
 
 - 2026-10-06 Milestone 20 — froze two stateful cross-module tasks before
   20 live trials. Baseline verified 16/20 using 20 calls and no retries.

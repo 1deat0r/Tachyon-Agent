@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Milestone 21 deterministic failure-class replay: the four retained
+  M20 failure classes (one partial repair, one transport error, two
+  model-stage deadlines) replay through the production driver with no
+  live calls. The exact retained bytes are pinned by SHA-256 in the
+  frozen manifest and BLAKE3 in the regressions. Each replay proves
+  typed refusal or timeout, one attempt with no blind retry, unknown
+  usage where the M20 records carry none, zero writes for the
+  error classes, the retained failing tests for the partial repair,
+  and durable `recovered_failed` through the production host failure
+  path. The intermittent preflight verification performance failure
+  is root-caused as a load-sensitive wall-clock measurement against a
+  budget that scales with the process table, not with machine load;
+  no production code, threshold, affinity, or timeout changed.
+  Production behavior stays unchanged. See
+  `docs/milestones/M21_REPORT.md` and
+  `docs/milestones/PREFLIGHT_PERF_DIAGNOSIS.md`.
+
 - Milestone 20 frozen stateful cross-module baseline: independent sequence
   oracles and eight partial-repair controls across two new tasks. Baseline
   verified 16/20 trials with 20 calls and no retries; reference line unmet.

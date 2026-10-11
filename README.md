@@ -6,7 +6,7 @@ genuine unresolved uncertainty.
 
 > LLMs are reasoning accelerators, not Tachyon's operating system.
 
-**Status (Oct 2026):** Milestone 20 stateful evaluation complete.
+**Status (Oct 2026):** Milestone 21 deterministic failure-class replay complete.
 The baseline verified 16/20 runs. The registered reference line was not met.
 Four failures are retained: one partial repair, one transport error, and two
 timeouts. Protected files and completed/failed recovery passed. See the
