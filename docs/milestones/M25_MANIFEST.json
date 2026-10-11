@@ -6,7 +6,7 @@
     "crates/tachyon-acp/src/server.rs": "e1514985c18727621ba7815b8ddf9ad2f33ac5b01305437021b9caaae08985d3",
     "crates/tachyon-acp/src/turn.rs": "6f20697e58ce812aff13d343fb2e8bdcdde0c010646cc29766b61df97d45cdc6",
     "crates/tachyon-acp/tests/common/mod.rs": "90105725086cf4cf6f0668e53f8d96d87ae1966850944abb85b62e2804152482",
-    "crates/tachyon-acp/tests/session_prompt_live_model.rs": "90ccb3630c05bd3b567d568c598118571e37fd66130b294afebf3af7113ef29d",
+    "crates/tachyon-acp/tests/session_prompt_live_model.rs": "6757bf64e13daa02628a410ac835cb43f6c4c1860cd3c064bc58577d6a34474e",
     "docs/milestones/M25_PLAN.md": "3491a353327bfd6250a0f91afeee442a6591aec0dfe8d20a44bed014c7c6c139",
     "fixtures/duplicate-range/Cargo.lock": "ccef95f23ddb595565da4f6b798aeb4281a7b39c0337b1bde605c468374dee53",
     "fixtures/duplicate-range/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",

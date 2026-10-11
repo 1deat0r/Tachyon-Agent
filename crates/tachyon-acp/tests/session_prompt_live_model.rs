@@ -281,7 +281,7 @@ async fn adapter_prompt(adapter: &mut Adapter, socket: &Path, ws: &Path) -> (boo
     adapter
         .send(&format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{{"sessionId":"{session_id}","prompt":[{{"type":"text","text":{}}}]}}}}"#,
-            json!(PROMPT).as_str().unwrap_or("{}"),
+            serde_json::to_string(PROMPT).expect("prompt serializes"),
         ))
         .await;
     let (_, response_line) = adapter.read_until_response(json!(2), TURN_WAIT).await;
