@@ -13,3 +13,5 @@
 - [ ] Restart then load without approval leaves servers stopped; approved reload reconnects only the pinned set; an unpinned/unknown set on load fails closed
 - [ ] ACP-disconnect-equivalent (client gone, gateway alive) leaves live servers running; restart never auto-relaunches
 - [ ] Tests at the gateway seam (park/deny/approve-launch/handshake-failure/restart-load-fail-closed) with the fake child; store tests for status transitions
+
+**Status note (2026-10-12):** landed on main (b66b78e, in main; suites green 2026-10-12); ticket stale.

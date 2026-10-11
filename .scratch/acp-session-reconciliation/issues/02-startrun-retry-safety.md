@@ -12,3 +12,5 @@
 - [ ] Lost-response before spawn (prep refused, admission rolled back) → plain retry succeeds normally; no stale admission leak
 - [ ] No protocol/schema changes (contract-only ticket unless the red test forces a code fix)
 - [ ] Tests live at the gateway round-trip seam, reusing the existing recovery/restart helpers
+
+**Status note (2026-10-12):** landed on main (dd944e9, in main); ticket stale.

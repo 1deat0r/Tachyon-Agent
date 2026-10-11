@@ -15,3 +15,5 @@
 - [ ] No-key duplicate sends still create two tasks (legacy semantics documented in tests)
 - [ ] Tests at both seams: gateway round-trip (duplicate, conflict, restart-retry, race, legacy, turn_seq, validation) and store (same-transaction record/replay, fingerprint mismatch, unique race)
 - [ ] Capability checklist doc `docs/agents/task-creation-reconciliation-capability.md` with all 11 AGENTS.md fields, factually matching the shipped code
+
+**Status note (2026-10-12):** landed on main (dd944e9, in main); ticket stale.

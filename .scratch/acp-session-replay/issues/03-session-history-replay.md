@@ -12,3 +12,5 @@
 - [ ] Read results never create work, start runs, re-enter drivers, or replay effects (read-only projection)
 - [ ] Works for legacy sessions (no root) and sessions with a root
 - [ ] Tests at both seams: gateway round-trip restart-equality + read-only assertion, store projection ordering
+
+**Status note (2026-10-12):** landed on main as slice A (b7ae280, in main); ticket stale.

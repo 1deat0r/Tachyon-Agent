@@ -14,3 +14,5 @@
 - [ ] Sequence assignment and ordering survive a gateway/store restart
 - [ ] Existing databases migrate additively with legacy tasks sequenced deterministically by creation order
 - [ ] Tests at both seams: store uniqueness/ordering/migration, gateway round-trip incl. restart
+
+**Status note (2026-10-12):** landed on main as slice A (b7ae280, in main); ticket stale.

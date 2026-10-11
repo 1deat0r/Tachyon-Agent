@@ -26,3 +26,5 @@ BLAKE3 op hash, outcome `parked` then one-shot `granted` / `denied` /
 time. The live park stays in-memory (grants never survive a restart —
 crash semantics unchanged, fail closed); the rows are the durable audit
 trail, not the grant.
+
+**Status note (2026-10-12):** landed on main (b66b78e, in main; suites green 2026-10-12); ticket stale.

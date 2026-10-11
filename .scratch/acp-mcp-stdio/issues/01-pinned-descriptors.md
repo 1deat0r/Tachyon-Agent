@@ -23,3 +23,5 @@ left untouched; there is no delete and no whole-set replace, so a
 re-register can never silently drop a pinned server. A duplicate
 `server_id` inside one call is rejected as
 `invalid_mcp_descriptor` with nothing pinned.
+
+**Status note (2026-10-12):** landed on main (b66b78e, in main; suites green 2026-10-12); ticket stale.

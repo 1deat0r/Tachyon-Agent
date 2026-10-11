@@ -12,3 +12,5 @@
 - [ ] Root survives a gateway/store restart
 - [ ] `GetSession` is read-only: no state changes on the fetch path
 - [ ] Tests at both seams: gateway round-trip (create→fetch→restart→fetch, rejection cases, unknown id) and store-level persistence
+
+**Status note (2026-10-12):** landed on main as slice A (b7ae280, in main); ticket stale.
