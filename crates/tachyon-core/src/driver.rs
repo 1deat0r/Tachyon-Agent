@@ -298,6 +298,23 @@ fn model_system_prompt() -> Result<String, serde_json::Error> {
     ))
 }
 
+/// M23 framing candidate: output budget selection. Pure function so the
+/// default-off behavior is unit-proven: `false` keeps the production 4096.
+fn m23_output_budget(framing_fix: bool) -> u32 {
+    if framing_fix { 8192 } else { 4096 }
+}
+
+/// M23 framing candidate: terminal JSON-only reminder. Pure function:
+/// `false` returns the base prompt byte-identical.
+fn m23_system_prompt(base: String, framing_fix: bool) -> String {
+    const SUFFIX: &str = "Return only the JSON object. Do not emit reasoning, prose, or fences.";
+    if framing_fix {
+        format!("{base}\n{SUFFIX}")
+    } else {
+        base
+    }
+}
+
 fn model_evidence_package(
     objective: &str,
     contract: &AcceptanceContract,
@@ -716,19 +733,22 @@ async fn stage_model(
     // truncated this model's patches mid-JSON (`finish: length`; the same
     // prompt completes as valid JSON at 4096, ~930 completion tokens
     // including reasoning). The reserve must fit reasoning + patch text.
-    const OUTPUT_BUDGET_TOKENS: u32 = 4096;
+    // M23 candidate: EXIT-11 rows truncate exactly at 4096 (invalid_json),
+    // so the opt-in arm raises the reserve to 8192 behind `m23_framing_fix`
+    // (default off, zero behavior change).
+    let output_budget = m23_output_budget(plan.bounds.m23_framing_fix);
 
     // M12 fault point: kill here = model-call enter with no committed result.
     tachyon_tools::fault::reach("model.enter").await;
     let capabilities = provider.capabilities();
-    if capabilities.context_window_tokens <= OUTPUT_BUDGET_TOKENS {
+    if capabilities.context_window_tokens <= output_budget {
         return Err(DriveError::Provider(ModelError::InvalidRequest(format!(
             "model context window {} cannot fit the output reserve",
             capabilities.context_window_tokens
         ))));
     }
     let evidence = model_evidence_package(&plan.task_context.objective, &plan.contract, items)?;
-    let system_prompt = model_system_prompt()?;
+    let system_prompt = m23_system_prompt(model_system_prompt()?, plan.bounds.m23_framing_fix);
     let slice = assemble_slice(
         &AssembleInput {
             system_prompt: &system_prompt,
@@ -737,7 +757,7 @@ async fn stage_model(
             evidence: &evidence,
             history: &plan.task_context.history,
             total_budget_tokens: capabilities.context_window_tokens,
-            output_budget_tokens: OUTPUT_BUDGET_TOKENS,
+            output_budget_tokens: output_budget,
         },
         &SliceLineage {
             purpose: "proposal".to_owned(),
@@ -750,7 +770,7 @@ async fn stage_model(
         role: Role::Primary,
         model: plan.model.clone(),
         context,
-        max_output_tokens: OUTPUT_BUDGET_TOKENS,
+        max_output_tokens: output_budget,
         require_structured_output: capabilities.supports(ModelFeature::StructuredOutput),
     };
     let (result, calls) = model::invoke(
@@ -1213,5 +1233,25 @@ mod hard_constraint_binding_tests {
             validate_hard_constraint_bindings(std::slice::from_ref(&requirement), &unresolved)
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod m23_tests {
+    use super::{m23_output_budget, m23_system_prompt};
+
+    #[test]
+    fn m23_default_is_production_budget_and_prompt() {
+        assert_eq!(m23_output_budget(false), 4096);
+        let base = String::from("base prompt");
+        assert_eq!(m23_system_prompt(base.clone(), false), base);
+    }
+
+    #[test]
+    fn m23_candidate_raises_budget_and_appends_reminder() {
+        assert_eq!(m23_output_budget(true), 8192);
+        let out = m23_system_prompt(String::from("base prompt"), true);
+        assert!(out.starts_with("base prompt"));
+        assert!(out.contains("Return only the JSON object."));
     }
 }

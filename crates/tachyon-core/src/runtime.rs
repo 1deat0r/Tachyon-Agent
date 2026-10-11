@@ -49,6 +49,9 @@ pub struct RuntimeBounds {
     /// when false there is zero behavior change (no retry, no deadline
     /// change, observability hook only).
     pub m22_deadline_proximity_record: bool,
+    /// M23 candidate: framing fix (8192 output budget + terminal JSON-only
+    /// reminder). Default off; when false there is zero behavior change.
+    pub m23_framing_fix: bool,
 }
 
 impl Default for RuntimeBounds {
@@ -61,6 +64,7 @@ impl Default for RuntimeBounds {
             max_replacement_bytes: 1024 * 1024,
             model_deadline_ms: 120_000,
             m22_deadline_proximity_record: false,
+            m23_framing_fix: false,
         }
     }
 }
@@ -1458,6 +1462,11 @@ mod tests {
     #[test]
     fn m22_flag_default_off() {
         assert!(!RuntimeBounds::default().m22_deadline_proximity_record);
+    }
+
+    #[test]
+    fn m23_flag_default_off() {
+        assert!(!RuntimeBounds::default().m23_framing_fix);
     }
 
     #[test]

@@ -106,6 +106,7 @@ fn proposal_variant(value: Option<&str>) -> Result<&'static str, String> {
         None | Some("baseline") => Ok("baseline"),
         Some("boundary-guidance") => Ok("boundary-guidance"),
         Some("m22-proximity") => Ok("m22-proximity"),
+        Some("m23-framing") => Ok("m23-framing"),
         _ => Err("unknown benchmark proposal variant".into()),
     }
 }
@@ -675,6 +676,7 @@ async fn run_sample(
         available_checks: descriptor.available_checks.clone(),
         bounds: RuntimeBounds {
             m22_deadline_proximity_record: variant == "m22-proximity",
+            m23_framing_fix: variant == "m23-framing",
             ..RuntimeBounds::default()
         },
         cancel: tokio_util::sync::CancellationToken::new(),
@@ -1007,6 +1009,10 @@ mod candidate_tests {
         assert_eq!(
             proposal_variant(Some("m22-proximity")).unwrap(),
             "m22-proximity"
+        );
+        assert_eq!(
+            proposal_variant(Some("m23-framing")).unwrap(),
+            "m23-framing"
         );
         assert!(proposal_variant(Some("typo")).is_err());
     }
