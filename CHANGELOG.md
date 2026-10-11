@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
+
+## [0.0.1] - 2026-10-11
 
 - Milestone 21 deterministic failure-class replay: the four retained
   M20 failure classes (one partial repair, one transport error, two
