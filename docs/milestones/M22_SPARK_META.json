@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "source_commit": "bee2d92345c9c7cddd98c340d31f8bed9ca52de5",
+  "binary_sha256": "7ffa99ccdd8125a760019d676bba495702d843f4f59de0c7a614283c2fbc8b1a",
+  "manifest_sha256": "d30ff220cfb41983cc45e7d2aeba7a01f8172f32338bae0edbed6c57c32e6ed9",
+  "protocol": "m22-matched-proximity",
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 1,
+      "proposal_variant": "m22-proximity"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 2,
+      "proposal_variant": "m22-proximity"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 3,
+      "proposal_variant": "m22-proximity"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 4,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 4,
+      "proposal_variant": "m22-proximity"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 5,
+      "proposal_variant": "m22-proximity"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 5,
+      "proposal_variant": "baseline"
+    }
+  ]
+}
