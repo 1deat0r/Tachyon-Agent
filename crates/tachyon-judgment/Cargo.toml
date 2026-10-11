@@ -10,9 +10,9 @@ license.workspace = true
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
-tachyon-router = { version = "0.0.1", path = "../tachyon-router" }
-tachyon-telemetry = { version = "0.0.1", path = "../tachyon-telemetry" }
+tachyon-models = { version = "1.0.0", path = "../tachyon-models" }
+tachyon-router = { version = "1.0.0", path = "../tachyon-router" }
+tachyon-telemetry = { version = "1.0.0", path = "../tachyon-telemetry" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

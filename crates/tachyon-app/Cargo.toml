@@ -19,11 +19,11 @@ tachyon-gateway = { workspace = true }
 # M11 item 5: the gateway process builds its model provider from the
 # same FileConfig the CLI reads; these workspace crates hold the neutral
 # provider trait impls and the redaction registry the key registers with.
-tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
+tachyon-models = { version = "1.0.0", path = "../tachyon-models" }
 tachyon-protocol = { workspace = true }
 # `tachyon attach` wires the frozen TUI entrypoint (writer B crate).
-tachyon-tui = { version = "0.0.1", path = "../tachyon-tui" }
-tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
+tachyon-tui = { version = "1.0.0", path = "../tachyon-tui" }
+tachyon-tools = { version = "1.0.0", path = "../tachyon-tools" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

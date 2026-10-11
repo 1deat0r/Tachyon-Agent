@@ -13,21 +13,21 @@ serde_json = { workspace = true }
 # ADR-0006: the Task Supervisor dispatches validated evidence graphs
 # through the shared scheduler so its grants, cancellation drain and
 # unknown-outcome rules cover production reads too.
-tachyon-scheduler = { version = "0.0.1", path = "../tachyon-scheduler" }
+tachyon-scheduler = { version = "1.0.0", path = "../tachyon-scheduler" }
 tachyon-ir = { workspace = true }
 # Plan item 8: the `approval_request` journal event carries the
 # `tachyon_policy::ApprovalRequest` payload verbatim (provider-neutral).
-tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
-tachyon-retrieval = { version = "0.0.1", path = "../tachyon-retrieval" }
+tachyon-policy = { version = "1.0.0", path = "../tachyon-policy" }
+tachyon-retrieval = { version = "1.0.0", path = "../tachyon-retrieval" }
 tachyon-store = { workspace = true }
 tachyon-types = { workspace = true }
 # M11 item 6: the shared run driver compiles the evidence-graph IR and
 # executes the M8 mutation stage through these neutral crates (same
 # workspace crates as before — moved from dev-dependencies, not new).
-tachyon-mutation = { version = "0.0.1", path = "../tachyon-mutation" }
-tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
-tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
-tachyon-verify = { version = "0.0.1", path = "../tachyon-verify" }
+tachyon-mutation = { version = "1.0.0", path = "../tachyon-mutation" }
+tachyon-models = { version = "1.0.0", path = "../tachyon-models" }
+tachyon-tools = { version = "1.0.0", path = "../tachyon-tools" }
+tachyon-verify = { version = "1.0.0", path = "../tachyon-verify" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

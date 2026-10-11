@@ -17,17 +17,17 @@ tachyon-core = { workspace = true }
 # root, builds the policy ToolsContext, resolves the acceptance contract,
 # and spawns the shared driver with a configured model provider — these
 # neutral workspace crates are the same ones tachyon-core already uses.
-tachyon-models = { version = "0.0.1", path = "../tachyon-models" }
-tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
+tachyon-models = { version = "1.0.0", path = "../tachyon-models" }
+tachyon-policy = { version = "1.0.0", path = "../tachyon-policy" }
 tachyon-protocol = { workspace = true }
 # Deterministic `Query` (handoff priority 2): classify with the router,
 # answer from a fresh repository index — never a provider.
-tachyon-repo = { version = "0.0.1", path = "../tachyon-repo" }
-tachyon-router = { version = "0.0.1", path = "../tachyon-router" }
+tachyon-repo = { version = "1.0.0", path = "../tachyon-repo" }
+tachyon-router = { version = "1.0.0", path = "../tachyon-router" }
 tachyon-store = { workspace = true }
-tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
+tachyon-tools = { version = "1.0.0", path = "../tachyon-tools" }
 tachyon-types = { workspace = true }
-tachyon-verify = { version = "0.0.1", path = "../tachyon-verify" }
+tachyon-verify = { version = "1.0.0", path = "../tachyon-verify" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -39,7 +39,7 @@ uuid = { workspace = true }
 # (base_hash over the scratch fixture) and the in-flight StartRun test
 # drives a deliberately blocking provider through the ModelProvider trait.
 async-trait = { workspace = true }
-tachyon-mutation = { version = "0.0.1", path = "../tachyon-mutation" }
+tachyon-mutation = { version = "1.0.0", path = "../tachyon-mutation" }
 
 [lints]
 workspace = true

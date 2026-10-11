@@ -11,13 +11,13 @@ blake3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tachyon-ir = { workspace = true }
-tachyon-policy = { version = "0.0.1", path = "../tachyon-policy" }
-tachyon-tools = { version = "0.0.1", path = "../tachyon-tools" }
+tachyon-policy = { version = "1.0.0", path = "../tachyon-policy" }
+tachyon-tools = { version = "1.0.0", path = "../tachyon-tools" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-tachyon-retrieval = { version = "0.0.1", path = "../tachyon-retrieval" }
+tachyon-retrieval = { version = "1.0.0", path = "../tachyon-retrieval" }
 
 [lints]
 workspace = true

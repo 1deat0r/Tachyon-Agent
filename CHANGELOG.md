@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-11
+
+- v1: M22 candidate (deadline-proximity observability, default-off) measured
+  in 10 frozen live trials on `meta/muse-spark-1.3-contributor` (3v2:
+  noise) and DROPPED by unanimous G1 board; production behavior unchanged.
+  First batch went VOID on provider 402 insufficient balance and is
+  retained. See `docs/milestones/M22_DECISION_REPORT.md`.
+- v1 exits closed: 11th (same-model speed) waived with evidence and 4/5
+  board + expiry after full 0/3 vs serial 1/3 framing-bound measurement
+  (`docs/milestones/EXIT11_REPORT.md`); preflight perf follow-up selected
+  load-scaled budget by measurement and proven (`PREFLIGHT_PERF_FOLLOWUP.md`).
+- Deferred scope declined for v1 (ADRs 0009-0017). Distribution wedge: ACP
+  v1 gateway client. OpenJEV stays optional. Regression budget documented.
+  `cargo deny` green (workspace license, pinned path deps, CC0-1.0 allowed).
+
 ## [0.0.1] - 2026-10-11
 
 - Milestone 21 deterministic failure-class replay: the four retained

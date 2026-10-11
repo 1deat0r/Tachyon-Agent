@@ -18,7 +18,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
-tachyon-retrieval = { version = "0.0.1", path = "../tachyon-retrieval" }
+tachyon-retrieval = { version = "1.0.0", path = "../tachyon-retrieval" }
 tachyon-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
