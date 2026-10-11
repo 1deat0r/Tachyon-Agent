@@ -18,6 +18,7 @@ mod common;
 use common::Workspace;
 
 use std::collections::BTreeMap;
+use std::num::NonZero;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -91,9 +92,7 @@ fn load_pressure() -> f64 {
                 .find_map(|line| line.strip_prefix("procs_running ")?.trim().parse().ok())
         })
         .unwrap_or(1.0);
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let cpus = std::thread::available_parallelism().map_or(1, NonZero::get);
     let cpus = f64::from(u32::try_from(cpus).unwrap_or(u32::MAX));
     (avg / cpus.max(1.0)).max(running / cpus.max(1.0))
 }
