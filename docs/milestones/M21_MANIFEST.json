@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "replay": [
+    {
+      "cell": "reservation-ledger/full/3",
+      "failure_class": "partial_repair",
+      "evidence": "docs/milestones/STATEFUL_FAILED_RESERVATION_LEDGER_FULL_3.reserve.rs.txt"
+    },
+    {
+      "cell": "reservation-ledger/serial/3",
+      "failure_class": "transport_error",
+      "evidence": "docs/milestones/STATEFUL_SAMPLES.jsonl"
+    },
+    {
+      "cell": "reservation-ledger/full/4",
+      "failure_class": "model_stage_deadline",
+      "evidence": "docs/milestones/STATEFUL_SAMPLES.jsonl"
+    },
+    {
+      "cell": "reservation-ledger/serial/4",
+      "failure_class": "model_stage_deadline",
+      "evidence": "docs/milestones/STATEFUL_SAMPLES.jsonl"
+    }
+  ],
+  "files": {
+    "crates/tachyon-core/examples/bench_matrix.rs": "412e9826e049b4283405905337c3b2974e793363cf6e08350553aa36a95a451b",
+    "crates/tachyon-core/src/driver.rs": "419b96a05f0e6bf41e18f54334e5161b92e4aa8e43278d451552bc8c15e2a854",
+    "crates/tachyon-core/src/driver/model.rs": "fe372592f3021fcabecdc8610ff17864f32b7f83f7a8693bddf285c335dcdf46",
+    "docs/milestones/M21_PLAN.md": "56fafd235f7f1737a395726bc3f5849d5349c2c665d5fa6bea1a96beb6590a1e",
+    "docs/milestones/STATEFUL_FAILED_RESERVATION_LEDGER_FULL_3.log.txt": "b78d1af5861edd4e3a4e60514d7fac553696796831ff989a1ca81fc5e949c29d",
+    "docs/milestones/STATEFUL_FAILED_RESERVATION_LEDGER_FULL_3.release.rs.txt": "2f83f2aa5ec7854d45ac9e389c3eb22f61be5293321e8ecec1e6d49f8a662ca1",
+    "docs/milestones/STATEFUL_FAILED_RESERVATION_LEDGER_FULL_3.reserve.rs.txt": "c685014953805c5c56cc6e4c7c2aad618f215a9a1974ca0c4d917c65ef456259",
+    "docs/milestones/STATEFUL_SAMPLES.jsonl": "ad25e5b22916e42831f8c48e81bc7548d76434a1bd1578bd0261b7b828fd064c",
+    "fixtures/reservation-ledger/Cargo.lock": "1b81c53fb605b1aa5ce7f9ba46b60eb64bf8f62e53c50aaf4771c65ceaf74855",
+    "fixtures/reservation-ledger/Cargo.toml": "72fa42df8468acbef58f8811f016a0d37fb8cbab61f138eb13cb241f87f58208",
+    "fixtures/reservation-ledger/README.md": "ba2c51a66cad05cce92b86f0b78dad6a0136d503be00fea9dccdc64a4478b87c",
+    "fixtures/reservation-ledger/bench.json": "d6bca0bbbc14cb88e46840eeebdb24b50e02ce4662f555c90243a31aef098805",
+    "fixtures/reservation-ledger/client/Cargo.toml": "436809d644c7bb954eeb2513a2295b4c00e946372fc3b7ade8c27dceb3b5bc28",
+    "fixtures/reservation-ledger/client/src/lib.rs": "11d33b76b99b4c2cd233d9e967e03b1522c140a1ac348530277f50326e85c909",
+    "fixtures/reservation-ledger/client/tests/api.rs": "041f6332939686b6a51e4a6e6e9b55b713725a32cc300d1df623be51f5baf9e5",
+    "fixtures/reservation-ledger/subject/Cargo.toml": "5e954955b2bb1c14ad192dc4811be2fffc163a623619c8fd92e0fb1d18dd4b11",
+    "fixtures/reservation-ledger/subject/src/lib.rs": "e6a14ebde3a02c1a1dfba19d36072bdbcf7d43310e9e7caf53b239ab884fa081",
+    "fixtures/reservation-ledger/subject/src/release.rs": "2f83f2aa5ec7854d45ac9e389c3eb22f61be5293321e8ecec1e6d49f8a662ca1",
+    "fixtures/reservation-ledger/subject/src/reserve.rs": "a385e9b7514a8004427b0fa9438fa68addd9a8041913a866b7b5c1922332f7bd",
+    "fixtures/reservation-ledger/subject/tests/holdout.rs": "5dbf3dfa16b1aee2a4eeb5204be158da398dfdd54b70103ce04c1a93fa3a0342",
+    "fixtures/reservation-ledger/subject/tests/visible.rs": "038bc39e01f64420f2a646ff4eef2273cb1006eae9024e28af52d30e2d7aabaf",
+    "fixtures/reservation-ledger/unrelated/Cargo.toml": "83e3ada0b313260f1c53a2ac3d774daf31789ced0bdab81c5e9c08daa27db272",
+    "fixtures/reservation-ledger/unrelated/src/lib.rs": "e8923230cf947b8567af2413fe80f066705297c734c1a8f9345f47447a1be15a",
+    "fixtures/solutions/reservation-ledger/subject/src/release.rs": "0aac529b7904d328dcab4b2641bcff5da754cdaa1922707f338ea85be9d36efe",
+    "fixtures/solutions/reservation-ledger/subject/src/reserve.rs": "07dc542ba2d5a49a3d064c145c749a2d574e0d7251b10f44bc78d22f08882943",
+    "scripts/m21_manifest.mjs": "acaf2a73b064d215c9d85716c9ffff41873f52041eb6b222c844150bbe6f673f"
+  }
+}
