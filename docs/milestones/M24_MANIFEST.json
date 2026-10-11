@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "model": "meta/muse-spark-1.3-contributor",
+  "planned_order": [
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "multi-file-migration",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "multi-file-migration",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "multi-file-migration",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "auth-refresh",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "auth-refresh",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "auth-refresh",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    }
+  ],
+  "files": {
+    "crates/tachyon-core/examples/bench_matrix.rs": "ff4ed679acf39f8f9cbfe765295217f9162904629ba0c5f43c87a582c9b5519d",
+    "crates/tachyon-core/src/driver.rs": "d1c7fac1c1141e90ecace4b992f108a3036b4537c4729129aab4f3586d63e646",
+    "crates/tachyon-core/src/driver/model.rs": "fe372592f3021fcabecdc8610ff17864f32b7f83f7a8693bddf285c335dcdf46",
+    "crates/tachyon-core/src/runtime.rs": "de4067a0b8d95e1dd7cc5adef0a9639b177798d93a9f22eed906a8dd34346bc2",
+    "docs/milestones/M23_DECISION_REPORT.md": "632e4381e78a9bbe9ff1408418a7e0560e89e5b5a89c2649db66477fc1ca33ea",
+    "docs/milestones/M23_PLAN.md": "a15e187901142767a06f5083b6668bfee21117ecc91b9bb0ddf3a65c3652092b",
+    "docs/milestones/M24_PLAN.md": "331a9ad598683c93ca89844f21c4dcec5daa0c4b1a5d2e5258043078471d8983",
+    "fixtures/auth-refresh/Cargo.lock": "2be2aa24c4ed528a29450389e93f12e59a4b256d43e6b41320c353ac3d9b68cd",
+    "fixtures/auth-refresh/Cargo.toml": "bf5ed45dc54b17657abd2bf6a5e3a2a66d521491e9f037e37038a109af88c606",
+    "fixtures/auth-refresh/README.md": "20cc34cfb7e3f0d9d76115a291fd2536cb7b600a57ea54aef13983f48e687ab7",
+    "fixtures/auth-refresh/auth-session/Cargo.toml": "ab4a8099d2ebc7c496f8fdf7418b548928fb107758145e219c6a4e7858f216d4",
+    "fixtures/auth-refresh/auth-session/src/lib.rs": "c9441acd45bb1ba19e5f5cd261dd1afd48da04912a63d845e41694337826ed7e",
+    "fixtures/auth-refresh/auth-session/src/reference.rs": "cac4bd9da685fe86709978132bbe8fe621a943c1be13f5d1a068670ca69fd030",
+    "fixtures/auth-refresh/auth-session/src/session.rs": "8b6e58e39571c6605f926d2b47a0a4edf5f51c96d424bc68c42644ffad77ba98",
+    "fixtures/auth-refresh/auth-session/tests/refresh.rs": "644d436810ae6b494419ae277e308a21f81e6cb31cf58a91dc2b257444643c8b",
+    "fixtures/auth-refresh/bench.json": "19981c4a8bded436e4ee560ee797c2159557e4c6624ca57657ad945c9252d228",
+    "fixtures/auth-refresh/client/Cargo.toml": "3231c1cd82f6b35de607d6af4f249654f0e2141bc2fc4dad3a432e4f321cb1e2",
+    "fixtures/auth-refresh/client/src/lib.rs": "55d77e8de45aa453e7b4317e6001e415218e7e74cfc3cb68d7fb922d0d8bf5d4",
+    "fixtures/auth-refresh/logs/refresh.log": "e818bf616e4bca8499003344fe7ba43c46d487f2d360fcdfa9387c7b3da7fd32",
+    "fixtures/auth-refresh/migrations/001_initial.sql": "c52f65f96364b233fd849efdc8581b568dc5d9a436a5256ca76a4ec5b09d9dee",
+    "fixtures/auth-refresh/unrelated/Cargo.toml": "98ca1d8199c964408861c7d367b16701326719a4ff5f85bdfe112da2ebbb3192",
+    "fixtures/auth-refresh/unrelated/src/lib.rs": "0b21922299932f1d40fe7c6bd889d0f5862b67f7ba4cdc6422dd9d0fcedb37a3",
+    "fixtures/duplicate-range/Cargo.lock": "ccef95f23ddb595565da4f6b798aeb4281a7b39c0337b1bde605c468374dee53",
+    "fixtures/duplicate-range/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/duplicate-range/README.md": "ae154132b1e3e4f532559714f16ee5e0d61833c79dea3e91aadc2822d5ccda7a",
+    "fixtures/duplicate-range/bench.json": "95d5a25faf601673688ec8b8ec6211995f356bcec665cc0dd63979ab82d6d05f",
+    "fixtures/duplicate-range/client/Cargo.toml": "a84e649c1764d461d7c0dc799f2e2c5f1239cf902d96c7bc744a1a516dd03a9c",
+    "fixtures/duplicate-range/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/duplicate-range/client/tests/api.rs": "cddb699732c82d90dc08e2c8ab4c39a5566606c897ea72fd527ad4a28be84558",
+    "fixtures/duplicate-range/subject/Cargo.toml": "f2f8eccc6bdfec72b37239f6a28354f12389261390a43f45fd2dd86dd882055e",
+    "fixtures/duplicate-range/subject/src/implementation.rs": "c08edc4afd1e2a5345bb74cf7f96d2075f529e768d3537718969a07b3de5aa08",
+    "fixtures/duplicate-range/subject/src/lib.rs": "179a6874ff725033d928482894c7760db20dc75d8ca23c65c7d8f6d085f890a1",
+    "fixtures/duplicate-range/subject/tests/holdout.rs": "edc24075f5f75a84eeccf06d0976d2f37dcba8ebae9d62c401e90257864fa1b2",
+    "fixtures/duplicate-range/subject/tests/visible.rs": "99060c44b841d61e8803de57f110a5da9d9f97ff245099ef595a018bfd24067d",
+    "fixtures/duplicate-range/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/duplicate-range/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/multi-file-migration/Cargo.lock": "e2aad56da005d484076921fce786e7e30156a042319257fc2dffd521e7a4719d",
+    "fixtures/multi-file-migration/Cargo.toml": "bfd976a23d3241ac57549e20ac28f0ac61cea1f384f8c9fe494ec3305a563ea1",
+    "fixtures/multi-file-migration/README.md": "537843d2c4ad4da1770c6be04272321df12f8dd611532babf88dfc766b1a7ee8",
+    "fixtures/multi-file-migration/audit-unrelated/Cargo.toml": "ada28ad825e67f488a1af8d53c3ac71976d2687a9663c5e5e930487408e4af21",
+    "fixtures/multi-file-migration/audit-unrelated/src/lib.rs": "311991a0096ac9fb649f69912b47eec1c46dfb9eedb0167ede7b8efcca0cd50d",
+    "fixtures/multi-file-migration/bench.json": "e6fd9f62c0bd171b88cb1003a485bbbbf378d38a97d6a42edd78832205466106",
+    "fixtures/multi-file-migration/billing/Cargo.toml": "ae05cbb24e98de629ae027dc683294ef06b4be31275900916e416a00e7b30017",
+    "fixtures/multi-file-migration/billing/src/lib.rs": "0c86e20c14efd08d5833483c9be20ca41285af925e71830c39718efca8b3751e",
+    "fixtures/multi-file-migration/billing/src/tax.rs": "52fe0d5c1ab4465a10d9763efe3e19446978d4a012c8e6a31370985f2d094f96",
+    "fixtures/multi-file-migration/billing/tests/tax_test.rs": "221bfdeddd2ac34daeda859d9d65c808a62546ecae2b0a5a4614b8ee59159ee6",
+    "fixtures/multi-file-migration/reporting/Cargo.toml": "6c96e0b671e95f2566857852079a53d3002003324c16231fb25a13da3dbc12f1",
+    "fixtures/multi-file-migration/reporting/src/lib.rs": "789278389a09532a9b62d8986cf89c690246303ae58e805b11bc8106d8b7c220",
+    "fixtures/multi-file-migration/reporting/src/tax.rs": "bdf5f9a96193a136ef7a24a1e7540d5f4401b373b62d4f33e5479cd43fff94df",
+    "fixtures/multi-file-migration/reporting/tests/tax_test.rs": "6a0a277feac21fc0341aa056549de107df5fffebee97fad90fdc63e278075d87",
+    "fixtures/solutions/auth-refresh/auth-session/src/session.rs": "9fbac741e6fd5e06513685bd9e5665f77cf8a6b146235e24bc731eb486344a74",
+    "fixtures/solutions/duplicate-range/subject/src/implementation.rs": "6169fbdaa39bcfbb680fe6225335f85503712a3b48c9079d800cd4003a5875fd",
+    "fixtures/solutions/multi-file-migration/billing/src/tax.rs": "4a6957aa037f16a5c5fadb6ea08bca4930d427315d620d5c041808b458dc1bea",
+    "fixtures/solutions/multi-file-migration/reporting/src/tax.rs": "cd9da23446d6f2073248fe51a01ae06ed0519deb951ccf8e89373e83471fcc19",
+    "scripts/m24_manifest.mjs": "b1d99305782b06bf31e049deea5a3c9d4f4ac010161daf6bfba942dd877051b0",
+    "scripts/m24_run.mjs": "1d81f2c795c50f2381951a7dc044557f05ef18253d2302d06122d824c70b55ff"
+  }
+}
