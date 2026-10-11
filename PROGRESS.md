@@ -4,12 +4,17 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 23 — proposed framing-fix candidate (structured-output
-prompt/budget engineering) to re-run the exit-11 cell and revisit the
-M22 observations. v1.0.0 is released and tagged at `ef2f716`
-(`cargo verify full` exit 0 on the release tree). Milestone 22 is
-complete (DROPPED candidate, production unchanged); see Completed gates
-and `docs/milestones/M22_DECISION_REPORT.md`.
+Milestone 23 — framing-fix candidate FROZEN and implemented behind
+default-off flag (`RuntimeBounds::m23_framing_fix`: 8192 output budget +
+one terminal JSON-only sentence; production default unchanged at 4096).
+Frozen plan `docs/milestones/M23_PLAN.md`, trial manifest
+`docs/milestones/M23_TRIAL_MANIFEST.md`, runner `scripts/m23_run.mjs`.
+M21 replay 4/4, `cargo verify` green. Live 10-row same-model batch
+pending; adopt only on strict verified-success improvement. On adopt,
+the exit-11 cell re-runs as M23b. v1.0.0 is released and tagged at
+`ef2f716`. Milestone 22 is complete (DROPPED candidate, production
+unchanged); see Completed gates and
+`docs/milestones/M22_DECISION_REPORT.md`.
 
 Retained M21 context (complete; see Completed gates): the four retained
 M20 failure classes replay through the production driver with no live
