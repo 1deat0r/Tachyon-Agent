@@ -5,7 +5,9 @@ This file is updated by the implementing agent after every milestone.
 ## Current milestone
 
 Milestone 22 — proposed candidate selection against the M21
-evidence. Milestone 21 is complete as deterministic
+evidence. v0.0.1 is released and tagged at `bfd2692`
+(`cargo verify full` exit 0 on the release tree).
+Milestone 21 is complete as deterministic
 development data: the four retained M20 failure classes
 replay through the production driver with no live calls, and
 the intermittent preflight verification performance failure
