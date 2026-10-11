@@ -4,7 +4,7 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 23 — COMPLETE: framing fix ADOPTED as the production default
+Milestone 23 — COMPLETE (M24 evaluation below extends it): framing fix ADOPTED as the production default
 (`RuntimeBounds::m23_framing_fix = true`: 8192 output budget + one
 terminal JSON-only sentence; `false` is the explicit opt-out). Frozen
 10-row same-model batch: framing 5/5 verified (all first-attempt) vs
@@ -17,7 +17,13 @@ tagged at `ef2f716`. M23b re-ran the exit-11 cell with the fix on
 both arms: 3/3 vs 3/3 verified (zero malformed outputs; the waiver
 expiry is satisfied) but full median 40.0 s vs serial 35.9 s, so the
 narrow speed claim stays unproven (WAIVED, no overclaim) — report:
-`docs/milestones/M23B_REPORT.md`. Milestone 22 is complete (DROPPED
+`docs/milestones/M23B_REPORT.md`. Milestone 24 (evaluation, no
+production change): first pinned live-model measurement beyond
+`reservation-ledger` — duplicate-range, multi-file-migration, and
+auth-refresh verify 9/9 first-attempt on the adopted stack
+(`meta/muse-spark-1.3-contributor`); tokens reported, cost unknown, no
+generalization — report: `docs/milestones/M24_REPORT.md` (claims
+audited clean). Milestone 22 is complete (DROPPED
 candidate,
 production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
