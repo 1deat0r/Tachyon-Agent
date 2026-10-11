@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn,execFileSync} from 'node:child_process';
-import {root,protocol,manifestPath,assertFrozen,sha256,requireTrue} from './m22_manifest.mjs';
+import {root,manifestPath,assertFrozen,sha256,requireTrue} from './m22_manifest.mjs';
 const output=path.resolve(process.argv[2]??path.join(root,'target/m22/raw.jsonl'));
 const statePath=output.replace(/\.jsonl$/,'')+'.state.json';
 const metaPath=output.replace(/\.jsonl$/,'')+'.meta.json';
