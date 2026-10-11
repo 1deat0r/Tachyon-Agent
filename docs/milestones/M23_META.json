@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "source_commit": "c2f96977ba10664a9cdc18d8322cad6b549eb4ca",
+  "binary_sha256": "fdc94db71c6d9d081238be7482e60acf43214b993ab00153b36cfdd4bd786327",
+  "manifest_sha256": "5928b8552f318eb83feb88253da7740057fa3bef35a5e662b20f3218eeb299e6",
+  "protocol": "m23-matched-framing",
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 4,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 4,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 5,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "cell": 3,
+      "sample": 5,
+      "proposal_variant": "baseline"
+    }
+  ]
+}
