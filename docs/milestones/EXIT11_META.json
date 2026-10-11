@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "source_commit": "e6b01442d693bd907fcf534fc4b594eec9302270",
+  "binary_sha256": "7ffa99ccdd8125a760019d676bba495702d843f4f59de0c7a614283c2fbc8b1a",
+  "manifest_sha256": "f64727d31f96f2c3fb50b3533e2425be616dada15da57c72877dcd70586cb606",
+  "protocol": "exit11-same-model-speed",
+  "planned_order": [
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 1,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 2,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    },
+    {
+      "fixture": "reservation-ledger",
+      "mode": "serial",
+      "sample": 3,
+      "proposal_variant": "baseline"
+    }
+  ]
+}
