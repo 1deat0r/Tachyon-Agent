@@ -3284,6 +3284,20 @@ fn run_tools_context(
     )
 }
 
+/// Board-72 O1 tripwire: the Succeeded arm fires only on the
+/// `completed` label the driver journals for verified success
+/// (`stage_verify`: `Completed` → `"completed"`; anything else →
+/// `"verification_failed"`, which today always arrives as `Err` via
+/// `journal_finished`). Any other label means a future regression
+/// smuggled a non-completed outcome through `Ok` — that path must read
+/// as failure, never success. No live seam can produce such an outcome
+/// today (verified against `journal_finished`), so the contract is
+/// locked by unit tests against the driver's label vocabulary and the
+/// wiring reuses the existing failure path, not a new one.
+fn success_label_is_completed(label: Option<&str>) -> bool {
+    matches!(label, Some("completed"))
+}
+
 fn spawn_driver(
     state: &Arc<GatewayState>,
     task_id: TaskId,
@@ -3312,7 +3326,35 @@ fn spawn_driver(
                     outcome = outcome.outcome.as_deref().unwrap_or("unknown"),
                     "shared-driver run finished"
                 );
-                RunExit::Succeeded
+                let label = outcome.outcome.as_deref().unwrap_or("unknown");
+                if success_label_is_completed(outcome.outcome.as_deref()) {
+                    RunExit::Succeeded
+                } else {
+                    // O1: `Ok` without verified completion. Unreachable
+                    // through `journal_finished` today; fail closed through
+                    // a freshly recovered supervisor (the map handle is
+                    // dead) so a future regression can never read as
+                    // success — the same silence class as issue #72.
+                    let reason = redactor.redact(&format!(
+                        "driver returned success without a completed outcome: {label}"
+                    ));
+                    tracing::error!(task = %task_id, error = %reason, "shared-driver run outcome not completed");
+                    spawn_state
+                        .failures
+                        .lock()
+                        .await
+                        .insert(task_id, reason.clone());
+                    let marked = mutate(&spawn_state, task_id, move |handle| {
+                        let reason = reason.clone();
+                        async move { handle.mark_failed(reason).await }
+                    })
+                    .await;
+                    if !matches!(&marked, CommandResult::Ok { payload } if payload["task"]["status"] == "Failed")
+                    {
+                        tracing::warn!(task = %task_id, result = ?marked, "run outcome not completed but status is not Failed");
+                    }
+                    RunExit::Failed
+                }
             }
             Ok(Err(DriveError::RunCancelled)) => {
                 // A cancelled run is an operator outcome, not a run
@@ -4364,5 +4406,40 @@ mod mcp_descriptor_tests {
             .expect_err("an oversized env value must be refused");
         assert!(err.contains("16384"), "bound named in the refusal: {err}");
         assert!(!err.contains(&"v".repeat(64)), "value never echoed: {err}");
+    }
+}
+
+#[cfg(test)]
+mod success_label_tests {
+    //! Board-72 O1: the Succeeded arm fires only on the exact label the
+    //! driver journals for verified success. No live seam produces any
+    //! other label through `Ok` today, so these tests lock the contract
+    //! against the driver's label vocabulary (`stage_verify`:
+    //! `"completed"` vs `"verification_failed"`), not against the
+    //! implementation of the classifier itself.
+
+    use super::success_label_is_completed;
+
+    #[test]
+    fn completed_label_reads_as_success() {
+        assert!(success_label_is_completed(Some("completed")));
+    }
+
+    #[test]
+    fn verification_failed_label_reads_as_failure() {
+        // The exact non-completed label `stage_verify` journals.
+        assert!(!success_label_is_completed(Some("verification_failed")));
+    }
+
+    #[test]
+    fn missing_or_empty_label_reads_as_failure() {
+        assert!(!success_label_is_completed(None));
+        assert!(!success_label_is_completed(Some("")));
+    }
+
+    #[test]
+    fn label_match_is_exact() {
+        assert!(!success_label_is_completed(Some("Completed")));
+        assert!(!success_label_is_completed(Some(" completed")));
     }
 }
