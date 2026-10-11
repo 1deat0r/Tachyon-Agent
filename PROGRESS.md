@@ -4,13 +4,16 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 22 — proposed candidate selection against the M21
-evidence. v0.0.1 is released and tagged at `bfd2692`
-(`cargo verify full` exit 0 on the release tree).
-Milestone 21 is complete as deterministic
-development data: the four retained M20 failure classes
-replay through the production driver with no live calls, and
-the intermittent preflight verification performance failure
+Milestone 23 — proposed framing-fix candidate (structured-output
+prompt/budget engineering) to re-run the exit-11 cell and revisit the
+M22 observations. v1.0.0 is released and tagged at `ef2f716`
+(`cargo verify full` exit 0 on the release tree). Milestone 22 is
+complete (DROPPED candidate, production unchanged); see Completed gates
+and `docs/milestones/M22_DECISION_REPORT.md`.
+
+Retained M21 context (complete; see Completed gates): the four retained
+M20 failure classes replay through the production driver with no live
+calls, and the intermittent preflight verification performance failure
 is root-caused with its limits preserved. Production
 behavior stays unchanged. No prompt, retry, or deadline
 candidate has been selected; the M21 regressions are the
@@ -21,6 +24,16 @@ live trials, and gated before adoption. See
 `docs/milestones/PREFLIGHT_PERF_DIAGNOSIS.md`.
 
 ## Completed gates
+
+- 2026-10-11 Milestone 22 — candidate selection against the M21
+  evidence, complete: the deadline-proximity observability candidate
+  (default-off flag, zero behavior change) measured 3v2 (noise) in 10
+  frozen live trials on `meta/muse-spark-1.3-contributor` and was
+  DROPPED by unanimous G1 board; an earlier batch went VOID on
+  provider 402 insufficient balance and is retained. G2 closed the v1
+  exits (exit-11 waived with evidence 4/5 + expiry; preflight perf
+  follow-up proven; deferred scope declined in ADRs 0009-0017).
+  v1.0.0 tagged. Report: `docs/milestones/M22_DECISION_REPORT.md`.
 
 - 2026-10-11 Milestone 21 — deterministic production-driver replay
   of the four retained M20 failure classes, frozen in `78ef4e1`

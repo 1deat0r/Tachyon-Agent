@@ -4,6 +4,9 @@
 
 ## [1.0.0] - 2026-10-11
 
+- Milestone 22 candidate selection: deadline-proximity observability
+  (default-off) measured 3v2 in frozen Spark trials, DROPPED unanimous;
+  production unchanged. Earlier VOID batch retained.
 - v1: M22 candidate (deadline-proximity observability, default-off) measured
   in 10 frozen live trials on `meta/muse-spark-1.3-contributor` (3v2:
   noise) and DROPPED by unanimous G1 board; production behavior unchanged.
