@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "source_commit": "b5f37029b186074e98f105b2caa565395111f782",
+  "binary_sha256": "64cb7dfea0b609ffabde453262f033c27962830ca14690643ce6da5a10e6aa6e",
+  "manifest_sha256": "5e1f335e572f5d60d7a01ed72fcfd02772c20b83fc0325a9d9a311e8d207d7e6",
+  "protocol": "m24-heldout-eval",
+  "planned_order": [
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "duplicate-range",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "multi-file-migration",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "multi-file-migration",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "multi-file-migration",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "auth-refresh",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "auth-refresh",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "auth-refresh",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    }
+  ]
+}
