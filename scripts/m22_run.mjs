@@ -35,7 +35,7 @@ try {
    requireTrue(!interrupted,'batch interrupted');
    assertFrozen(manifest);requireTrue(sha256(fs.readFileSync(binary))===binaryHash,'binary changed during run');
    state.in_flight={...cell,started_at:new Date().toISOString()};save();
-   const command='set -a; . "$1"; set +a; export TACHYON_BENCH_LIVE=1; export TACHYON_BENCH_VARIANT="$5"; export TACHYON_LIVE_BASE_URL=https://api.xiaomimimo.com; export TACHYON_LIVE_MODEL=mimo-v2.6-flash; exec "$2" "$3" "$4" "$6"';
+   const command='set -a; . "$1"; set +a; export TACHYON_BENCH_LIVE=1; export TACHYON_BENCH_VARIANT="$5"; export TACHYON_LIVE_BASE_URL=http://127.0.0.1:14000; export TACHYON_LIVE_MODEL=meta/muse-spark-1.3-contributor; export TACHYON_LIVE_API_KEY_ENV=TACHYON_LIVE_API_KEY_UNSET; exec "$2" "$3" "$4" "$6"';
    const result=await new Promise((resolve,reject)=>{
     child=spawn('bash',['-c',command,'m22',path.join(process.env.HOME,'.config/tachyon/env'),binary,cell.fixture,cell.mode,cell.proposal_variant,String(cell.sample)],{cwd:root,stdio:['ignore','pipe','ignore']});
     let stdout='';const timer=setTimeout(()=>child.kill('SIGKILL'),310000);

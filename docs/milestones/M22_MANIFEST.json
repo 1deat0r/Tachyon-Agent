@@ -26,7 +26,7 @@
     "docs/milestones/M21_MANIFEST.json": "bc77d2ccd47ab3de76acebd4b87f71dc3d687f277d5b05a13270341aac994b30",
     "docs/milestones/M21_PLAN.md": "56fafd235f7f1737a395726bc3f5849d5349c2c665d5fa6bea1a96beb6590a1e",
     "docs/milestones/M22_PLAN.md": "c8f5f989e49c51f86e52873623b53df8f13765d963026c3ff44dae39ea2165d9",
-    "docs/milestones/M22_TRIAL_MANIFEST.md": "7af92e3e58cdb1deff1c18267f9df45abf191cbc17368ebc434f54a72eb70574",
+    "docs/milestones/M22_TRIAL_MANIFEST.md": "bc8d3e0007e71ce626e69fcce0eb6df884c982bf67f273d6bb7c751efc12833b",
     "docs/milestones/STATEFUL_SAMPLES.jsonl": "ad25e5b22916e42831f8c48e81bc7548d76434a1bd1578bd0261b7b828fd064c",
     "fixtures/reservation-ledger/Cargo.lock": "1b81c53fb605b1aa5ce7f9ba46b60eb64bf8f62e53c50aaf4771c65ceaf74855",
     "fixtures/reservation-ledger/Cargo.toml": "72fa42df8468acbef58f8811f016a0d37fb8cbab61f138eb13cb241f87f58208",
@@ -46,6 +46,6 @@
     "fixtures/solutions/reservation-ledger/subject/src/release.rs": "0aac529b7904d328dcab4b2641bcff5da754cdaa1922707f338ea85be9d36efe",
     "fixtures/solutions/reservation-ledger/subject/src/reserve.rs": "07dc542ba2d5a49a3d064c145c749a2d574e0d7251b10f44bc78d22f08882943",
     "scripts/m22_manifest.mjs": "43fccca01f6caac8d60fda0f4d97c6a87d2f946efd2b14565e3484dadaa50397",
-    "scripts/m22_run.mjs": "00b586d18c0afe0404726913a0cbd8566a50e87b6e009d13bdf24fac418fcbe7"
+    "scripts/m22_run.mjs": "9fd606ede844476b0730dce1138c24060a19163abac0ddac0d03573603d6d3d7"
   }
 }

@@ -14,6 +14,12 @@ acceptance must refuse).
 Arm order alternates by sample (candidate first on odd samples).
 Same model, endpoint, temperature 0, evidence, acceptance, full-mode path.
 Sequential, fresh workspaces. Model calls expected: 10, retries: 0.
+Model: `meta/muse-spark-1.3-contributor` via the local OMP proxy
+(`http://127.0.0.1:14000`, keyless — the proxy injects auth; the harness
+sends no Authorization header). Same model on both arms (discipline
+preserved). Switched from mimo-v2.6-flash on 2026-10-11 after the first
+batch went VOID on provider 402 insufficient balance; no valid samples
+existed under the old model, so nothing is mixed.
 
 ## Adopt/reject rule (verbatim from M22_PLAN)
 
