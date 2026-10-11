@@ -23,10 +23,13 @@ export function frozenFiles() {
     'docs/milestones/M21_MANIFEST.json',
     'docs/milestones/M21_PLAN.md',
     'docs/milestones/M22_PLAN.md',
+    'docs/milestones/M22_TRIAL_MANIFEST.md',
     'scripts/m22_manifest.mjs',
+    'scripts/m22_run.mjs',
     'crates/tachyon-core/src/runtime.rs',
     'crates/tachyon-core/src/driver.rs',
     'crates/tachyon-core/src/driver/model.rs',
+    'crates/tachyon-core/examples/bench_matrix.rs',
   ];
   return [
     ...filesUnder(path.join(root, 'fixtures', fixture)),

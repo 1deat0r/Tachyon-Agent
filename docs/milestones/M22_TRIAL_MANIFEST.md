@@ -8,8 +8,9 @@
 
 ## Rows (10 planned, matched pairs)
 
-5 samples × 2 arms on `reservation-ledger/full/3` (retained partial-repair
-cell: applies the BLAKE3-pinned partial patch, acceptance must refuse).
+5 samples × 2 arms on `reservation-ledger`/full samples 1-5 (includes the
+retained partial-repair cell sample 3: BLAKE3-pinned partial patch,
+acceptance must refuse).
 Arm order alternates by sample (candidate first on odd samples).
 Same model, endpoint, temperature 0, evidence, acceptance, full-mode path.
 Sequential, fresh workspaces. Model calls expected: 10, retries: 0.

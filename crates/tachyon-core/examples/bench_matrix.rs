@@ -105,6 +105,7 @@ fn proposal_variant(value: Option<&str>) -> Result<&'static str, String> {
     match value {
         None | Some("baseline") => Ok("baseline"),
         Some("boundary-guidance") => Ok("boundary-guidance"),
+        Some("m22-proximity") => Ok("m22-proximity"),
         _ => Err("unknown benchmark proposal variant".into()),
     }
 }
@@ -552,8 +553,7 @@ async fn run_sample(
     // uses the pinned scripted fake (LIVE_MODEL_PLAN.md: identical model
     // across every mode by construction, zero live spend by default).
     let variant = proposal_variant(std::env::var("TACHYON_BENCH_VARIANT").ok().as_deref())?;
-    let live = std::env::var("TACHYON_BENCH_LIVE").as_deref() == Ok("1");
-    let script = build_script(descriptor, &ws)?;
+    let live = std::env::var("TACHYON_BENCH_LIVE").as_deref() == Ok("1");    let script = build_script(descriptor, &ws)?;
     let (provider, model_name) = if live {
         let (provider, model) = live_provider()?;
         let mut timed = TimedProvider::live(provider);
@@ -672,7 +672,10 @@ async fn run_sample(
         },
         requested_checks: descriptor.requested_checks.clone(),
         available_checks: descriptor.available_checks.clone(),
-        bounds: RuntimeBounds::default(),
+        bounds: RuntimeBounds {
+            m22_deadline_proximity_record: variant == "m22-proximity",
+            ..RuntimeBounds::default()
+        },
         cancel: tokio_util::sync::CancellationToken::new(),
     };
     let drive_start = Instant::now();
@@ -999,6 +1002,10 @@ mod candidate_tests {
         assert_eq!(
             proposal_variant(Some("boundary-guidance")).unwrap(),
             "boundary-guidance"
+        );
+        assert_eq!(
+            proposal_variant(Some("m22-proximity")).unwrap(),
+            "m22-proximity"
         );
         assert!(proposal_variant(Some("typo")).is_err());
     }
