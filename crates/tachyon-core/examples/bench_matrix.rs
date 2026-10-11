@@ -553,7 +553,8 @@ async fn run_sample(
     // uses the pinned scripted fake (LIVE_MODEL_PLAN.md: identical model
     // across every mode by construction, zero live spend by default).
     let variant = proposal_variant(std::env::var("TACHYON_BENCH_VARIANT").ok().as_deref())?;
-    let live = std::env::var("TACHYON_BENCH_LIVE").as_deref() == Ok("1");    let script = build_script(descriptor, &ws)?;
+    let live = std::env::var("TACHYON_BENCH_LIVE").as_deref() == Ok("1");
+    let script = build_script(descriptor, &ws)?;
     let (provider, model_name) = if live {
         let (provider, model) = live_provider()?;
         let mut timed = TimedProvider::live(provider);

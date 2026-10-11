@@ -19,7 +19,7 @@
     }
   ],
   "files": {
-    "crates/tachyon-core/examples/bench_matrix.rs": "ddc2b1b01eaca07d820b67f2c2a0ddcbde6468ba3074855f7a1804cf0f077b08",
+    "crates/tachyon-core/examples/bench_matrix.rs": "0a563602f23370452bf119662e9a92febe08c24b71ee745564c4e87832c05329",
     "crates/tachyon-core/src/driver.rs": "419b96a05f0e6bf41e18f54334e5161b92e4aa8e43278d451552bc8c15e2a854",
     "crates/tachyon-core/src/driver/model.rs": "fe372592f3021fcabecdc8610ff17864f32b7f83f7a8693bddf285c335dcdf46",
     "crates/tachyon-core/src/runtime.rs": "e736f80b2d3d89d5c11cdf57221f73a01dde6ca195029a5df2855e834641a9c5",
