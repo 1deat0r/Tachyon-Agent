@@ -4,16 +4,17 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 23 — framing-fix candidate FROZEN and implemented behind
-default-off flag (`RuntimeBounds::m23_framing_fix`: 8192 output budget +
-one terminal JSON-only sentence; production default unchanged at 4096).
-Frozen plan `docs/milestones/M23_PLAN.md`, trial manifest
-`docs/milestones/M23_TRIAL_MANIFEST.md`, runner `scripts/m23_run.mjs`.
-M21 replay 4/4, `cargo verify` green. Live 10-row same-model batch
-pending; adopt only on strict verified-success improvement. On adopt,
-the exit-11 cell re-runs as M23b. v1.0.0 is released and tagged at
-`ef2f716`. Milestone 22 is complete (DROPPED candidate, production
-unchanged); see Completed gates and
+Milestone 23 — framing fix ADOPTED as the production default
+(`RuntimeBounds::m23_framing_fix = true`: 8192 output budget + one
+terminal JSON-only sentence; `false` is the explicit opt-out). Frozen
+10-row same-model batch: framing 5/5 verified (all first-attempt) vs
+baseline 2/5, with per-attempt token evidence showing the predicted
+truncation mechanism (failed baseline attempts pinned at exactly 4096
+tokens; 3/5 framing outputs exceed 4096). Report:
+`docs/milestones/M23_DECISION_REPORT.md`. Next: the exit-11 speed cell
+re-runs as M23b with the fix on both arms. v1.0.0 is released and
+tagged at `ef2f716`. Milestone 22 is complete (DROPPED candidate,
+production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
 
 Retained M21 context (complete; see Completed gates): the four retained

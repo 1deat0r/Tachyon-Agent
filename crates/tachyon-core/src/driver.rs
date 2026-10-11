@@ -298,14 +298,14 @@ fn model_system_prompt() -> Result<String, serde_json::Error> {
     ))
 }
 
-/// M23 framing candidate: output budget selection. Pure function so the
-/// default-off behavior is unit-proven: `false` keeps the production 4096.
+/// M23 framing fix (ADOPTED): output budget selection. Pure function so
+/// both branches are unit-proven: `false` is the opt-out back to 4096.
 fn m23_output_budget(framing_fix: bool) -> u32 {
     if framing_fix { 8192 } else { 4096 }
 }
 
-/// M23 framing candidate: terminal JSON-only reminder. Pure function:
-/// `false` returns the base prompt byte-identical.
+/// M23 framing fix (ADOPTED): terminal JSON-only reminder. Pure function:
+/// `false` returns the base prompt byte-identical (opt-out).
 fn m23_system_prompt(base: String, framing_fix: bool) -> String {
     const SUFFIX: &str = "Return only the JSON object. Do not emit reasoning, prose, or fences.";
     if framing_fix {
@@ -733,9 +733,9 @@ async fn stage_model(
     // truncated this model's patches mid-JSON (`finish: length`; the same
     // prompt completes as valid JSON at 4096, ~930 completion tokens
     // including reasoning). The reserve must fit reasoning + patch text.
-    // M23 candidate: EXIT-11 rows truncate exactly at 4096 (invalid_json),
-    // so the opt-in arm raises the reserve to 8192 behind `m23_framing_fix`
-    // (default off, zero behavior change).
+    // M23 framing fix (ADOPTED 5v2 + truncation-mechanism match): the
+    // reserve is 8192 behind `m23_framing_fix` (default on; `false`
+    // opts out to the 4096 legacy for matched-trial baselines).
     let output_budget = m23_output_budget(plan.bounds.m23_framing_fix);
 
     // M12 fault point: kill here = model-call enter with no committed result.

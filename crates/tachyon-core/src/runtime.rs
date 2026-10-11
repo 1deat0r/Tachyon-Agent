@@ -49,8 +49,10 @@ pub struct RuntimeBounds {
     /// when false there is zero behavior change (no retry, no deadline
     /// change, observability hook only).
     pub m22_deadline_proximity_record: bool,
-    /// M23 candidate: framing fix (8192 output budget + terminal JSON-only
-    /// reminder). Default off; when false there is zero behavior change.
+    /// M23 framing fix, ADOPTED (5v2 strict improvement +
+    /// truncation-mechanism match, `docs/milestones/M23_DECISION_REPORT.md`):
+    /// 8192 output budget + terminal JSON-only reminder. Default on;
+    /// `false` is the explicit opt-out back to the 4096 production legacy.
     pub m23_framing_fix: bool,
 }
 
@@ -64,7 +66,7 @@ impl Default for RuntimeBounds {
             max_replacement_bytes: 1024 * 1024,
             model_deadline_ms: 120_000,
             m22_deadline_proximity_record: false,
-            m23_framing_fix: false,
+            m23_framing_fix: true,
         }
     }
 }
@@ -1465,8 +1467,8 @@ mod tests {
     }
 
     #[test]
-    fn m23_flag_default_off() {
-        assert!(!RuntimeBounds::default().m23_framing_fix);
+    fn m23_flag_default_on() {
+        assert!(RuntimeBounds::default().m23_framing_fix);
     }
 
     #[test]
