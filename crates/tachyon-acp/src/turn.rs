@@ -2235,7 +2235,21 @@ async fn stream_turn(
                     // The cancel path owns this exchange: it resolves
                     // the request locally; this turn sends NO Approve
                     // and NO Deny and keeps serving (the gateway's own
-                    // terminal journal settles the prompt).
+                    // terminal journal settles the prompt). The ask WAS
+                    // announced (announcement precedes arming, and only
+                    // `Outstanding` reaches this arm), so close it here:
+                    // a locally resolved call must never stay pending
+                    // for the session's lifetime (TASK 04).
+                    if emit
+                        .send(tool_call_status_update(
+                            &session_id,
+                            &tool_call_id,
+                            "failed",
+                        ))
+                        .is_err()
+                    {
+                        tracing::warn!("client went away; dropping tool_call_update");
+                    }
                     tracing::info!(
                         %approval_id,
                         "cancelled answer resolved by session/cancel; no decision issued"

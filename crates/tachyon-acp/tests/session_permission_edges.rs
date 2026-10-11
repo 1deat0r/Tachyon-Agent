@@ -75,6 +75,16 @@ fn golden_request() -> String {
     )
 }
 
+/// The golden `tool_call_update` closing a cancel-owned exchange
+/// (TASK 04): exactly one frame, status `failed`, same toolCallId the
+/// announcement carried — a locally resolved call must close, never
+/// stay pending for the session's lifetime.
+fn golden_cancel_close() -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"{SESSION_ID}","update":{{"sessionUpdate":"tool_call_update","status":"failed","toolCallId":"{APPROVAL_ID}"}}}}}}"#
+    )
+}
+
 /// The shared cancel-during-request park script: fresh read
 /// `Executing`, the real supervisor journal order (status FIRST, then
 /// the ask), one post-park settlement read — then a terminal
@@ -157,13 +167,15 @@ async fn cancel_resolves_the_pending_request_locally_then_reports_cancelled() {
         cancel_reply, r#"{"jsonrpc":"2.0","id":2,"result":{}}"#,
         "the cancel reply is byte-pinned: {cancel_reply}"
     );
-    // Second pin: zero decision frames (Approve/Deny paths emit
-    // `tool_call_update`, request re-emissions, or anything else)
-    // appear between the cancel reply and the prompt verdict.
+    // Second pin (TASK 04): the cancel-owned exchange closes its
+    // announced tool call — exactly one `tool_call_update failed`
+    // frame, and nothing else (no Approve/Deny, no re-emissions)
+    // appears between the cancel reply and the prompt verdict.
     let (post_cancel, prompt_reply) = adapter.read_until_response(json!(1), WAIT).await;
-    assert!(
-        post_cancel.is_empty(),
-        "zero frames between the cancel reply and the prompt verdict: {post_cancel:?}"
+    assert_eq!(
+        post_cancel,
+        [golden_cancel_close()],
+        "the cancel-owned exchange closes its tool call between the cancel reply and the prompt verdict: {post_cancel:?}"
     );
     let prompt = parse_frame(&prompt_reply);
     assert!(
@@ -252,10 +264,14 @@ async fn late_permission_answer_after_cancel_is_ignored() {
         ))
         .await;
 
+    // TASK 04: the turn's cancel-owned closure emits exactly the
+    // tool_call_update failed frame; the LATE answer itself still
+    // contributes nothing (assertions below prove it granted nothing).
     let (post_cancel, prompt_reply) = adapter.read_until_response(json!(1), WAIT).await;
-    assert!(
-        post_cancel.is_empty(),
-        "the late answer must emit nothing: {post_cancel:?}"
+    assert_eq!(
+        post_cancel,
+        [golden_cancel_close()],
+        "only the cancel-owned close frame follows the late answer: {post_cancel:?}"
     );
     let prompt = parse_frame(&prompt_reply);
     assert_eq!(
