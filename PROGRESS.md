@@ -27,7 +27,11 @@ audited clean). Milestone 25 (evaluation, no production change):
 first live-model ACP prompt turns — duplicate-range verifies 3/3
 through adapter stdio (`end_turn`, clean exits, first-attempt calls;
 one voided pre-live harness fault, zero spend) — report:
-`docs/milestones/M25_REPORT.md` (claims audited clean). Milestone 22 is complete (DROPPED
+`docs/milestones/M25_REPORT.md` (claims audited clean). Milestone 26
+(evaluation, no production change): adversarial held-out cells —
+ceiling-division, signed-midpoint, atomic-transfer verify 9/9
+first-attempt; overflow trap absent on these cells with this stack —
+report: `docs/milestones/M26_REPORT.md` (claims audited clean). Milestone 22 is complete (DROPPED
 candidate,
 production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
