@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "model": "meta/muse-spark-1.3-contributor",
+  "planned_order": [
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "ceiling-division",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "signed-midpoint",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 1,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 2,
+      "proposal_variant": "m23-framing"
+    },
+    {
+      "fixture": "atomic-transfer",
+      "mode": "full",
+      "sample": 3,
+      "proposal_variant": "m23-framing"
+    }
+  ],
+  "files": {
+    "crates/tachyon-core/examples/bench_matrix.rs": "ff4ed679acf39f8f9cbfe765295217f9162904629ba0c5f43c87a582c9b5519d",
+    "crates/tachyon-core/src/driver.rs": "d1c7fac1c1141e90ecace4b992f108a3036b4537c4729129aab4f3586d63e646",
+    "crates/tachyon-core/src/driver/model.rs": "fe372592f3021fcabecdc8610ff17864f32b7f83f7a8693bddf285c335dcdf46",
+    "crates/tachyon-core/src/runtime.rs": "de4067a0b8d95e1dd7cc5adef0a9639b177798d93a9f22eed906a8dd34346bc2",
+    "docs/milestones/M24_PLAN.md": "331a9ad598683c93ca89844f21c4dcec5daa0c4b1a5d2e5258043078471d8983",
+    "docs/milestones/M26_PLAN.md": "5ebec57d7eb26cc7f8bb51e5784d93539621085f9778e0685e46993036e95833",
+    "fixtures/atomic-transfer/Cargo.lock": "4180f9e83395c4062ca9d7b45ef7e7350301adaef225259ef5c17fd3c524f4f6",
+    "fixtures/atomic-transfer/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/atomic-transfer/README.md": "f6580826401dc54a398399dfe2d20d8ef0eb44358f9b6f78be63a1816147baf2",
+    "fixtures/atomic-transfer/bench.json": "9c44f69762b75e6595501f3a5cfa3de9ba558fc4dc309b14e170f560f4d5ea0e",
+    "fixtures/atomic-transfer/client/Cargo.toml": "2c6a925482b596b6df1a1e731cbebe10c0f5ce371bbe9254723122aa4b5dd923",
+    "fixtures/atomic-transfer/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/atomic-transfer/client/tests/api.rs": "c5b2730fb08abe3afe08d440d28ad9eed2eeef95bc6c11b4c189b2579b0042de",
+    "fixtures/atomic-transfer/subject/Cargo.toml": "25c0cf1190b233947f28b00bc468ee80ede16b115c0e879ffd9c7f7e4cadbfcc",
+    "fixtures/atomic-transfer/subject/src/implementation.rs": "89cb669af9afe65b6e92119e073fa45ab19333791e17b81383affb0459448ae7",
+    "fixtures/atomic-transfer/subject/src/lib.rs": "145883e83fbece1299f8bda87f587ab45416a8765b0948844070f02d73ff5231",
+    "fixtures/atomic-transfer/subject/tests/holdout.rs": "3a3bd998ea310fa7bda4e9622e991103d4a672929fc0849ae9d3dde465ae7b92",
+    "fixtures/atomic-transfer/subject/tests/visible.rs": "231ef15748c98637d1d6b36e6f4bfa14826d318e40414c7e7d2b392a90143f12",
+    "fixtures/atomic-transfer/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/atomic-transfer/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/ceiling-division/Cargo.lock": "f055a534e83feccddaef3e315efc7a5215a2120d6a08b79a433c73bbb3fb2a54",
+    "fixtures/ceiling-division/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/ceiling-division/README.md": "dc0d8615407800ef0ee56fd4138feb0518700e18d290f420e965441fcbd9f4eb",
+    "fixtures/ceiling-division/bench.json": "1ac8d53b0895673ec8aecad23a17a0aa374397ede484aa8c2da64eedf44e01a3",
+    "fixtures/ceiling-division/client/Cargo.toml": "5d2dafc491474c134f12be7341a460001f92d27ce3cb2b9da534a6319b2c9e9d",
+    "fixtures/ceiling-division/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/ceiling-division/client/tests/api.rs": "1e8fcbdce4166404c8e2ac71bfac7e38cfd50f61faa31744df961fe6cccf6fde",
+    "fixtures/ceiling-division/subject/Cargo.toml": "88fcc88265214e26c16db18a88cf6f9a40f6f391b23acc7325ab687e56f53a0c",
+    "fixtures/ceiling-division/subject/src/implementation.rs": "67a7933c9d73bee1e689a5baf6c4ba13c4824dc6cbe948bbd89b23ccdaf29ecd",
+    "fixtures/ceiling-division/subject/src/lib.rs": "1106d0385d372484ebe9bba8ec756e3e50cfecec25982861993984eadec187c2",
+    "fixtures/ceiling-division/subject/tests/holdout.rs": "c531bc34af29b4cd26a3d78436d41935100232517b3fd298cc482a9a8db93acd",
+    "fixtures/ceiling-division/subject/tests/visible.rs": "7f1af0ea222b6868c8529f86e21e6c0a6fbd9f8d9b6cf7c70f071acdba3ca291",
+    "fixtures/ceiling-division/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/ceiling-division/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/signed-midpoint/Cargo.lock": "09e6c969729d7a0146c5c581fb7ba21cec166ff31218f1f15071db677b071440",
+    "fixtures/signed-midpoint/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/signed-midpoint/README.md": "b5755a903ed7eb2a57ad5fef1497facfd5879751684fcefb9e21ee5b52d3fd22",
+    "fixtures/signed-midpoint/bench.json": "f8b9c443c7db1a070df67f56db158a6d3c066843f5154ccc1e5c586d23124105",
+    "fixtures/signed-midpoint/client/Cargo.toml": "72266b951f27ba1ae0e9771206999d4072822acfe29bcb539f2b004a7847a91c",
+    "fixtures/signed-midpoint/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/signed-midpoint/client/tests/api.rs": "34d113c859e9dd3a30b5ae9c28981a2a31676d0b03f3c3e1ffabbd80ee4450a0",
+    "fixtures/signed-midpoint/subject/Cargo.toml": "fff177c3ba8ae50190fac93ae685157d523f0cd199eadc2bc55cf4a180b8d8e7",
+    "fixtures/signed-midpoint/subject/src/implementation.rs": "c2a882943e3b0d8c4683eedadead8d12574af22020ab89cd3f4b3008a47b9375",
+    "fixtures/signed-midpoint/subject/src/lib.rs": "5396a9ed161e53d5dbd67e9c496910cbb7673f98ae7b85c32d99db3a64e04e70",
+    "fixtures/signed-midpoint/subject/tests/holdout.rs": "df87037685ff2b489d055ed9d39a8508caaea63cbee666164fc16c02ec315423",
+    "fixtures/signed-midpoint/subject/tests/visible.rs": "49615575f345f82a6965aa401c26b9267e8a6bbb57f0348a240f601a79dd164b",
+    "fixtures/signed-midpoint/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/signed-midpoint/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/solutions/atomic-transfer/subject/src/implementation.rs": "cf91b7891a749ac858b666e5aa55aafd42accfe7d32229c7a1d24c3e6df1d96c",
+    "fixtures/solutions/ceiling-division/subject/src/implementation.rs": "810b2498a1ea8cdea36e1726cc5fae88c3c3cdbe93ed6c5cfe2b244cfb1e5bd5",
+    "fixtures/solutions/signed-midpoint/subject/src/implementation.rs": "3dddb21dd828de98e013011954b79c579a0ac671505d0966359d20819bba4904",
+    "scripts/m26_manifest.mjs": "e69694431dfbd2f5b991469532d4b31b9a1f355d5ef5f3147d0f0027f5ff6ce6",
+    "scripts/m26_run.mjs": "b3bc7ee5d0da02f3cafa906e9c4af1247ae489219cad45ac5de697e912e33d62"
+  }
+}
