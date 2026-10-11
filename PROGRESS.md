@@ -23,7 +23,11 @@ production change): first pinned live-model measurement beyond
 auth-refresh verify 9/9 first-attempt on the adopted stack
 (`meta/muse-spark-1.3-contributor`); tokens reported, cost unknown, no
 generalization — report: `docs/milestones/M24_REPORT.md` (claims
-audited clean). Milestone 22 is complete (DROPPED
+audited clean). Milestone 25 (evaluation, no production change):
+first live-model ACP prompt turns — duplicate-range verifies 3/3
+through adapter stdio (`end_turn`, clean exits, first-attempt calls;
+one voided pre-live harness fault, zero spend) — report:
+`docs/milestones/M25_REPORT.md` (claims audited clean). Milestone 22 is complete (DROPPED
 candidate,
 production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
