@@ -1,24 +1,53 @@
 ## STATE
 status: running
 origin: session
-goal: Design the ACP MCP-at-setup approval surface (#57 residue: adapter refuses non-empty mcpServers with mcp_servers_unsupported; ApproveMCPServers has no ACP answer path and mcp_approvals is gateway-in-memory) — grill + spec + ADR iff architecture changes; NO implementation until the design lands
+goal: Implement the MCP-at-setup approval surface tracer from .scratch/acp-mcp-setup/spec.md rev 2 (adapter validation+mapping, request/response transport on OutboundRequests with golden frames, timeout/deny/late-answer paths + taxonomy, capability amendment) — test-first, full verify, independent review; re-verify wire shape against schema-v1.23.0 at freeze
 goal_source: derived:open-issues
-derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done)
-phase: 2
-fixed_point: 6232334
-baseline: 6232334 + clean
-spec: none-not-yet
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done)
+phase: 4
+fixed_point: ba038c3
+baseline: ba038c3 + clean
+spec: .scratch/acp-mcp-setup/spec.md
 tasks: none-not-yet
 edges: none-not-yet
 attempts: none-not-yet
 phase_entries: none
-exec_count: 67
+exec_count: 69
 polls: 0
 skills_pin: none
-updated: 2026-10-11T23:09:04Z
+updated: 2026-10-11T23:45:00Z
+## LOG
+2026-10-11T23:45:00Z EVENT ===== GOAL ROTATION (design goal outcome success, frontier empty) =====
+2026-10-11T23:45:00Z EVENT rotations: report.md -> report-2026-10-11T23:45:00Z.md; decisions.md -> decisions-2026-10-11T23:45:00Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-11T23:45:00Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at ba038c3 (clean tree)
+2026-10-11T23:45:00Z EVENT goal intake: derived implementation tracer from rev-2 spec (natural TASK cut in prior report); ResourceLink stays deferred; #44 skipped
+2026-10-11T23:45:00Z EXEC 69 phase-4
+
+## ARCHIVE 2026-10-11T23:45:00Z
+## STATE
+status: running
+origin: session
+goal: Design the ACP MCP-at-setup approval surface (#57 residue: adapter refuses non-empty mcpServers with mcp_servers_unsupported; ApproveMCPServers has no ACP answer path and mcp_approvals is gateway-in-memory) — grill + spec + ADR iff architecture changes; NO implementation until the design lands
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done)
+phase: 7
+fixed_point: 6232334
+baseline: 6232334 + clean
+spec: .scratch/acp-mcp-setup/spec.md
+tasks: none-not-yet
+edges: none-not-yet
+attempts: none-not-yet
+phase_entries: 2=1 3=1
+exec_count: 68
+polls: 0
+skills_pin: none
+updated: 2026-10-11T23:25:00Z
 ## LOG
 2026-10-11T23:09:04Z EVENT ===== GOAL ROTATION (prior goal outcome success with review notes addressed, frontier empty) =====
-2026-10-11T23:09:04Z EVENT rotations: report.md -> report-2026-10-11T23:09:04Z.md; decisions.md -> decisions-2026-10-11T23:09:04Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-11T23:09:04Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 6232334 (clean tree)
+2026-10-11T23:09:04Z EVENT rotations: report.md -> report-2026-10-11T23:09:04Z.md; decisions.md -> decisions-2026-10-11T23:09:04Z.md (paired suffix); prior STATE archived under '
+2026-10-11T23:25:00Z EVENT Phase 2 grill done (8 Q&A from code evidence, decisions.md); Phase 3 spec frozen (.scratch/acp-mcp-setup/spec.md, DESIGN ONLY)
+2026-10-11T23:25:00Z EVENT Phase 4: no implementable units by design (goal is grill+spec); Phase 5 N/A; Phase 6 design-level (spec consistency, no code to execute) -> Phase 7 design review
+2026-10-11T23:25:00Z EXEC 68 phase-7
+## ARCHIVE 2026-10-11T23:09:04Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 6232334 (clean tree)
 2026-10-11T23:09:04Z EVENT goal intake: open issues -> #57 residue MCP-at-setup approval-surface DESIGN (grill+spec, no implementation promise); ResourceLink stays deferred (needs ADR-0005:42 evidence-access design); #44 skipped (P3 deferred)
 2026-10-11T23:09:04Z EXEC 67 phase-2
 
