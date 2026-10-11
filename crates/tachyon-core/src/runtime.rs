@@ -45,6 +45,10 @@ pub struct RuntimeBounds {
     pub max_replacement_bytes: u64,
     /// Bounded model deadline in milliseconds.
     pub model_deadline_ms: u64,
+    /// M22 candidate: record deadline-proximity marker. Default off;
+    /// when false there is zero behavior change (no retry, no deadline
+    /// change, observability hook only).
+    pub m22_deadline_proximity_record: bool,
 }
 
 impl Default for RuntimeBounds {
@@ -56,6 +60,7 @@ impl Default for RuntimeBounds {
             max_patch_files: 8,
             max_replacement_bytes: 1024 * 1024,
             model_deadline_ms: 120_000,
+            m22_deadline_proximity_record: false,
         }
     }
 }
@@ -1448,6 +1453,11 @@ mod tests {
         assert_eq!(bounds.max_evidence_bytes_per_stage, 256 * 1024);
         assert_eq!(bounds.max_patch_files, 8);
         assert_eq!(bounds.max_replacement_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn m22_flag_default_off() {
+        assert!(!RuntimeBounds::default().m22_deadline_proximity_record);
     }
 
     #[test]
