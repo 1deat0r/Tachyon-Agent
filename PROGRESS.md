@@ -4,7 +4,7 @@ This file is updated by the implementing agent after every milestone.
 
 ## Current milestone
 
-Milestone 23 — framing fix ADOPTED as the production default
+Milestone 23 — COMPLETE: framing fix ADOPTED as the production default
 (`RuntimeBounds::m23_framing_fix = true`: 8192 output budget + one
 terminal JSON-only sentence; `false` is the explicit opt-out). Frozen
 10-row same-model batch: framing 5/5 verified (all first-attempt) vs
@@ -13,7 +13,12 @@ truncation mechanism (failed baseline attempts pinned at exactly 4096
 tokens; 3/5 framing outputs exceed 4096). Report:
 `docs/milestones/M23_DECISION_REPORT.md`. Next: the exit-11 speed cell
 re-runs as M23b with the fix on both arms. v1.0.0 is released and
-tagged at `ef2f716`. Milestone 22 is complete (DROPPED candidate,
+tagged at `ef2f716`. M23b re-ran the exit-11 cell with the fix on
+both arms: 3/3 vs 3/3 verified (zero malformed outputs; the waiver
+expiry is satisfied) but full median 40.0 s vs serial 35.9 s, so the
+narrow speed claim stays unproven (WAIVED, no overclaim) — report:
+`docs/milestones/M23B_REPORT.md`. Milestone 22 is complete (DROPPED
+candidate,
 production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
 
