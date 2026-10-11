@@ -17,7 +17,7 @@ Usage `provider_reported` on every attempt.
 |---|---|---|---|---|---|---|---|
 | s1 | completed | Completed | true | true | 1 | 6317 | 739 |
 | s2 | completed | Completed | true | true | 1 | 8069 | 952 |
-| s3 | completed | Completed | true | true | 1 | 559 | 4682 |
+| s3 | completed | Completed | true | true | 1 | 4682 | 559 |
 
 Every row `verified: true` (= gateway `Completed`, which only the
 verification gate can journal). The gate ran the fixture's own
