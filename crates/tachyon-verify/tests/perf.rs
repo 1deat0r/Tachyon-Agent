@@ -92,8 +92,9 @@ fn load_pressure() -> f64 {
         })
         .unwrap_or(1.0);
     let cpus = std::thread::available_parallelism()
-        .map(|n| n.get() as f64)
-        .unwrap_or(1.0);
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let cpus = f64::from(u32::try_from(cpus).unwrap_or(u32::MAX));
     (avg / cpus.max(1.0)).max(running / cpus.max(1.0))
 }
 
