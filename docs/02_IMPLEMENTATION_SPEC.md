@@ -453,6 +453,16 @@ Responsibilities:
 - completion/verification gates;
 - crash recovery coordination.
 
+Terminal failure: any shared-driver run that ends in a drive error
+(model, transport, script, mutation, acceptance, or verification
+failure) moves the task to terminal `Failed`, journalled through the
+supervisor with the scrubbed failure reason recorded as a `run` stage
+event. Cancellation stays operator-owned (`Cancelled`); a panicking
+driver is preserved explicitly for recovery reconcile rather than
+marked. `Failed` accepts no further commands, is never resumed or
+re-entered, and restart recovery reconciles it as `Failed`, never
+`Recovering`.
+
 ---
 
 ## 16. Event separation
