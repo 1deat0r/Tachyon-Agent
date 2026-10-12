@@ -14,7 +14,7 @@ Fresh gateway + adapter + fixture copy per turn.
 | turn | link | outcome | task status | end_turn | error | expected | calls | completion ms |
 |---|---|---|---|---|---|---|---|---|
 | s1 | sibling-escape | completed | none | false | -32602/out_of_root | out_of_root | 0 | 6 |
-| s2 | oversized-in-ws | completed | none | false | -32602/oversized | oversized | 0 | 4 |
+| s2 | oversized-in-ws | completed | none | false | -32602/oversized | oversized | 0 | 5 |
 
 "Completed" here means exact-match verified: the expected taxonomy
 marker, zero turns in session history, zero model calls (asserted
