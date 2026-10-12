@@ -1,24 +1,50 @@
 ## STATE
 status: running
 origin: session
-goal: Extend MCP-at-setup to the session/load path (symmetric completion of the TASK 01 slice; session/load still refuses non-empty mcpServers) — bounded grill, spec, test-first tracer, full verify, independent review
+goal: Design ResourceLink prompt-content support for ACP turns (#57 last design-first residue; needs ADR-0005:42 bounded evidence-access resolution) — grill + spec + ADR iff architecture changes; NO implementation until the design lands
 goal_source: derived:open-issues
-derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done)
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done)
 phase: 2
-fixed_point: a269e17
-baseline: a269e17 + clean
+fixed_point: 5796611
+baseline: 5796611 + clean
 spec: none-not-yet
 tasks: none-not-yet
 edges: none-not-yet
 attempts: none-not-yet
 phase_entries: none
-exec_count: 71
+exec_count: 73
+polls: 0
+skills_pin: none
+updated: 2026-10-12T02:17:51Z
+## LOG
+2026-10-12T02:17:51Z EVENT ===== GOAL ROTATION (load TASK outcome success, frontier empty) =====
+2026-10-12T02:17:51Z EVENT rotations: report.md -> report-2026-10-12T02:17:51Z.md; decisions.md -> decisions-2026-10-12T02:17:51Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T02:17:51Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 5796611 (clean tree)
+2026-10-12T02:17:51Z EVENT goal intake: derived ResourceLink prompt-content DESIGN (last design-first residue); #44 skipped
+2026-10-12T02:17:51Z EXEC 73 phase-2
+
+## ARCHIVE 2026-10-12T02:17:51Z
+## STATE
+status: running
+origin: session
+goal: Extend MCP-at-setup to the session/load path (symmetric completion of the TASK 01 slice; session/load still refuses non-empty mcpServers) — bounded grill, spec, test-first tracer, full verify, independent review
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done)
+phase: 5
+fixed_point: a269e17
+baseline: a269e17 + clean
+spec: .scratch/acp-mcp-load/spec.md
+tasks: 01=in-progress
+edges: none-not-yet
+attempts: 01=0
+phase_entries: 2=1 3=1 4=1
+exec_count: 72
 polls: 0
 skills_pin: none
 updated: 2026-10-12T01:37:50Z
 ## LOG
 2026-10-12T01:37:50Z EVENT ===== GOAL ROTATION (TASK 01 outcome success, frontier empty) =====
-2026-10-12T01:37:50Z EVENT rotations: report.md -> report-2026-10-12T01:37:50Z.md; decisions.md -> decisions-2026-10-12T01:37:50Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T01:37:50Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at a269e17 (clean tree)
+2026-10-12T01:37:50Z EVENT rotations: report.md -> report-2026-10-12T01:37:50Z.md; decisions.md -> decisions-2026-10-12T01:37:50Z.md (paired suffix); prior STATE archived under '
+## ARCHIVE 2026-10-12T01:37:50Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at a269e17 (clean tree)
 2026-10-12T01:37:50Z EVENT goal intake: derived load-path MCP setup tracer (symmetric follow-up recorded in TASK 01); ResourceLink stays deferred; #44 skipped
 2026-10-12T01:37:50Z EXEC 71 phase-2
 
@@ -575,3 +601,5 @@ objective; stored-response JSON built inside tx for byte-stable replay; spec 'ta
 2026-10-01T10:46:40Z EVENT STATE finalized: status success; report.md written; NO commit (this invocation authorized no commit — rule 5)
 2026-10-11T23:50:00Z EVENT Phase 4 TASK 01 cut (S1 units, S2 transport, S3 paths, S4 docs+FULL+review); load path explicitly follow-up
 2026-10-11T23:50:00Z EXEC 70 phase-5
+2026-10-12T01:40:00Z EVENT Phase 2 grill (5 Q&A: assertion-not-registration) + Phase 3 spec frozen + Phase 4 TASK 01 cut (S1 assertion+tests, S2 docs+verify)
+2026-10-12T01:40:00Z EXEC 72 phase-5
