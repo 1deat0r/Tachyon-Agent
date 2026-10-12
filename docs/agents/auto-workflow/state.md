@@ -4,14 +4,15 @@ origin: session
 goal: Implement the session/attach tracer from .scratch/acp-attach/spec.md (ADR decision first: short ADR vs ADR-0005 amendment; then read-only subscribe-reader, cursor pushdown reuse, resync/error taxonomy, negative authority tests, capability amendment) — test-first, full verify, independent review
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done) | acp live resourcelink evaluation (done) | acp live failure-path evaluation (done) | acp attach/reconnect design (done)
-phase: 4
+phase: 5
 fixed_point: 8a6309a631743e803606ccd6fbc5b95ba4baf8d8
 baseline: 8a6309a631743e803606ccd6fbc5b95ba4baf8d8 + clean
 spec: .scratch/acp-attach/spec.md
-tasks: none-not-yet
-edges: none-not-yet
+tasks: 01=ready 02=pending 03=pending
+edges: 01->02 02->03 (direction: blocker->blocked)
+edges: 01->02 02->03
 attempts: none-not-yet
-phase_entries: none
+phase_entries: 4=1
 exec_count: 81
 polls: 0
 skills_pin: none
@@ -21,6 +22,9 @@ updated: 2026-10-12T03:51:07Z
 2026-10-12T03:51:07Z EVENT rotations: report.md -> report-2026-10-12T03:51:07Z.md; decisions.md -> decisions-2026-10-12T03:51:07Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T03:51:07Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 8a6309a631743e803606ccd6fbc5b95ba4baf8d8 (clean tree)
 2026-10-12T03:51:07Z EVENT goal intake: derived attach implementation tracer from frozen spec (ADR decision first); #44 skipped
 2026-10-12T03:51:07Z EXEC 81 phase-4
+2026-10-12T03:53:00Z EVENT Phase 4 (tickets) complete: 3 linear tracer tickets at .scratch/acp-attach/issues/ — 01 arm+target (ready), 02 subscription+termination (blocked by 01), 03 capability+review (blocked by 02); ADR decision: short ADR 0019 (not 0005 amendment) since wire method + taxonomy + negative authority need one citable record under governing :41
+2026-10-12T03:53:00Z EVENT ticket 01 attempt 1 started (attempts: 01=1)
+2026-10-12T03:53:00Z EXEC 82 phase-5
 
 ## ARCHIVE 2026-10-12T03:51:07Z
 ## STATE
