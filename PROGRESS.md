@@ -35,7 +35,11 @@ report: `docs/milestones/M26_REPORT.md` (claims audited clean). Milestone 27
 (evaluation, no production change): first live ResourceLink turns —
 duplicate-range verifies 3/3 through adapter stdio with one link block
 each (`end_turn`, clean exits, first-attempt) — report:
-`docs/milestones/M27_REPORT.md` (claims audited clean). Milestone 22 is complete (DROPPED
+`docs/milestones/M27_REPORT.md` (claims audited clean). Milestone 28
+(evaluation, no production change): live failure-path turns refuse
+exactly — out_of_root + oversized with zero tasks and zero model calls
+— report: `docs/milestones/M28_REPORT.md` (claims audited clean).
+Milestone 22 is complete (DROPPED
 candidate,
 production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
