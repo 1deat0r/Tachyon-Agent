@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "model": "meta/muse-spark-1.3-contributor",
+  "rows": 2,
+  "files": {
+    "crates/tachyon-acp/src/server.rs": "b65b7d4002c4d2965a3615bec6cb3fab1d25159d4a6f573dd01700df0e55fc71",
+    "crates/tachyon-acp/src/turn.rs": "b710d06fc07cb685e2abe98513b43854831fe096c4e15c2b3315d4aa5ae48083",
+    "crates/tachyon-acp/tests/common/mod.rs": "90105725086cf4cf6f0668e53f8d96d87ae1966850944abb85b62e2804152482",
+    "crates/tachyon-acp/tests/session_prompt_live_reslink_fail.rs": "eb9ae3a8c069a3bc37907a25f19908ba8b513b876f87b458f599d9aabefa50e7",
+    "docs/milestones/M28_PLAN.md": "e0111f39cf71c40db48bf43522f451396f6557a5c49a9c60b106ed9c7cf8c1f5",
+    "fixtures/duplicate-range/Cargo.lock": "ccef95f23ddb595565da4f6b798aeb4281a7b39c0337b1bde605c468374dee53",
+    "fixtures/duplicate-range/Cargo.toml": "a85746126d7c19b57c57fdd1681b9dfef35ee4ce273eccbdf6a426b637ce69c2",
+    "fixtures/duplicate-range/README.md": "ae154132b1e3e4f532559714f16ee5e0d61833c79dea3e91aadc2822d5ccda7a",
+    "fixtures/duplicate-range/bench.json": "95d5a25faf601673688ec8b8ec6211995f356bcec665cc0dd63979ab82d6d05f",
+    "fixtures/duplicate-range/client/Cargo.toml": "a84e649c1764d461d7c0dc799f2e2c5f1239cf902d96c7bc744a1a516dd03a9c",
+    "fixtures/duplicate-range/client/src/lib.rs": "ace79fa07d76aecf9197f71689d7274cf15137675b0e9cfdcf92ab9fec9ce0f9",
+    "fixtures/duplicate-range/client/tests/api.rs": "cddb699732c82d90dc08e2c8ab4c39a5566606c897ea72fd527ad4a28be84558",
+    "fixtures/duplicate-range/subject/Cargo.toml": "f2f8eccc6bdfec72b37239f6a28354f12389261390a43f45fd2dd86dd882055e",
+    "fixtures/duplicate-range/subject/src/implementation.rs": "c08edc4afd1e2a5345bb74cf7f96d2075f529e768d3537718969a07b3de5aa08",
+    "fixtures/duplicate-range/subject/src/lib.rs": "179a6874ff725033d928482894c7760db20dc75d8ca23c65c7d8f6d085f890a1",
+    "fixtures/duplicate-range/subject/tests/holdout.rs": "edc24075f5f75a84eeccf06d0976d2f37dcba8ebae9d62c401e90257864fa1b2",
+    "fixtures/duplicate-range/subject/tests/visible.rs": "99060c44b841d61e8803de57f110a5da9d9f97ff245099ef595a018bfd24067d",
+    "fixtures/duplicate-range/unrelated/Cargo.toml": "3bef934335654315370a53720f70c5975833097e61db3123549ac004128aadf4",
+    "fixtures/duplicate-range/unrelated/src/lib.rs": "c545c165ea8e9d291706f22da2d9b6c57dcd2ae8eceed9fc06e7abebb19dbcb5",
+    "fixtures/solutions/duplicate-range/subject/src/implementation.rs": "6169fbdaa39bcfbb680fe6225335f85503712a3b48c9079d800cd4003a5875fd",
+    "scripts/m28_manifest.mjs": "22b37092e2a93dae4f1c8e5f3f426b1b4500184d1b312ac2b362467a8eda1e66",
+    "scripts/m28_run.mjs": "8d014485ae2e2c9fd191ff0384cb13aee6b29ec2ac8cecfaf6b03016a1a80d0b"
+  }
+}
