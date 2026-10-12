@@ -24,7 +24,9 @@ Every row `verified: true` (= gateway `Completed`, journalled only by
 the verification gate running the fixture's own `cargo test` with the
 holdout suite). Input 2999 tokens/turn vs 2921 for the M25 text-only
 turns (+78: the link block framing + 143-byte file — the resolve path
-is visibly in the context). Cost UNKNOWN (pricing unpinned).
+is visibly in the context). Completion median 5513 ms, range
+3896–6324 ms. Tokens: 8997 in / 2466 out total. Cost UNKNOWN (pricing
+unpinned).
 
 ## Reading (within the pre-registered rules)
 
