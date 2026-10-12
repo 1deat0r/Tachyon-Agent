@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "source_commit": "d37e4abe3d63fc04c4ddc28511df8aee51d81ea4",
+  "binary_sha256": "696a8fa16ffd84787b0b8c4be53f6713b1c62d4ba818a358ca217077a7e05edc",
+  "manifest_sha256": "318cafcb11f19aec780489e611a159f7b8a5833faae073ba701e91c788e5d103",
+  "protocol": "m28-acp-live-turn",
+  "model": "meta/muse-spark-1.3-contributor"
+}
