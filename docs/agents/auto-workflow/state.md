@@ -1,24 +1,50 @@
 ## STATE
 status: running
 origin: session
-goal: Implement the ResourceLink prompt-content tracer from .scratch/acp-resourcelink/spec.md rev 2 (parse, bounded resolve, embed, taxonomy units + goldens, capability amendment) — test-first, full verify, independent review; re-verify wire shape against schema-v1.23.0 at freeze
+goal: Live ResourceLink evaluation (M25-style frozen 3-turn batch with resource_link blocks on duplicate-range through the adapter; validates the new resolve path live) — freeze plan+manifest, run, report with pre-registered rules, independent audit
 goal_source: derived:open-issues
-derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done)
-phase: 4
-fixed_point: abe0aa4
-baseline: abe0aa4 + clean
-spec: .scratch/acp-resourcelink/spec.md
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done)
+phase: 3
+fixed_point: 998facd
+baseline: 998facd + clean
+spec: none-not-yet
 tasks: none-not-yet
 edges: none-not-yet
 attempts: none-not-yet
 phase_entries: none
-exec_count: 75
+exec_count: 77
+polls: 0
+skills_pin: none
+updated: 2026-10-12T03:13:15Z
+## LOG
+2026-10-12T03:13:15Z EVENT ===== GOAL ROTATION (implementation outcome success, frontier empty) =====
+2026-10-12T03:13:15Z EVENT rotations: report.md -> report-2026-10-12T03:13:15Z.md; decisions.md -> decisions-2026-10-12T03:13:15Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T03:13:15Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 998facd (clean tree)
+2026-10-12T03:13:15Z EVENT goal intake: derived live ResourceLink evaluation (M25-style); attach deferred; #44 skipped
+2026-10-12T03:13:15Z EXEC 77 phase-3
+
+## ARCHIVE 2026-10-12T03:13:15Z
+## STATE
+status: running
+origin: session
+goal: Implement the ResourceLink prompt-content tracer from .scratch/acp-resourcelink/spec.md rev 2 (parse, bounded resolve, embed, taxonomy units + goldens, capability amendment) — test-first, full verify, independent review; re-verify wire shape against schema-v1.23.0 at freeze
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done)
+phase: 5
+fixed_point: abe0aa4
+baseline: abe0aa4 + clean
+spec: .scratch/acp-resourcelink/spec.md
+tasks: 01=in-progress
+edges: none-not-yet
+attempts: 01=0
+phase_entries: 4=1
+exec_count: 76
 polls: 0
 skills_pin: none
 updated: 2026-10-12T02:21:44Z
 ## LOG
 2026-10-12T02:21:44Z EVENT ===== GOAL ROTATION (design goal outcome success, frontier empty) =====
-2026-10-12T02:21:44Z EVENT rotations: report.md -> report-2026-10-12T02:21:44Z.md; decisions.md -> decisions-2026-10-12T02:21:44Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T02:21:44Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at abe0aa4 (clean tree)
+2026-10-12T02:21:44Z EVENT rotations: report.md -> report-2026-10-12T02:21:44Z.md; decisions.md -> decisions-2026-10-12T02:21:44Z.md (paired suffix); prior STATE archived under '
+## ARCHIVE 2026-10-12T02:21:44Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at abe0aa4 (clean tree)
 2026-10-12T02:21:44Z EVENT goal intake: derived ResourceLink implementation tracer from rev-2 spec; attach/reconnect stays deferred; #44 skipped
 2026-10-12T02:21:44Z EVENT clock note: box clock unreliable (prior 02:17:51Z rotation followed by 02:21:44Z with a full goal cycle between); ordering within session preserved via STATE sequence, absolute stamps approximate
 2026-10-12T02:21:44Z EXEC 75 phase-4
@@ -632,3 +658,5 @@ objective; stored-response JSON built inside tx for byte-stable replay; spec 'ta
 2026-10-12T01:40:00Z EXEC 72 phase-5
 2026-10-12T02:30:00Z EVENT Phase 2 grill (8 Q&A) + Phase 3 spec frozen (.scratch/acp-resourcelink/spec.md, DESIGN ONLY); Phase 4 no implementable units; Phase 5 N/A; Phase 6 design-level -> Phase 7 design review
 2026-10-12T02:30:00Z EXEC 74 phase-7
+2026-10-12T02:21:44Z EVENT Phase 4 TASK 01 cut (S1 parse, S2 resolve, S3 integrate+FULL+review)
+2026-10-12T02:21:44Z EXEC 76 phase-5
