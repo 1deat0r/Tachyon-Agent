@@ -18,3 +18,7 @@ pub use server::{
     FAKE_PROVIDER_LABEL, GatewayError, GatewayRuntime, RunningGateway, is_dangerous_mcp_env,
     is_valid_mcp_env_name, start, start_with,
 };
+/// Inherited location keys a pinned descriptor may never override.
+/// Single rule set lives in `tachyon-tools`; re-exported so adapter
+/// pre-validation consults exactly it, never a copy.
+pub use tachyon_tools::process::INHERITED_ENV_KEYS;

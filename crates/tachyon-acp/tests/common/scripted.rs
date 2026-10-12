@@ -31,6 +31,12 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 /// The one task every scripted `CreateTask` hands back (any valid UUID).
 pub const SCRIPT_TASK_ID: &str = "01990f9e-4444-7000-8000-000000000000";
 
+/// Approval id the scripted `RegisterMCPServers` answers with (TASK 01 S2).
+pub const SCRIPT_MCP_APPROVAL_ID: &str = "01990f9e-7777-7000-8000-000000000000";
+
+/// Session id the scripted `CreateSession` answers with (TASK 01 S2).
+pub const SCRIPT_SESSION_ID: &str = "01990f9e-1111-7000-8000-000000000000";
+
 /// One replay row as the subscribe ack carries it (`payload` is the
 /// journalled JSON document, encoded as a string — the real store row
 /// shape the adapter's replay parser expects).
@@ -150,6 +156,15 @@ struct ScriptState {
     /// drain-ack pin for a cancel during an outstanding permission
     /// request (ticket 03).
     cancels_seen: Mutex<Vec<String>>,
+    /// Every `RegisterMCPServers` observed, as `(session_id,
+    /// servers_json)` in call order (TASK 01 S2).
+    mcp_registers_seen: Mutex<Vec<(String, String)>>,
+    /// Every `ApproveMCPServers` observed, as `(session_id,
+    /// approval_id)` in call order (TASK 01 S2).
+    mcp_approves_seen: Mutex<Vec<(String, String)>>,
+    /// Every `DenyMCPServers` observed, as `(session_id, approval_id,
+    /// reason)` in call order (TASK 01 S2).
+    mcp_denies_seen: Mutex<Vec<(String, String, String)>>,
     /// `after_seq` of every `Subscribe` seen, in order.
     cursors: Mutex<Vec<i64>>,
     /// Total `GetTask` calls observed.
@@ -186,6 +201,9 @@ impl ScriptState {
             approvals_seen: Mutex::new(Vec::new()),
             denies_seen: Mutex::new(Vec::new()),
             cancels_seen: Mutex::new(Vec::new()),
+            mcp_registers_seen: Mutex::new(Vec::new()),
+            mcp_approves_seen: Mutex::new(Vec::new()),
+            mcp_denies_seen: Mutex::new(Vec::new()),
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
             create_task_calls: AtomicUsize::new(0),
@@ -341,6 +359,39 @@ impl ScriptedGateway {
             .clone()
     }
 
+    /// Every `RegisterMCPServers` the adapter issued, as
+    /// `(session_id, servers_json)` in call order.
+    #[must_use]
+    pub fn mcp_registers_seen(&self) -> Vec<(String, String)> {
+        self.state
+            .mcp_registers_seen
+            .lock()
+            .expect("mcp registers lock")
+            .clone()
+    }
+
+    /// Every `ApproveMCPServers` the adapter issued, as `(session_id,
+    /// approval_id)` in call order.
+    #[must_use]
+    pub fn mcp_approves_seen(&self) -> Vec<(String, String)> {
+        self.state
+            .mcp_approves_seen
+            .lock()
+            .expect("mcp approves lock")
+            .clone()
+    }
+
+    /// Every `DenyMCPServers` the adapter issued, as `(session_id,
+    /// approval_id, reason)` in call order.
+    #[must_use]
+    pub fn mcp_denies_seen(&self) -> Vec<(String, String, String)> {
+        self.state
+            .mcp_denies_seen
+            .lock()
+            .expect("mcp denies lock")
+            .clone()
+    }
+
     /// Stops accepting; connection handlers end on their own when the
     /// adapter's sockets close.
     pub fn shutdown(&self) {
@@ -430,6 +481,99 @@ fn get_session_answer(state: &ScriptState, session_id: &tachyon_types::SessionId
 /// Answers one scripted command: the result plus the frames to push
 /// right after its response (the scripted reaction `Subscribe` and
 /// `Approve` carry).
+/// Scripted MCP-at-setup answers (TASK 01 S2): register pins the
+/// observed set and answers the parked approval id; approve/deny record
+/// and answer minimally. No post steps on any arm.
+/// Scripted `CancelTask`: records the id and broadcasts the terminal
+/// journal to every subscriber (the real supervisor journals terminal
+/// `Cancelled` to every live subscriber; the response itself is the
+/// drain acknowledgement).
+fn script_cancel_task(
+    state: &ScriptState,
+    task_id: &tachyon_types::TaskId,
+) -> (CommandResult, Vec<Step>) {
+    state
+        .cancels_seen
+        .lock()
+        .expect("cancels lock")
+        .push(task_id.to_string());
+    // The real supervisor journals the terminal `Cancelled`
+    // status to EVERY live subscriber — the turn's subscription
+    // is a different connection than this cancel — so the
+    // fixture BROADCASTS it (no `post` on this connection: one
+    // copy per subscriber, never doubled). The response itself
+    // is the drain acknowledgement.
+    state.broadcast(&[step_frame(Step::Journal {
+        seq: 6,
+        kind: "status",
+        payload: status_payload("Cancelled"),
+    })]);
+    (ok(json!({ "task": task_status("Cancelled") })), Vec::new())
+}
+fn script_mcp_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<Step>) {
+    match command {
+        Command::RegisterMCPServers {
+            session_id,
+            servers,
+        } => {
+            state
+                .mcp_registers_seen
+                .lock()
+                .expect("mcp registers lock")
+                .push((
+                    session_id.to_string(),
+                    serde_json::to_string(&servers).expect("servers serialize"),
+                ));
+            let inventory: Vec<serde_json::Value> = servers
+                .iter()
+                .map(|server| {
+                    serde_json::json!({"server_id": server.server_id, "status": "awaiting_approval"})
+                })
+                .collect();
+            (
+                ok(
+                    serde_json::json!({"servers": inventory, "approval_id": SCRIPT_MCP_APPROVAL_ID}),
+                ),
+                Vec::new(),
+            )
+        }
+        Command::ApproveMCPServers {
+            session_id,
+            approval_id,
+        } => {
+            state
+                .mcp_approves_seen
+                .lock()
+                .expect("mcp approves lock")
+                .push((session_id.to_string(), approval_id.to_string()));
+            (ok(json!({ "servers": [] })), Vec::new())
+        }
+        Command::DenyMCPServers {
+            session_id,
+            approval_id,
+            reason,
+        } => {
+            state
+                .mcp_denies_seen
+                .lock()
+                .expect("mcp denies lock")
+                .push((
+                    session_id.to_string(),
+                    approval_id.to_string(),
+                    reason.clone(),
+                ));
+            (ok(json!({ "refused": true })), Vec::new())
+        }
+        _ => (
+            refused(
+                "script_exhausted",
+                "script_mcp_answer called for a non-MCP command",
+            ),
+            Vec::new(),
+        ),
+    }
+}
+
 fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<Step>) {
     let mut post: Vec<Step> = Vec::new();
     let result = match command {
@@ -438,6 +582,7 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             "protocol_version": PROTOCOL_VERSION,
         })),
         Command::GetSession { session_id } => get_session_answer(state, session_id),
+        Command::CreateSession { .. } => ok(json!({ "session_id": SCRIPT_SESSION_ID })),
         Command::CreateTask { .. } => {
             state.create_task_calls.fetch_add(1, Ordering::SeqCst);
             ok(json!({ "task_id": SCRIPT_TASK_ID }))
@@ -453,6 +598,13 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             }
         }
         Command::StartRun { .. } => ok(json!({ "started": true })),
+        Command::RegisterMCPServers { .. }
+        | Command::ApproveMCPServers { .. }
+        | Command::DenyMCPServers { .. } => {
+            let (result, post) = script_mcp_answer(state, command);
+            debug_assert!(post.is_empty(), "MCP arms queue no post steps");
+            result
+        }
         Command::Approve {
             task_id,
             approval_id,
@@ -485,23 +637,9 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             result
         }
         Command::CancelTask { task_id } => {
-            state
-                .cancels_seen
-                .lock()
-                .expect("cancels lock")
-                .push(task_id.to_string());
-            // The real supervisor journals the terminal `Cancelled`
-            // status to EVERY live subscriber — the turn's subscription
-            // is a different connection than this cancel — so the
-            // fixture BROADCASTS it (no `post` on this connection: one
-            // copy per subscriber, never doubled). The response itself
-            // is the drain acknowledgement.
-            state.broadcast(&[step_frame(Step::Journal {
-                seq: 6,
-                kind: "status",
-                payload: status_payload("Cancelled"),
-            })]);
-            ok(json!({ "task": task_status("Cancelled") }))
+            let (result, cancel_post) = script_cancel_task(state, task_id);
+            post = cancel_post;
+            result
         }
         Command::Subscribe { after_seq, .. } => {
             state.cursors.lock().expect("cursor lock").push(*after_seq);

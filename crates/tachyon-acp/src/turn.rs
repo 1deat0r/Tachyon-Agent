@@ -338,16 +338,7 @@ pub(crate) fn map_mcp_server(entry: &Value) -> Result<McpServerDescriptor, Handl
             return Err(invalid("mcpServers args holds at most 32 entries"));
         }
         for arg in list {
-            let value = arg
-                .as_str()
-                .ok_or_else(|| invalid("mcpServers args must be strings of at most 4KiB"))?;
-            if value.len() > 4096 || value.contains('\0') {
-                return Err(invalid("mcpServers args must be strings of at most 4KiB"));
-            }
-            args.push(McpArgEntry {
-                value: value.to_owned(),
-                secret: true,
-            });
+            args.push(map_mcp_arg(arg, &invalid)?);
         }
     }
     let mut env = Vec::new();
@@ -356,35 +347,7 @@ pub(crate) fn map_mcp_server(entry: &Value) -> Result<McpServerDescriptor, Handl
             .as_array()
             .ok_or_else(|| invalid("mcpServers env must be an array"))?;
         for entry in list {
-            let pair = entry
-                .as_object()
-                .ok_or_else(|| invalid("mcpServers env entries must be {name, value} objects"))?;
-            let name = pair
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("mcpServers env entries require a name"))?;
-            let value = pair
-                .get("value")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("mcpServers env entries require a string value"))?;
-            if !tachyon_gateway::is_valid_mcp_env_name(name) {
-                return Err(invalid(
-                    "mcpServers env names must match [A-Za-z_][A-Za-z0-9_]*",
-                ));
-            }
-            if value.len() > 16384 {
-                return Err(invalid("mcpServers env values hold at most 16KiB"));
-            }
-            if tachyon_gateway::is_dangerous_mcp_env(name) {
-                return Err(invalid(
-                    "mcpServers env names must not override loader state",
-                ));
-            }
-            env.push(McpEnvEntry {
-                name: name.to_owned(),
-                value: value.to_owned(),
-                secret: true,
-            });
+            env.push(map_mcp_env_entry(entry, &invalid)?);
         }
     }
     Ok(McpServerDescriptor {
@@ -395,20 +358,90 @@ pub(crate) fn map_mcp_server(entry: &Value) -> Result<McpServerDescriptor, Handl
     })
 }
 
-/// Standing refusal for non-empty `mcpServers` until TASK 01 S2 wires
-/// the approval flow: byte-identical code and message to the previous
-/// parse-time refusal, so the wire contract does not move under S1.
-pub(crate) fn mcp_setup_not_yet_wired() -> HandlerError {
-    HandlerError::invalid(
-        "MCP servers at session setup are not supported yet; mcpServers must be empty",
-        "mcp_servers_unsupported",
-    )
+/// Maps one argv entry, pinning `secret: true` at the external
+/// trust boundary (spec §Q3).
+fn map_mcp_arg(
+    arg: &Value,
+    invalid: &dyn Fn(&str) -> HandlerError,
+) -> Result<McpArgEntry, HandlerError> {
+    let value = arg
+        .as_str()
+        .ok_or_else(|| invalid("mcpServers args must be strings of at most 4KiB"))?;
+    if value.len() > 4096 || value.contains('\0') {
+        return Err(invalid("mcpServers args must be strings of at most 4KiB"));
+    }
+    Ok(McpArgEntry {
+        value: value.to_owned(),
+        secret: true,
+    })
+}
+
+/// Maps one env entry against the shared ticket-01 rule set, pinning
+/// `secret: true` (spec §Q3). Inherited location keys are refused like
+/// loader/interpreter state: the adapter never overrides them.
+fn map_mcp_env_entry(
+    entry: &Value,
+    invalid: &dyn Fn(&str) -> HandlerError,
+) -> Result<McpEnvEntry, HandlerError> {
+    let pair = entry
+        .as_object()
+        .ok_or_else(|| invalid("mcpServers env entries must be {name, value} objects"))?;
+    let name = pair
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("mcpServers env entries require a name"))?;
+    let value = pair
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("mcpServers env entries require a string value"))?;
+    if !tachyon_gateway::is_valid_mcp_env_name(name) {
+        return Err(invalid(
+            "mcpServers env names must match [A-Za-z_][A-Za-z0-9_]*",
+        ));
+    }
+    if value.len() > 16384 {
+        return Err(invalid("mcpServers env values hold at most 16KiB"));
+    }
+    if tachyon_gateway::is_dangerous_mcp_env(name) {
+        return Err(invalid(
+            "mcpServers env names must not override loader state",
+        ));
+    }
+    if tachyon_gateway::INHERITED_ENV_KEYS.contains(&name) {
+        return Err(invalid(
+            "mcpServers env must not override inherited location keys",
+        ));
+    }
+    Ok(McpEnvEntry {
+        name: name.to_owned(),
+        value: value.to_owned(),
+        secret: true,
+    })
 }
 
 /// Maps every `session/new` server entry, failing the whole call on the
 /// first invalid descriptor (fail closed: no partial pin downstream).
+/// Duplicate server ids in one call are refused like the gateway: the
+/// whole call fails before any session exists.
 pub(crate) fn map_mcp_servers(entries: &[Value]) -> Result<Vec<McpServerDescriptor>, HandlerError> {
-    entries.iter().map(map_mcp_server).collect()
+    let mut mapped = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let descriptor = map_mcp_server(entry)?;
+        if mapped
+            .iter()
+            .any(|known: &McpServerDescriptor| known.server_id == descriptor.server_id)
+        {
+            return Err(HandlerError::invalid(
+                format!(
+                    "server '{}': duplicate server id in one call",
+                    descriptor.server_id
+                ),
+                "invalid_mcp_descriptor",
+            ));
+        }
+        mapped.push(descriptor);
+    }
+    Ok(mapped)
 }
 
 /// Validated `session/prompt` params.
@@ -820,6 +853,12 @@ impl OutboundRequests {
             .remove(id);
     }
 
+    /// Abandons one armed slot whose waiter went away (TASK 01): a
+    /// late answer finds no slot and is diagnosed by the caller.
+    pub(crate) fn abandon_slot(&self, id: &RpcId) {
+        self.disarm(id);
+    }
+
     /// Drops every armed slot (client EOF): every waiting turn wakes as
     /// disconnected instead of waiting out the turn deadline.
     pub(crate) fn clear(&self) {
@@ -1066,7 +1105,7 @@ fn tool_call_status_update(session_id: &str, tool_call_id: &str, status: &str) -
 /// `allow_once` option. Every other shape is NOT a grant here — deny
 /// and fail-closed settlement are the fail-closed slice's job; this
 /// ticket only ever grants on an exact match (ADR-0005:47-48).
-fn is_allow_once(response: &Value) -> bool {
+pub(crate) fn is_allow_once(response: &Value) -> bool {
     response.get("outcome").and_then(Value::as_str) == Some("selected")
         && response.get("optionId").and_then(Value::as_str) == Some("allow_once")
 }
@@ -1074,7 +1113,7 @@ fn is_allow_once(response: &Value) -> bool {
 /// The strict reject gate: `outcome: "selected"` with the offered
 /// `reject_once` option (the symmetric twin of [`is_allow_once`]) —
 /// the one non-grant answer this ticket settles as an explicit `Deny`.
-fn is_reject_once(response: &Value) -> bool {
+pub(crate) fn is_reject_once(response: &Value) -> bool {
     response.get("outcome").and_then(Value::as_str) == Some("selected")
         && response.get("optionId").and_then(Value::as_str) == Some("reject_once")
 }
@@ -1363,7 +1402,6 @@ impl PermissionBridge {
 /// the sequential-turn guard (whose slots also publish each active
 /// turn's task id for `session/cancel`) plus the per-call
 /// idempotency-key registry.
-#[derive(Debug, Default)]
 pub(crate) struct SessionState {
     /// Sessions with a turn in flight → the watch carrying that turn's
     /// task id once `CreateTask` published it (`None` until then).
@@ -1378,6 +1416,14 @@ pub(crate) struct SessionState {
     /// route guard that keeps the turn from deciding an exchange the
     /// cancel path owns (ADR-0005:49: zero decision frames on cancel).
     cancels_in_flight: Mutex<HashSet<String>>,
+    /// In-flight + completed MCP-at-setup outcomes by call id (TASK
+    /// 01): a retried `session/new` coalesces onto the pending setup or
+    /// replays the stored answer instead of creating a second session.
+    mcp_setups: Mutex<HashMap<RpcId, watch::Receiver<Option<Outbound>>>>,
+    /// Consumed MCP approval request ids (TASK 01): a late client
+    /// answer for one is answered with the typed `stale_mcp_approval`
+    /// diagnostic instead of dropping silently.
+    consumed_mcp_approvals: Mutex<HashSet<RpcId>>,
     /// Session → the reply-slot id its turn currently has OUTSTANDING
     /// (`session/request_permission` awaiting the client). The cancel
     /// path resolves this slot locally through
@@ -1386,7 +1432,89 @@ pub(crate) struct SessionState {
     outstanding: Mutex<HashMap<String, RpcId>>,
 }
 
+impl std::fmt::Debug for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionState")
+            .field("active", &self.active)
+            .field("calls", &self.calls)
+            .field("requests", &self.requests)
+            .field("cancels_in_flight", &self.cancels_in_flight)
+            .field("outstanding", &self.outstanding)
+            .field(
+                "mcp_setups",
+                &self.mcp_setups.lock().map(|setups| setups.len()),
+            )
+            .field(
+                "consumed_mcp_approvals",
+                &self.consumed_mcp_approvals.lock().map(|ids| ids.len()),
+            )
+            .finish()
+    }
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            active: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+            requests: OutboundRequests::default(),
+            cancels_in_flight: Mutex::new(HashSet::new()),
+            outstanding: Mutex::new(HashMap::new()),
+            mcp_setups: Mutex::new(HashMap::new()),
+            consumed_mcp_approvals: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
 impl SessionState {
+    /// Subscribe to an in-flight or completed MCP-at-setup outcome
+    /// (TASK 01): `None` when no setup runs for this call id.
+    pub(crate) fn mcp_setup_subscribe(
+        &self,
+        id: &RpcId,
+    ) -> Option<watch::Receiver<Option<Outbound>>> {
+        self.mcp_setups
+            .lock()
+            .expect("mcp setup lock poisoned")
+            .get(id)
+            .cloned()
+    }
+
+    /// Publish a fresh MCP-at-setup outcome channel for this call id;
+    /// returns `false` when one already exists (caller coalesces).
+    pub(crate) fn mcp_setup_publish(&self, id: RpcId) -> Option<watch::Sender<Option<Outbound>>> {
+        let mut setups = self.mcp_setups.lock().expect("mcp setup lock poisoned");
+        if setups.contains_key(&id) {
+            return None;
+        }
+        let (sender, receiver) = watch::channel(None);
+        setups.insert(id, receiver);
+        Some(sender)
+    }
+
+    /// Remember a consumed MCP approval request id so a late client
+    /// answer is diagnosed instead of dropped silently (TASK 01).
+    pub(crate) fn remember_mcp_approval(&self, id: RpcId) {
+        self.consumed_mcp_approvals
+            .lock()
+            .expect("consumed approvals lock poisoned")
+            .insert(id);
+    }
+
+    /// Abandons one armed outbound slot (TASK 01 setup waits).
+    pub(crate) fn abandon_mcp_slot(&self, id: &RpcId) {
+        self.requests.abandon_slot(id);
+    }
+
+    /// Take a remembered consumed id once (stale-answer diagnostic
+    /// fires exactly once per id; later duplicates drop silently).
+    pub(crate) fn take_consumed_mcp_approval(&self, id: &RpcId) -> bool {
+        self.consumed_mcp_approvals
+            .lock()
+            .expect("consumed approvals lock poisoned")
+            .remove(id)
+    }
+
     /// The outbound-request reply registry shared by turns and the
     /// serve loop.
     pub(crate) fn requests(&self) -> &OutboundRequests {
@@ -2902,7 +3030,7 @@ mod tests {
         assert_eq!(non_objects.data, json!("invalid_params"));
     }
 
-    fn mcp_entry(pairs: serde_json::Value) -> Value {
+    fn mcp_entry(pairs: &serde_json::Value) -> Value {
         let mut base = serde_json::Map::new();
         base.insert("transport".to_owned(), json!({"type": "stdio"}));
         base.insert("name".to_owned(), json!("s1"));
@@ -2917,7 +3045,7 @@ mod tests {
 
     #[test]
     fn map_mcp_server_accepts_valid_pins_secrets() {
-        let descriptor = map_mcp_server(&mcp_entry(json!({
+        let descriptor = map_mcp_server(&mcp_entry(&json!({
             "args": ["--flag"],
             "env": [{"name": "MCP_TOKEN", "value": "raw-secret-value"}],
         })))
@@ -2940,69 +3068,76 @@ mod tests {
         // with the typed descriptor refusal (fail closed, pins nothing).
         let rows: Vec<(Value, &str)> = vec![
             (
-                mcp_entry(json!({"transport": {"type": "tcp"}})),
+                mcp_entry(&json!({"transport": {"type": "tcp"}})),
                 "non-stdio transport",
             ),
-            (mcp_entry(json!({"transport": {}})), "absent transport type"),
+            (
+                mcp_entry(&json!({"transport": {}})),
+                "absent transport type",
+            ),
             (
                 {
-                    let mut entry = mcp_entry(json!({}));
+                    let mut entry = mcp_entry(&json!({}));
                     entry.as_object_mut().unwrap().remove("name");
                     entry
                 },
                 "missing name is never derived",
             ),
-            (mcp_entry(json!({"name": "has/slash"})), "slash in name"),
-            (mcp_entry(json!({"name": ""})), "empty name"),
+            (mcp_entry(&json!({"name": "has/slash"})), "slash in name"),
+            (mcp_entry(&json!({"name": ""})), "empty name"),
             (
-                mcp_entry(json!({"command": "relative/bin"})),
+                mcp_entry(&json!({"command": "relative/bin"})),
                 "relative command",
             ),
             (
                 {
-                    let mut entry = mcp_entry(json!({}));
+                    let mut entry = mcp_entry(&json!({}));
                     entry.as_object_mut().unwrap().remove("command");
                     entry
                 },
                 "missing command",
             ),
             (
-                mcp_entry(json!({"args": vec!["x".to_string(); 33]})),
+                mcp_entry(&json!({"args": vec!["x".to_string(); 33]})),
                 "33 args over the bound",
             ),
             (
-                mcp_entry(json!({"args": ["x".repeat(4097)]})),
+                mcp_entry(&json!({"args": ["x".repeat(4097)]})),
                 "arg over 4KiB",
             ),
-            (mcp_entry(json!({"args": ["a\0b"]})), "NUL arg"),
-            (mcp_entry(json!({"args": "nope"})), "non-array args"),
+            (mcp_entry(&json!({"args": ["a\0b"]})), "NUL arg"),
+            (mcp_entry(&json!({"args": "nope"})), "non-array args"),
             (
-                mcp_entry(json!({"env": [{"name": "9BAD", "value": "v"}]})),
+                mcp_entry(&json!({"env": [{"name": "9BAD", "value": "v"}]})),
                 "bad env name",
             ),
             (
-                mcp_entry(json!({"env": [{"name": "LD_PRELOAD", "value": "v"}]})),
+                mcp_entry(&json!({"env": [{"name": "LD_PRELOAD", "value": "v"}]})),
                 "loader hijack",
             ),
             (
-                mcp_entry(json!({"env": [{"name": "PYTHONPATH", "value": "v"}]})),
+                mcp_entry(&json!({"env": [{"name": "PYTHONPATH", "value": "v"}]})),
                 "interpreter injection",
             ),
             (
-                mcp_entry(json!({"env": [{"name": "GIT_CONFIG_X", "value": "v"}]})),
+                mcp_entry(&json!({"env": [{"name": "GIT_CONFIG_X", "value": "v"}]})),
                 "config prefix",
             ),
             (
-                mcp_entry(json!({"env": [{"name": "OK", "value": "x".repeat(16385)}]})),
+                mcp_entry(&json!({"env": [{"name": "OK", "value": "x".repeat(16385)}]})),
                 "env value over 16KiB",
             ),
             (
-                mcp_entry(json!({"env": [{"name": "OK", "value": 42}]})),
+                mcp_entry(&json!({"env": [{"name": "OK", "value": 42}]})),
                 "non-string env value",
             ),
             (
-                mcp_entry(json!({"env": [{"name": "OK"}]})),
+                mcp_entry(&json!({"env": [{"name": "OK"}]})),
                 "env entry without value",
+            ),
+            (
+                mcp_entry(&json!({"env": [{"name": "PATH", "value": "/x"}]})),
+                "inherited location key override",
             ),
         ];
         for (entry, what) in rows {
@@ -3011,16 +3146,19 @@ mod tests {
         }
         // Batch mapping fails closed on the first bad row.
         let mixed = vec![
-            mcp_entry(json!({})),
-            mcp_entry(json!({"command": "relative/bin"})),
+            mcp_entry(&json!({})),
+            mcp_entry(&json!({"command": "relative/bin"})),
         ];
         assert!(map_mcp_servers(&mixed).is_err());
         assert_eq!(
-            map_mcp_servers(&[mcp_entry(json!({}))])
+            map_mcp_servers(&[mcp_entry(&json!({}))])
                 .expect("all-valid batch maps")
                 .len(),
             1
         );
+        let duplicate = vec![mcp_entry(&json!({})), mcp_entry(&json!({}))];
+        let error = map_mcp_servers(&duplicate).expect_err("duplicate ids refused");
+        assert_eq!(error.data, json!("invalid_mcp_descriptor"), "duplicate");
     }
 
     /// S1 (ticket 01): `parse_load` refuses every bad shape BEFORE the

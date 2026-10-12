@@ -29,18 +29,22 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::time::Duration;
+use tachyon_types::{ApprovalId, SessionId};
 use tokio::io::{AsyncRead, AsyncWrite};
+
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinSet;
 
-use crate::client::{Connector, GatewayProbe, GatewayUnavailable};
+use crate::client::{Connector, GatewayConn, GatewayProbe, GatewayUnavailable};
 use crate::codec::{
     GATEWAY_UNAVAILABLE, INVALID_PARAMS, Notification, Outbound, Parsed, Peer, Request, RpcId,
+    TURN_FAILED,
 };
 use crate::turn::{
     HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard, call_error,
-    mcp_setup_not_yet_wired, parse_cancel, parse_load, parse_prompt, parse_session_new, run_cancel,
-    run_load, run_prompt,
+    is_allow_once, is_reject_once, map_mcp_servers, parse_cancel, parse_load, parse_prompt,
+    parse_session_new, run_cancel, run_load, run_prompt,
 };
 
 /// ACP wire protocol version Tachyon speaks (ADR-0005:21 — negotiated
@@ -105,6 +109,28 @@ where
                                 id = ?response.id,
                                 "routed an outbound request response to its waiting turn"
                             );
+                        } else if handler
+                            .state
+                            .take_consumed_mcp_approval(&response.id)
+                        {
+                            // A late answer for a consumed MCP approval:
+                            // diagnosed once with the typed taxonomy
+                            // marker instead of dropping silently
+                            // (TASK 01 S3).
+                            tracing::info!(
+                                id = ?response.id,
+                                "late MCP approval answer after its approval resolved"
+                            );
+                            peer.write_line(
+                                &Outbound::error_with_data(
+                                    Some(response.id.clone()),
+                                    TURN_FAILED,
+                                    "the MCP approval already resolved",
+                                    json!("stale_mcp_approval"),
+                                )
+                                .to_line(),
+                            )
+                            .await?;
                         } else {
                             tracing::info!(
                                 id = ?response.id,
@@ -148,8 +174,278 @@ where
     outcome
 }
 
+/// Emits one `session/request_mcp_approval` for a registered set
+/// and returns its armed reply slot (TASK 01 S2): the slot arms before
+/// the request queues, so an answer can never outrun it. A dead writer
+/// denies best-effort (no orphaned park) and answers the disconnect
+/// typed.
+async fn emit_mcp_approval(
+    conn: &mut GatewayConn,
+    state: &Arc<SessionState>,
+    tx: &UnboundedSender<Outbound>,
+    session_id: &str,
+    gateway_session: SessionId,
+    approval_id: &ApprovalId,
+    register_payload: Value,
+) -> Result<
+    (
+        RpcId,
+        tokio::sync::oneshot::Receiver<Result<Value, crate::codec::ErrorObject>>,
+    ),
+    HandlerError,
+> {
+    let server_list: Vec<Value> = register_payload
+        .get("servers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (request_id, receiver) = state.requests().arm();
+    if tx
+        .send(Outbound::request(
+            request_id.clone(),
+            "session/request_mcp_approval",
+            serde_json::json!({
+                "sessionId": session_id,
+                "approvalId": approval_id.to_string(),
+                "servers": server_list,
+            }),
+        ))
+        .is_err()
+    {
+        let _ = conn
+            .call(tachyon_protocol::Command::DenyMCPServers {
+                session_id: gateway_session,
+                approval_id: *approval_id,
+                reason: "setup client went away before answering".to_owned(),
+            })
+            .await;
+        return Err(HandlerError::turn_failed(
+            "mcp_approval_eof",
+            "client went away before answering the MCP approval",
+        ));
+    }
+    Ok((request_id, receiver))
+}
+
+/// Creates the gateway session and registers the mapped server set
+/// (TASK 01 S2): returns the session id, its typed form, the parked
+/// approval id, and the register payload (server inventory for the
+/// approval ask). Any failure pins nothing — registration never runs
+/// before a session exists, and mapping never runs before validation.
+async fn create_and_register(
+    conn: &mut GatewayConn,
+    cwd: String,
+    descriptors: Vec<tachyon_protocol::McpServerDescriptor>,
+) -> Result<(String, SessionId, ApprovalId, Value), HandlerError> {
+    let payload = conn
+        .call(tachyon_protocol::Command::CreateSession {
+            workspace_root: Some(cwd),
+        })
+        .await
+        .map_err(call_error)?;
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "CreateSession answered without a session_id",
+            )
+        })?;
+    let gateway_session: SessionId = session_id.parse().map_err(|_| {
+        HandlerError::turn_failed(
+            "gateway_payload_invalid",
+            "CreateSession session_id does not parse",
+        )
+    })?;
+    let payload = conn
+        .call(tachyon_protocol::Command::RegisterMCPServers {
+            session_id: gateway_session,
+            servers: descriptors,
+        })
+        .await
+        .map_err(call_error)?;
+    let approval_id: ApprovalId = payload
+        .get("approval_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "RegisterMCPServers answered without an approval_id",
+            )
+        })?
+        .parse()
+        .map_err(|_| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "RegisterMCPServers approval_id does not parse",
+            )
+        })?;
+    Ok((session_id, gateway_session, approval_id, payload))
+}
+
+/// Issues the fail-closed `DenyMCPServers` for a refused setup answer,
+/// then answers the setup with the typed taxonomy error. The deny
+/// result itself is best-effort (a deny failure must not mask the
+/// refusal verdict); the parked rows stay auditable either way.
+async fn deny_setup(
+    conn: &mut GatewayConn,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+    code: &'static str,
+    reason: &str,
+) -> Result<(), HandlerError> {
+    let client_reason = format!("setup client: {reason}");
+    if let Err(error) = conn
+        .call(tachyon_protocol::Command::DenyMCPServers {
+            session_id,
+            approval_id,
+            reason: client_reason,
+        })
+        .await
+    {
+        tracing::warn!(%error, "setup deny failed; the refusal verdict still stands");
+    }
+    Err(HandlerError::turn_failed(code, reason.to_owned()))
+}
+
 /// Dispatch: param validation, the liveness gate, inline answers, and
 /// the spawned `session/prompt` pipeline.
+/// Bound for one MCP-at-setup approval answer (spec §Q2: human-paced
+/// approval with a bounded client wait; fail closed on expiry).
+const MCP_SETUP_APPROVAL_WAIT: Duration = Duration::from_secs(120);
+
+/// What one MCP-at-setup approval wait produced (TASK 01): pure wait
+/// classification, no gateway calls — unit-tested with short bounds.
+#[derive(Debug)]
+enum McpApprovalAnswer {
+    /// The client's answer payload (result or error frame).
+    Answered(Result<Value, crate::codec::ErrorObject>),
+    /// The bound elapsed with no answer.
+    Timeout,
+    /// The exchange ended without an answer (disconnect): the slot's
+    /// waiter is gone.
+    Eof,
+}
+
+/// Waits for one MCP approval answer without touching the gateway.
+async fn await_mcp_answer(
+    receiver: tokio::sync::oneshot::Receiver<Result<Value, crate::codec::ErrorObject>>,
+    wait: Duration,
+) -> McpApprovalAnswer {
+    match tokio::time::timeout(wait, receiver).await {
+        Ok(Ok(answer)) => McpApprovalAnswer::Answered(answer),
+        Ok(Err(_)) => McpApprovalAnswer::Eof,
+        Err(_) => McpApprovalAnswer::Timeout,
+    }
+}
+
+/// Runs one MCP-at-setup approval exchange to completion (TASK 01):
+/// map → register → ask → decide. Runs in a spawned setup task, never
+/// inline: awaiting a client answer in the read loop would deadlock
+/// the routing that delivers it.
+async fn setup_run<C: Connector>(
+    connector: &C,
+    state: &Arc<SessionState>,
+    tx: &UnboundedSender<Outbound>,
+    cwd: String,
+    servers: Vec<Value>,
+    wait: Duration,
+) -> Result<String, HandlerError> {
+    // Fail fast pre-gateway: mapping touches no state.
+    let descriptors = map_mcp_servers(&servers)?;
+    let mut conn = connector
+        .connect()
+        .await
+        .map_err(|error| HandlerError::unavailable(&error))?;
+    let (session_id, gateway_session, approval_id, register_payload) =
+        create_and_register(&mut conn, cwd, descriptors).await?;
+    let (request_id, receiver) = emit_mcp_approval(
+        &mut conn,
+        state,
+        tx,
+        &session_id,
+        gateway_session,
+        &approval_id,
+        register_payload,
+    )
+    .await?;
+    // From here the slot is live: every exit abandons it and remembers
+    // the id, so a late answer is diagnosed instead of dropped.
+    let abandon = |state: &Arc<SessionState>| {
+        state.abandon_mcp_slot(&request_id);
+        state.remember_mcp_approval(request_id.clone());
+    };
+    // Every answered resolution retires its id into the consumed
+    // set first: any later duplicate is diagnosed stale exactly once
+    // instead of routing anywhere (TASK 01 S3).
+    let answer = await_mcp_answer(receiver, wait).await;
+    if matches!(answer, McpApprovalAnswer::Answered(_)) {
+        state.remember_mcp_approval(request_id.clone());
+    }
+    match answer {
+        McpApprovalAnswer::Answered(Ok(answer)) if is_allow_once(&answer) => {
+            conn.call(tachyon_protocol::Command::ApproveMCPServers {
+                session_id: gateway_session,
+                approval_id,
+            })
+            .await
+            .map_err(call_error)?;
+            Ok(session_id)
+        }
+        McpApprovalAnswer::Answered(Ok(answer)) => {
+            let reason = if is_reject_once(&answer) {
+                "setup client rejected the MCP servers"
+            } else {
+                "setup client answer failed closed"
+            };
+            deny_setup(
+                &mut conn,
+                gateway_session,
+                approval_id,
+                "mcp_approval_denied",
+                reason,
+            )
+            .await
+            .map(|()| session_id.clone())
+        }
+        McpApprovalAnswer::Answered(Err(_)) => deny_setup(
+            &mut conn,
+            gateway_session,
+            approval_id,
+            "mcp_approval_denied",
+            "setup client answered the MCP approval with an error",
+        )
+        .await
+        .map(|()| session_id.clone()),
+        McpApprovalAnswer::Timeout => {
+            abandon(state);
+            deny_setup(
+                &mut conn,
+                gateway_session,
+                approval_id,
+                "mcp_approval_timeout",
+                "MCP approval answer did not arrive in time",
+            )
+            .await
+            .map(|()| session_id.clone())
+        }
+        McpApprovalAnswer::Eof => {
+            abandon(state);
+            deny_setup(
+                &mut conn,
+                gateway_session,
+                approval_id,
+                "mcp_approval_eof",
+                "MCP approval exchange ended without an answer",
+            )
+            .await
+            .map(|()| session_id.clone())
+        }
+    }
+}
+
 struct Handler<P, C> {
     probe: P,
     connector: C,
@@ -189,19 +485,18 @@ where
                     Ok(params) => params,
                     Err(error) => return Some(error_outbound(id, error)),
                 };
-                if !servers.is_empty() {
-                    // TASK 01 S2 wires the approval flow; until then the
-                    // pre-existing refusal stands (same code as before).
-                    return Some(error_outbound(id, mcp_setup_not_yet_wired()));
-                }
                 if let Some(error) = self.gate(id.clone(), &method).await {
                     return Some(error);
                 }
-                let outcome = self.session_new(cwd).await;
-                Some(match outcome {
-                    Ok(session_id) => Outbound::success(id, json!({ "sessionId": session_id })),
-                    Err(error) => error_outbound(id, error),
-                })
+                if servers.is_empty() {
+                    let outcome = self.session_new(cwd).await;
+                    return Some(match outcome {
+                        Ok(session_id) => Outbound::success(id, json!({ "sessionId": session_id })),
+                        Err(error) => error_outbound(id, error),
+                    });
+                }
+                self.setup_or_coalesce_mcp(id, cwd, servers, turns);
+                None
             }
             "session/prompt" => {
                 let params: PromptParams = match parse_prompt(params.as_ref()) {
@@ -341,7 +636,7 @@ where
             })
             .await
             .map_err(call_error)?;
-        payload
+        let session_id = payload
             .get("session_id")
             .and_then(Value::as_str)
             .map(str::to_owned)
@@ -350,7 +645,91 @@ where
                     "gateway_payload_invalid",
                     "CreateSession answered without a session_id",
                 )
-            })
+            })?;
+        Ok(session_id)
+    }
+
+    /// Spawns one MCP-at-setup approval flow (TASK 01 S2): the answer
+    /// arrives later through the writer channel, so the read loop never
+    /// blocks awaiting a client answer it must itself route. Tracked in
+    /// `turns` for the EOF drain like prompt turns. The success shape
+    /// stays exactly `{sessionId}`.
+    /// MCP-bearing `session/new` (TASK 01 S2): a retried call id
+    /// coalesces onto its setup (or replays its answer) instead of
+    /// creating a second session; otherwise a fresh setup spawns.
+    fn setup_or_coalesce_mcp(
+        &self,
+        id: RpcId,
+        cwd: String,
+        servers: Vec<Value>,
+        turns: &mut JoinSet<()>,
+    ) {
+        if let Some(waiter) = self.state.mcp_setup_subscribe(&id) {
+            let tx = self.tx.clone();
+            turns.spawn(async move {
+                let mut waiter = waiter;
+                let stored = waiter.wait_for(Option::is_some).await.map_or_else(
+                    |_| {
+                        Outbound::error_with_data(
+                            Some(id.clone()),
+                            TURN_FAILED,
+                            "the setup this call retries went away",
+                            json!("mcp_setup_unknown"),
+                        )
+                    },
+                    |slot| slot.clone().expect("waited slot holds a frame"),
+                );
+                let _ = tx.send(stored);
+            });
+            return;
+        }
+        self.spawn_mcp_setup(id, cwd, servers, turns);
+    }
+
+    fn spawn_mcp_setup(
+        &self,
+        id: RpcId,
+        cwd: String,
+        servers: Vec<Value>,
+        turns: &mut JoinSet<()>,
+    ) {
+        let Some(sender) = self.state.mcp_setup_publish(id.clone()) else {
+            // Unreachable on the sequential read loop (the arm
+            // coalesces duplicates first); fail closed, never
+            // duplicate the setup.
+            let tx = self.tx.clone();
+            turns.spawn(async move {
+                let _ = tx.send(Outbound::error_with_data(
+                    Some(id),
+                    TURN_FAILED,
+                    "duplicate MCP setup racing its first delivery",
+                    json!("mcp_setup_unknown"),
+                ));
+            });
+            return;
+        };
+        let connector = self.connector.clone();
+        let tx = self.tx.clone();
+        let state = Arc::clone(&self.state);
+        turns.spawn(async move {
+            let outcome = match setup_run(
+                &connector,
+                &state,
+                &tx,
+                cwd,
+                servers,
+                MCP_SETUP_APPROVAL_WAIT,
+            )
+            .await
+            {
+                Ok(session_id) => Outbound::success(id.clone(), json!({ "sessionId": session_id })),
+                Err(error) => error_outbound(id.clone(), error),
+            };
+            // Publish before sending: coalesced waiters wake from the
+            // channel; this call's frame goes through the writer.
+            sender.send_replace(Some(outcome.clone()));
+            let _ = tx.send(outcome);
+        });
     }
 
     /// The read-only `session/load` arm: validate → liveness gate →
@@ -681,5 +1060,50 @@ mod tests {
         serve(reader, writer, GatewayUp, crate::test_support::NoConnector)
             .await
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod mcp_setup_wait_tests {
+    //! TASK 01 S3: the approval wait classifies without gateway calls —
+    //! answered values pass through, silence times out on a short bound,
+    //! a dropped slot reads as disconnect.
+
+    use super::{McpApprovalAnswer, await_mcp_answer};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn answered_value_passes_through() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let payload = serde_json::json!({"outcome": "selected"});
+        sender.send(Ok(payload.clone())).expect("send answers");
+        match await_mcp_answer(receiver, Duration::from_secs(5)).await {
+            McpApprovalAnswer::Answered(Ok(value)) => assert_eq!(value, payload),
+            other => panic!(
+                "expected the answer through, got {}",
+                matches!(other, McpApprovalAnswer::Answered(_))
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn silence_times_out_on_a_short_bound() {
+        let (_sender, receiver) =
+            tokio::sync::oneshot::channel::<Result<serde_json::Value, crate::codec::ErrorObject>>();
+        match await_mcp_answer(receiver, Duration::from_millis(50)).await {
+            McpApprovalAnswer::Timeout => (),
+            _ => panic!("expected Timeout"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_slot_reads_as_disconnect() {
+        let (sender, receiver) =
+            tokio::sync::oneshot::channel::<Result<serde_json::Value, crate::codec::ErrorObject>>();
+        drop(sender);
+        match await_mcp_answer(receiver, Duration::from_secs(5)).await {
+            McpApprovalAnswer::Eof => (),
+            _ => panic!("expected Eof"),
+        }
     }
 }

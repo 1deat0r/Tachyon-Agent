@@ -29,7 +29,7 @@ async fn session_new_rejects_bad_params_before_any_gateway_call() {
     adapter
         .send(&new_line(
             2,
-            r#"{"cwd":"/tmp","mcpServers":[{"transport":{"type":"stdio"},"command":"srv"}]}"#,
+            r#"{"cwd":"/tmp","mcpServers":["not-an-object"]}"#,
         ))
         .await;
     adapter.send(&new_line(3, r#"{"cwd":42}"#)).await;
@@ -47,7 +47,9 @@ async fn session_new_rejects_bad_params_before_any_gateway_call() {
     let mcp = parse_frame(&replies[1]);
     assert_eq!(mcp["id"], 2);
     assert_eq!(mcp["error"]["code"], -32602);
-    assert_eq!(mcp["error"]["data"], json!("mcp_servers_unsupported"));
+    // Shaped entries now proceed to mapping + gateway (TASK 01);
+    // unshaped entries still stop pre-gateway with no dial.
+    assert_eq!(mcp["error"]["data"], json!("invalid_params"));
 
     let missing = parse_frame(&replies[2]);
     assert_eq!(missing["id"], 3);
