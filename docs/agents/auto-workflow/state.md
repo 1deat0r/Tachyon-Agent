@@ -1,6 +1,31 @@
 ## STATE
 status: running
 origin: session
+goal: Live failure-path evaluation (frozen 2-turn batch with bad resource_link blocks — out_of_root + oversized — through the adapter; proves fail-closed taxonomy live) — freeze plan+manifest, run, report with pre-registered rules, independent audit
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done) | acp live resourcelink evaluation (done)
+phase: 3
+fixed_point: c9ebd9b
+baseline: c9ebd9b + clean
+spec: none-not-yet
+tasks: none-not-yet
+edges: none-not-yet
+attempts: none-not-yet
+phase_entries: none
+exec_count: 78
+polls: 0
+skills_pin: none
+updated: 2026-10-12T03:28:17Z
+## LOG
+2026-10-12T03:28:17Z EVENT ===== GOAL ROTATION (M27 outcome success, frontier empty) =====
+2026-10-12T03:28:17Z EVENT rotations: report.md -> report-2026-10-12T03:28:17Z.md; decisions.md -> decisions-2026-10-12T03:28:17Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T03:28:17Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at c9ebd9b (clean tree)
+2026-10-12T03:28:17Z EVENT goal intake: derived live failure-path evaluation; attach deferred; #44 skipped
+2026-10-12T03:28:17Z EXEC 78 phase-3
+
+## ARCHIVE 2026-10-12T03:28:17Z
+## STATE
+status: running
+origin: session
 goal: Live ResourceLink evaluation (M25-style frozen 3-turn batch with resource_link blocks on duplicate-range through the adapter; validates the new resolve path live) — freeze plan+manifest, run, report with pre-registered rules, independent audit
 goal_source: derived:open-issues
 derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done)
@@ -18,7 +43,8 @@ skills_pin: none
 updated: 2026-10-12T03:13:15Z
 ## LOG
 2026-10-12T03:13:15Z EVENT ===== GOAL ROTATION (implementation outcome success, frontier empty) =====
-2026-10-12T03:13:15Z EVENT rotations: report.md -> report-2026-10-12T03:13:15Z.md; decisions.md -> decisions-2026-10-12T03:13:15Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T03:13:15Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 998facd (clean tree)
+2026-10-12T03:13:15Z EVENT rotations: report.md -> report-2026-10-12T03:13:15Z.md; decisions.md -> decisions-2026-10-12T03:13:15Z.md (paired suffix); prior STATE archived under '
+## ARCHIVE 2026-10-12T03:13:15Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 998facd (clean tree)
 2026-10-12T03:13:15Z EVENT goal intake: derived live ResourceLink evaluation (M25-style); attach deferred; #44 skipped
 2026-10-12T03:13:15Z EXEC 77 phase-3
 
