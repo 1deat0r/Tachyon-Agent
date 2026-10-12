@@ -15,5 +15,6 @@ pub mod transport;
 
 pub use endpoint::{ClaimPaths, EndpointInfo, claim_runtime_dir, read_endpoint_info};
 pub use server::{
-    FAKE_PROVIDER_LABEL, GatewayError, GatewayRuntime, RunningGateway, start, start_with,
+    FAKE_PROVIDER_LABEL, GatewayError, GatewayRuntime, RunningGateway, is_dangerous_mcp_env,
+    is_valid_mcp_env_name, start, start_with,
 };

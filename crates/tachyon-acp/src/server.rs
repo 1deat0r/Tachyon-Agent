@@ -39,7 +39,8 @@ use crate::codec::{
 };
 use crate::turn::{
     HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard, call_error,
-    parse_cancel, parse_load, parse_prompt, parse_session_new, run_cancel, run_load, run_prompt,
+    mcp_setup_not_yet_wired, parse_cancel, parse_load, parse_prompt, parse_session_new, run_cancel,
+    run_load, run_prompt,
 };
 
 /// ACP wire protocol version Tachyon speaks (ADR-0005:21 — negotiated
@@ -184,10 +185,15 @@ where
                 Err(message) => Some(Outbound::error(Some(id), INVALID_PARAMS, message)),
             },
             "session/new" => {
-                let SessionNewParams { cwd } = match parse_session_new(params.as_ref()) {
+                let SessionNewParams { cwd, servers } = match parse_session_new(params.as_ref()) {
                     Ok(params) => params,
                     Err(error) => return Some(error_outbound(id, error)),
                 };
+                if !servers.is_empty() {
+                    // TASK 01 S2 wires the approval flow; until then the
+                    // pre-existing refusal stands (same code as before).
+                    return Some(error_outbound(id, mcp_setup_not_yet_wired()));
+                }
                 if let Some(error) = self.gate(id.clone(), &method).await {
                     return Some(error);
                 }

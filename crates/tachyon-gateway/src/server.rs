@@ -1656,7 +1656,7 @@ const MAX_MCP_ENV_VALUE_BYTES: usize = 16384;
 /// pinned entrypoint. One deterministic name/prefix rule set —
 /// register-time validation and launch-time re-validation consult
 /// exactly this, never a copy.
-fn is_dangerous_mcp_env(name: &str) -> bool {
+pub fn is_dangerous_mcp_env(name: &str) -> bool {
     const DANGEROUS: &[&str] = &[
         // Loader hijack (exact names + the `DYLD_*` prefix below).
         "LD_PRELOAD",
@@ -1690,7 +1690,7 @@ fn is_dangerous_mcp_env(name: &str) -> bool {
 
 /// Env names are `[A-Za-z_][A-Za-z0-9_]*`: the same shape a POSIX shell
 /// and `execve` accept, so no name can smuggle a second binding.
-fn is_valid_mcp_env_name(name: &str) -> bool {
+pub fn is_valid_mcp_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {}

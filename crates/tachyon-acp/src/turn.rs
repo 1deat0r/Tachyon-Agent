@@ -26,7 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Number, Value, json};
-use tachyon_protocol::{Command, GatewayEvent, ServerFrame};
+use tachyon_protocol::{
+    Command, GatewayEvent, McpArgEntry, McpEnvEntry, McpServerDescriptor, ServerFrame,
+};
 use tachyon_types::{ApprovalId, EventId, SessionId, TaskId};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{oneshot, watch};
@@ -221,13 +223,18 @@ pub(crate) fn call_error(error: GatewayCallError) -> HandlerError {
 pub(crate) struct SessionNewParams {
     /// Absolute session workspace root, exactly as the client sent it.
     pub(crate) cwd: String,
+    /// Raw `mcpServers` entries (shape-checked only); deep validation
+    /// and mapping happen in [`map_mcp_servers`], and the gateway
+    /// revalidates authoritatively at registration.
+    pub(crate) servers: Vec<Value>,
 }
 
 /// Validates `session/new` params per ACP `schema-v1.23.0`
-/// (`NewSessionRequest`): `cwd` is required and must be absolute, and a
-/// non-empty `mcpServers` is refused (MCP-at-setup is a later slice;
-/// absent/empty is accepted). Runs BEFORE any gateway interaction, so a
-/// bad request never reaches the liveness probe or opens a connection.
+/// (`NewSessionRequest`): `cwd` is required and must be absolute;
+/// `mcpServers` must be an absent/empty array or a list of stdio server
+/// entries (shape-checked here, mapped by [`map_mcp_servers`]). Runs
+/// BEFORE any gateway interaction, so a bad request never reaches the
+/// liveness probe or opens a connection.
 pub(crate) fn parse_session_new(params: Option<&Value>) -> Result<SessionNewParams, HandlerError> {
     let invalid_shape = || {
         HandlerError::invalid(
@@ -248,23 +255,160 @@ pub(crate) fn parse_session_new(params: Option<&Value>) -> Result<SessionNewPara
             "cwd_not_absolute",
         ));
     }
-    if let Some(servers) = object.get("mcpServers") {
-        let list = servers.as_array().ok_or_else(|| {
-            HandlerError::invalid(
-                "Invalid params: mcpServers must be an array",
-                "invalid_params",
-            )
-        })?;
-        if !list.is_empty() {
-            return Err(HandlerError::invalid(
-                "MCP servers at session setup are not supported yet; mcpServers must be empty",
-                "mcp_servers_unsupported",
-            ));
-        }
-    }
+    let servers = match object.get("mcpServers") {
+        None => Vec::new(),
+        Some(servers) => servers
+            .as_array()
+            .ok_or_else(|| {
+                HandlerError::invalid(
+                    "Invalid params: mcpServers must be an array",
+                    "invalid_params",
+                )
+            })?
+            .iter()
+            .map(|entry| {
+                entry.as_object().ok_or_else(|| {
+                    HandlerError::invalid(
+                        "Invalid params: mcpServers entries must be objects",
+                        "invalid_params",
+                    )
+                })?;
+                Ok(entry.clone())
+            })
+            .collect::<Result<Vec<Value>, HandlerError>>()?,
+    };
     Ok(SessionNewParams {
         cwd: cwd.to_owned(),
+        servers,
     })
+}
+
+/// Maps one ACP stdio server entry to a gateway [`McpServerDescriptor`]
+/// (TASK 01 S1): untrusted external input, so every field is validated
+/// against the ticket-01 rules before anything is pinned or launched.
+/// ALL env/arg values pin `secret: true` — the adapter is an external
+/// trust boundary and ACP carries no secret marker (spec §Q3). The
+/// gateway revalidates authoritatively at registration regardless.
+pub(crate) fn map_mcp_server(entry: &Value) -> Result<McpServerDescriptor, HandlerError> {
+    let invalid =
+        |detail: &str| HandlerError::invalid(detail.to_string(), "invalid_mcp_descriptor");
+    let object = entry
+        .as_object()
+        .ok_or_else(|| invalid("mcpServers entries must be objects"))?;
+    // Only stdio transport is supported; anything else (or absent) is
+    // refused rather than guessed.
+    let stdio = object
+        .get("transport")
+        .and_then(Value::as_object)
+        .and_then(|transport| transport.get("type"))
+        .and_then(Value::as_str)
+        == Some("stdio");
+    if !stdio {
+        return Err(invalid(
+            "mcpServers entries must declare transport {type: stdio}",
+        ));
+    }
+    // No name derivation: a missing/unusable name is refused, never guessed.
+    let server_id = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("mcpServers entries require a name"))?;
+    if server_id.is_empty()
+        || server_id.len() > 64
+        || server_id.contains('\0')
+        || server_id.contains('/')
+    {
+        return Err(invalid(
+            "mcpServers name must be 1..=64 bytes, NUL-free, without `/`",
+        ));
+    }
+    let command = object
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("mcpServers entries require a command"))?;
+    if !Path::new(command).is_absolute() {
+        return Err(invalid("mcpServers command must be an absolute path"));
+    }
+    let mut args = Vec::new();
+    if let Some(raw_args) = object.get("args") {
+        let list = raw_args
+            .as_array()
+            .ok_or_else(|| invalid("mcpServers args must be an array"))?;
+        if list.len() > 32 {
+            return Err(invalid("mcpServers args holds at most 32 entries"));
+        }
+        for arg in list {
+            let value = arg
+                .as_str()
+                .ok_or_else(|| invalid("mcpServers args must be strings of at most 4KiB"))?;
+            if value.len() > 4096 || value.contains('\0') {
+                return Err(invalid("mcpServers args must be strings of at most 4KiB"));
+            }
+            args.push(McpArgEntry {
+                value: value.to_owned(),
+                secret: true,
+            });
+        }
+    }
+    let mut env = Vec::new();
+    if let Some(raw_env) = object.get("env") {
+        let list = raw_env
+            .as_array()
+            .ok_or_else(|| invalid("mcpServers env must be an array"))?;
+        for entry in list {
+            let pair = entry
+                .as_object()
+                .ok_or_else(|| invalid("mcpServers env entries must be {name, value} objects"))?;
+            let name = pair
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("mcpServers env entries require a name"))?;
+            let value = pair
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("mcpServers env entries require a string value"))?;
+            if !tachyon_gateway::is_valid_mcp_env_name(name) {
+                return Err(invalid(
+                    "mcpServers env names must match [A-Za-z_][A-Za-z0-9_]*",
+                ));
+            }
+            if value.len() > 16384 {
+                return Err(invalid("mcpServers env values hold at most 16KiB"));
+            }
+            if tachyon_gateway::is_dangerous_mcp_env(name) {
+                return Err(invalid(
+                    "mcpServers env names must not override loader state",
+                ));
+            }
+            env.push(McpEnvEntry {
+                name: name.to_owned(),
+                value: value.to_owned(),
+                secret: true,
+            });
+        }
+    }
+    Ok(McpServerDescriptor {
+        server_id: server_id.to_owned(),
+        command: command.to_owned(),
+        args,
+        env,
+    })
+}
+
+/// Standing refusal for non-empty `mcpServers` until TASK 01 S2 wires
+/// the approval flow: byte-identical code and message to the previous
+/// parse-time refusal, so the wire contract does not move under S1.
+pub(crate) fn mcp_setup_not_yet_wired() -> HandlerError {
+    HandlerError::invalid(
+        "MCP servers at session setup are not supported yet; mcpServers must be empty",
+        "mcp_servers_unsupported",
+    )
+}
+
+/// Maps every `session/new` server entry, failing the whole call on the
+/// first invalid descriptor (fail closed: no partial pin downstream).
+pub(crate) fn map_mcp_servers(entries: &[Value]) -> Result<Vec<McpServerDescriptor>, HandlerError> {
+    entries.iter().map(map_mcp_server).collect()
 }
 
 /// Validated `session/prompt` params.
@@ -2522,9 +2666,9 @@ mod tests {
         ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
         approval_parked, check_load_workspace, classify_permission_answer, final_prompt_result,
         is_allow_once, is_approval_parked, is_reject_once, is_settlement_signal,
-        is_terminal_status, load_replay_frames, parse_cancel, parse_load, parse_prompt,
-        parse_session_new, permission_request_params, read_bound, read_gateway_frame,
-        recorded_turn, refusal_prompt_result, settlement_verdict, stop_reason,
+        is_terminal_status, load_replay_frames, map_mcp_server, map_mcp_servers, parse_cancel,
+        parse_load, parse_prompt, parse_session_new, permission_request_params, read_bound,
+        read_gateway_frame, recorded_turn, refusal_prompt_result, settlement_verdict, stop_reason,
         tool_call_announcement, tool_call_status_update, turn_deadline,
     };
     use std::str::FromStr as _;
@@ -2731,21 +2875,152 @@ mod tests {
     }
 
     #[test]
-    fn session_new_refuses_only_non_empty_mcp_servers() {
-        // Absent and empty are accepted (MCP-at-setup is a later slice).
-        parse_session_new(Some(&json!({"cwd": "/tmp"}))).expect("absent mcpServers ok");
-        parse_session_new(Some(&json!({"cwd": "/tmp", "mcpServers": []})))
-            .expect("empty mcpServers ok");
-        let error = parse_session_new(Some(&json!({
+    fn session_new_carries_mcp_servers_shape_for_mapping() {
+        // Absent and empty carry nothing (TASK 01 S1: shape at parse,
+        // depth at map, authority at the gateway).
+        let bare = parse_session_new(Some(&json!({"cwd": "/tmp"}))).expect("absent ok");
+        assert!(bare.servers.is_empty());
+        let empty =
+            parse_session_new(Some(&json!({"cwd": "/tmp", "mcpServers": []}))).expect("empty ok");
+        assert!(empty.servers.is_empty());
+        // Non-empty arrays of objects are carried (deep refusal moved
+        // to map_mcp_servers + the S2 standing refusal in server.rs).
+        let carried = parse_session_new(Some(&json!({
             "cwd": "/tmp",
-            "mcpServers": [{"transport": {"type": "stdio"}, "command": "mcp-server"}]
+            "mcpServers": [{"transport": {"type": "stdio"}, "command": "/usr/bin/mcp-server", "name": "s1"}]
         })))
-        .expect_err("non-empty mcpServers is refused");
-        assert_eq!(error.code, INVALID_PARAMS);
-        assert_eq!(error.data, json!("mcp_servers_unsupported"));
+        .expect("shaped entries carried");
+        assert_eq!(carried.servers.len(), 1);
         let not_an_array = parse_session_new(Some(&json!({"cwd": "/tmp", "mcpServers": {}})))
             .expect_err("mcpServers must be an array");
         assert_eq!(not_an_array.data, json!("invalid_params"));
+        let non_objects = parse_session_new(Some(&json!({
+            "cwd": "/tmp",
+            "mcpServers": ["mcp-server"]
+        })))
+        .expect_err("entries must be objects");
+        assert_eq!(non_objects.data, json!("invalid_params"));
+    }
+
+    fn mcp_entry(pairs: serde_json::Value) -> Value {
+        let mut base = serde_json::Map::new();
+        base.insert("transport".to_owned(), json!({"type": "stdio"}));
+        base.insert("name".to_owned(), json!("s1"));
+        base.insert("command".to_owned(), json!("/usr/bin/mcp-server"));
+        if let Some(object) = pairs.as_object() {
+            for (key, value) in object {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+        Value::Object(base)
+    }
+
+    #[test]
+    fn map_mcp_server_accepts_valid_pins_secrets() {
+        let descriptor = map_mcp_server(&mcp_entry(json!({
+            "args": ["--flag"],
+            "env": [{"name": "MCP_TOKEN", "value": "raw-secret-value"}],
+        })))
+        .expect("valid entry maps");
+        assert_eq!(descriptor.server_id, "s1");
+        assert_eq!(descriptor.command, "/usr/bin/mcp-server");
+        assert_eq!(descriptor.args.len(), 1);
+        assert!(descriptor.args.iter().all(|arg| arg.secret));
+        assert_eq!(descriptor.env.len(), 1);
+        assert!(descriptor.env.iter().all(|entry| entry.secret));
+        assert!(
+            !descriptor.env.iter().any(|entry| entry.value.is_empty()),
+            "raw values carried for broker pinning, never dropped"
+        );
+    }
+
+    #[test]
+    fn map_mcp_server_refuses_every_malicious_shape() {
+        // Each row: tampered entry JSON, expectation that mapping fails
+        // with the typed descriptor refusal (fail closed, pins nothing).
+        let rows: Vec<(Value, &str)> = vec![
+            (
+                mcp_entry(json!({"transport": {"type": "tcp"}})),
+                "non-stdio transport",
+            ),
+            (mcp_entry(json!({"transport": {}})), "absent transport type"),
+            (
+                {
+                    let mut entry = mcp_entry(json!({}));
+                    entry.as_object_mut().unwrap().remove("name");
+                    entry
+                },
+                "missing name is never derived",
+            ),
+            (mcp_entry(json!({"name": "has/slash"})), "slash in name"),
+            (mcp_entry(json!({"name": ""})), "empty name"),
+            (
+                mcp_entry(json!({"command": "relative/bin"})),
+                "relative command",
+            ),
+            (
+                {
+                    let mut entry = mcp_entry(json!({}));
+                    entry.as_object_mut().unwrap().remove("command");
+                    entry
+                },
+                "missing command",
+            ),
+            (
+                mcp_entry(json!({"args": vec!["x".to_string(); 33]})),
+                "33 args over the bound",
+            ),
+            (
+                mcp_entry(json!({"args": ["x".repeat(4097)]})),
+                "arg over 4KiB",
+            ),
+            (mcp_entry(json!({"args": ["a\0b"]})), "NUL arg"),
+            (mcp_entry(json!({"args": "nope"})), "non-array args"),
+            (
+                mcp_entry(json!({"env": [{"name": "9BAD", "value": "v"}]})),
+                "bad env name",
+            ),
+            (
+                mcp_entry(json!({"env": [{"name": "LD_PRELOAD", "value": "v"}]})),
+                "loader hijack",
+            ),
+            (
+                mcp_entry(json!({"env": [{"name": "PYTHONPATH", "value": "v"}]})),
+                "interpreter injection",
+            ),
+            (
+                mcp_entry(json!({"env": [{"name": "GIT_CONFIG_X", "value": "v"}]})),
+                "config prefix",
+            ),
+            (
+                mcp_entry(json!({"env": [{"name": "OK", "value": "x".repeat(16385)}]})),
+                "env value over 16KiB",
+            ),
+            (
+                mcp_entry(json!({"env": [{"name": "OK", "value": 42}]})),
+                "non-string env value",
+            ),
+            (
+                mcp_entry(json!({"env": [{"name": "OK"}]})),
+                "env entry without value",
+            ),
+        ];
+        for (entry, what) in rows {
+            let error = map_mcp_server(&entry).expect_err(&format!("{what} refused"));
+            assert_eq!(error.data, json!("invalid_mcp_descriptor"), "{what}");
+        }
+        // Batch mapping fails closed on the first bad row.
+        let mixed = vec![
+            mcp_entry(json!({})),
+            mcp_entry(json!({"command": "relative/bin"})),
+        ];
+        assert!(map_mcp_servers(&mixed).is_err());
+        assert_eq!(
+            map_mcp_servers(&[mcp_entry(json!({}))])
+                .expect("all-valid batch maps")
+                .len(),
+            1
+        );
     }
 
     /// S1 (ticket 01): `parse_load` refuses every bad shape BEFORE the
