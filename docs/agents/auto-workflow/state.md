@@ -1,18 +1,43 @@
 ## STATE
 status: running
 origin: session
-goal: Design attach/reconnect for ACP turns (#57 last large item: reattaching to live tasks across adapter disconnects, live-subscription handoff) — grill + spec + ADR iff architecture changes; NO implementation until the design lands
+goal: Implement the session/attach tracer from .scratch/acp-attach/spec.md (ADR decision first: short ADR vs ADR-0005 amendment; then read-only subscribe-reader, cursor pushdown reuse, resync/error taxonomy, negative authority tests, capability amendment) — test-first, full verify, independent review
 goal_source: derived:open-issues
-derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done) | acp live resourcelink evaluation (done) | acp live failure-path evaluation (done)
-phase: 2
-fixed_point: f925a94
-baseline: f925a94 + clean
-spec: none-not-yet
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done) | acp live resourcelink evaluation (done) | acp live failure-path evaluation (done) | acp attach/reconnect design (done)
+phase: 4
+fixed_point: 8a6309a631743e803606ccd6fbc5b95ba4baf8d8
+baseline: 8a6309a631743e803606ccd6fbc5b95ba4baf8d8 + clean
+spec: .scratch/acp-attach/spec.md
 tasks: none-not-yet
 edges: none-not-yet
 attempts: none-not-yet
 phase_entries: none
-exec_count: 79
+exec_count: 81
+polls: 0
+skills_pin: none
+updated: 2026-10-12T03:51:07Z
+## LOG
+2026-10-12T03:51:07Z EVENT ===== GOAL ROTATION (attach design outcome success, frontier design-empty) =====
+2026-10-12T03:51:07Z EVENT rotations: report.md -> report-2026-10-12T03:51:07Z.md; decisions.md -> decisions-2026-10-12T03:51:07Z.md (paired suffix); prior STATE archived under '## ARCHIVE 2026-10-12T03:51:07Z'; phase_entries/polls RESET; spec/tasks/edges/attempts cleared; baseline+fixed_point re-recorded at 8a6309a631743e803606ccd6fbc5b95ba4baf8d8 (clean tree)
+2026-10-12T03:51:07Z EVENT goal intake: derived attach implementation tracer from frozen spec (ADR decision first); #44 skipped
+2026-10-12T03:51:07Z EXEC 81 phase-4
+
+## ARCHIVE 2026-10-12T03:51:07Z
+## STATE
+status: running
+origin: session
+goal: Design attach/reconnect for ACP turns (#57 last large item: reattaching to live tasks across adapter disconnects, live-subscription handoff) — grill + spec + ADR iff architecture changes; NO implementation until the design lands
+goal_source: derived:open-issues
+derived_tried: acp-session-replay slice (done) | acp task-creation/start reconciliation slice (done) | acp-mcp-stdio slice (done) | acp cancellation-drain + crash-recovery slice (done) | acp environment-and-secret-handling slice (done) | acp stdio lifecycle + gateway-backed prompt turns slice (done) | acp session/request_permission permission bridge slice (done) | acp session/load + loadSession:true slice (done) | acp tool-call cancel closure slice (done) | acp mcp-at-setup approval-surface design (done) | acp mcp-at-setup session/new implementation (done) | acp mcp-at-setup session/load assertion (done) | acp resourcelink design (done) | acp resourcelink implementation (done) | acp live resourcelink evaluation (done) | acp live failure-path evaluation (done)
+phase: 7
+fixed_point: f925a94
+baseline: f925a94 + clean
+spec: .scratch/acp-attach/spec.md
+tasks: none-not-yet
+edges: none-not-yet
+attempts: none-not-yet
+phase_entries: 2=1 3=1
+exec_count: 80
 polls: 0
 skills_pin: none
 updated: 2026-10-12T03:47:26Z
@@ -712,3 +737,5 @@ objective; stored-response JSON built inside tx for byte-stable replay; spec 'ta
 2026-10-12T02:30:00Z EXEC 74 phase-7
 2026-10-12T02:21:44Z EVENT Phase 4 TASK 01 cut (S1 parse, S2 resolve, S3 integrate+FULL+review)
 2026-10-12T02:21:44Z EXEC 76 phase-5
+2026-10-12T03:55:00Z EVENT Phase 2 grill (7 Q&A) + Phase 3 spec frozen (.scratch/acp-attach/spec.md, DESIGN ONLY); Phase 4 no implementable units; Phase 5 N/A; Phase 6 design-level -> Phase 7 design review
+2026-10-12T03:55:00Z EXEC 80 phase-7
