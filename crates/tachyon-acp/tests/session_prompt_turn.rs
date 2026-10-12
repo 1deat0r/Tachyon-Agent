@@ -242,13 +242,13 @@ async fn rejected_prompts_never_reach_create_task() {
     assert_eq!(whitespace["error"]["code"], -32602);
     assert_eq!(whitespace["error"]["data"], json!("empty_prompt"));
 
+    // resource_link blocks are no longer refused at parse (TASK 01):
+    // this links-only prompt proceeds to bounded resolution, which
+    // fails typed on the missing file — still before any task exists.
     let resource = parse_frame(&replies[2]);
     assert_eq!(resource["id"], 4);
     assert_eq!(resource["error"]["code"], -32602);
-    assert_eq!(
-        resource["error"]["data"],
-        json!("unsupported_prompt_content")
-    );
+    assert_eq!(resource["error"]["data"], json!("unresolvable"));
 
     let unknown = parse_frame(&replies[3]);
     assert_eq!(unknown["id"], 5);
