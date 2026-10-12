@@ -31,7 +31,9 @@ Cost UNKNOWN (pricing unpinned).
   one night. Remaining taxonomy rows (unsupported_scheme,
   invalid_encoding, unsafe_content, too_many_resources) stay proven
   by unit battery only.
-- No speed claim of any kind.
+- Latency with host-load disclaimer (shared workstation; single-digit
+  millisecond reads are harness timing, not a performance claim). No
+  speed claim of any kind.
 
 ## Retained evidence
 

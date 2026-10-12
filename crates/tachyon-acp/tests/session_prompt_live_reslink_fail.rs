@@ -193,6 +193,8 @@ async fn live_fail_turn(sample: u64) -> serde_json::Value {
     let response = parse_frame(&response_line);
     let error_data = response["error"]["data"].as_str().unwrap_or("").to_owned();
     let error_code = response["error"]["code"].as_i64().unwrap_or(0);
+    // Observed, not assumed: error frames carry no stopReason.
+    let end_turn = response["result"]["stopReason"].as_str() == Some("end_turn");
 
     // No turn may exist: the refusal precedes CreateTask.
     let session = common::gw_ok(
@@ -224,7 +226,7 @@ async fn live_fail_turn(sample: u64) -> serde_json::Value {
         "outcome": if verified { "completed" } else { "error" },
         "verified": verified,
         "task_status": "none",
-        "adapter_end_turn": false,
+        "adapter_end_turn": end_turn,
         "adapter_clean_exit": exit_ok,
         "adapter_error_code": error_code,
         "adapter_error_data": error_data,
