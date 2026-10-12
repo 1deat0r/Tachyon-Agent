@@ -31,7 +31,11 @@ one voided pre-live harness fault, zero spend) — report:
 (evaluation, no production change): adversarial held-out cells —
 ceiling-division, signed-midpoint, atomic-transfer verify 9/9
 first-attempt; overflow trap absent on these cells with this stack —
-report: `docs/milestones/M26_REPORT.md` (claims audited clean). Milestone 22 is complete (DROPPED
+report: `docs/milestones/M26_REPORT.md` (claims audited clean). Milestone 27
+(evaluation, no production change): first live ResourceLink turns —
+duplicate-range verifies 3/3 through adapter stdio with one link block
+each (`end_turn`, clean exits, first-attempt) — report:
+`docs/milestones/M27_REPORT.md` (claims audited clean). Milestone 22 is complete (DROPPED
 candidate,
 production unchanged); see Completed gates and
 `docs/milestones/M22_DECISION_REPORT.md`.
