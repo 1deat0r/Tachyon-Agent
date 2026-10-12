@@ -759,7 +759,7 @@ mod tests {
                 r#"{"jsonrpc":"2.0","id":1,"method":"session/load"}"#,
                 r#"{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"nope","cwd":"/tmp"}}"#,
                 r#"{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"relative/dir"}}"#,
-                r#"{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"/tmp","mcpServers":[{"transport":{"type":"stdio"},"command":"mcp-server"}]}}"#,
+                r#"{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"/tmp","mcpServers":["mcp-server"]}}"#,
                 r#"{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"01990f9e-1111-7000-8000-000000000000","cwd":"/tmp"}}"#,
             ],
             GatewayUp,
@@ -773,7 +773,9 @@ mod tests {
         assert_eq!(frames[0]["error"]["data"], json!("invalid_params"));
         assert_eq!(frames[1]["error"]["data"], json!("invalid_session_id"));
         assert_eq!(frames[2]["error"]["data"], json!("cwd_not_absolute"));
-        assert_eq!(frames[3]["error"]["data"], json!("mcp_servers_unsupported"));
+        // Shaped entries now proceed past validation (TASK 01 load slice);
+        // unshaped entries still stop here with no gateway contact.
+        assert_eq!(frames[3]["error"]["data"], json!("invalid_params"));
         // Valid params: validation passes, the NoConnector connect
         // fails — one typed gateway-unavailable error, never a
         // method-not-found.

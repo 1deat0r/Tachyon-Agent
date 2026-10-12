@@ -172,6 +172,15 @@ struct ScriptState {
     /// Total `CreateTask` calls observed — the prompt-gate pin: a
     /// refused prompt must never reach task creation.
     create_task_calls: AtomicUsize,
+    /// Pinned server ids `ListMCPServers` answers with (TASK 01 load
+    /// slice; set via `start_with_mcp_list`, default empty).
+    mcp_list: Mutex<Vec<String>>,
+    /// When true, `ListMCPServers` is refused typed (TASK 01 load
+    /// slice gateway-failure path).
+    mcp_list_refuse: Mutex<bool>,
+    /// Total `ListMCPServers` calls observed — the load read-only pin:
+    /// an empty `mcpServers` load must never list.
+    list_mcp_calls: AtomicUsize,
     /// Optional `GetSession` override (session-load ticket 02): when
     /// `Some`, EVERY `GetSession` answers it instead of the fixed
     /// default — the seam that lets load/prompt tests script history,
@@ -207,6 +216,9 @@ impl ScriptState {
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
             create_task_calls: AtomicUsize::new(0),
+            mcp_list: Mutex::new(Vec::new()),
+            mcp_list_refuse: Mutex::new(false),
+            list_mcp_calls: AtomicUsize::new(0),
             get_session_override: Mutex::new(None),
             get_session_sequence: Mutex::new(VecDeque::new()),
             fans: Mutex::new(Vec::new()),
@@ -270,6 +282,31 @@ impl ScriptedGateway {
         this
     }
 
+    /// Sets the `ListMCPServers` pins on a started fixture (TASK 01
+    /// load slice; builder-style so existing constructors are untouched).
+    #[must_use]
+    pub fn with_mcp_list(self, pins: Vec<String>) -> Self {
+        *self.state.mcp_list.lock().expect("mcp list lock") = pins;
+        self
+    }
+
+    /// Makes `ListMCPServers` fail typed (TASK 01 load slice
+    /// gateway-failure path).
+    #[must_use]
+    pub fn with_mcp_list_refused(self) -> Self {
+        *self.state.mcp_list_refuse.lock().expect("mcp refuse lock") = true;
+        self
+    }
+
+    /// Starts the fixture answering `ListMCPServers` with `pins`
+    /// (TASK 01 load slice).
+    #[must_use]
+    pub fn start_with_mcp_list(dir: &Path, script: Script, pins: Vec<String>) -> Self {
+        let this = Self::start_inner(dir, script, None);
+        *this.state.mcp_list.lock().expect("mcp list lock") = pins;
+        this
+    }
+
     fn start_inner(dir: &Path, script: Script, get_session: Option<CommandResult>) -> Self {
         std::fs::create_dir_all(dir).expect("fixture data dir");
         let socket = dir.join("gateway.sock");
@@ -324,6 +361,12 @@ impl ScriptedGateway {
     #[must_use]
     pub fn create_task_calls(&self) -> usize {
         self.state.create_task_calls.load(Ordering::SeqCst)
+    }
+
+    /// Total `ListMCPServers` calls observed.
+    #[must_use]
+    pub fn list_mcp_calls(&self) -> usize {
+        self.state.list_mcp_calls.load(Ordering::SeqCst)
     }
 
     /// Every `Approve` the adapter issued, as `(task_id, approval_id)`
@@ -510,6 +553,76 @@ fn script_cancel_task(
     })]);
     (ok(json!({ "task": task_status("Cancelled") })), Vec::new())
 }
+/// Trivial scripted answers: ping pong, task/session snapshots,
+/// and run acknowledgement (TASK 01 load slice extracted these from the
+/// over-long dispatcher; behavior byte-identical).
+/// Scripted `Subscribe`: records the cursor and answers the next
+/// scripted subscription (replay + post), or refuses exhausted.
+fn script_subscribe(state: &ScriptState, after_seq: i64) -> (CommandResult, Vec<Step>) {
+    state.cursors.lock().expect("cursor lock").push(after_seq);
+    let subscription = state.subscribes.lock().expect("subscribe lock").pop_front();
+    match subscription {
+        Some(subscription) => {
+            let events: Vec<Value> = subscription.replay.iter().map(replay_row_json).collect();
+            (
+                ok(json!({
+                    "subscribed": true,
+                    "task_id": SCRIPT_TASK_ID,
+                    "after_seq": after_seq,
+                    "last_seq": events
+                        .iter()
+                        .filter_map(|row| row.get("seq").and_then(Value::as_i64))
+                        .max()
+                        .unwrap_or(after_seq),
+                    "events": events,
+                })),
+                subscription.post,
+            )
+        }
+        None => (
+            refused(
+                "script_exhausted",
+                "no scripted Subscribe left for this call",
+            ),
+            Vec::new(),
+        ),
+    }
+}
+
+fn script_simple_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<Step>) {
+    match command {
+        Command::Ping => (
+            ok(json!({
+                "pong": true,
+                "protocol_version": PROTOCOL_VERSION,
+            })),
+            Vec::new(),
+        ),
+        Command::CreateTask { .. } => {
+            state.create_task_calls.fetch_add(1, Ordering::SeqCst);
+            (ok(json!({ "task_id": SCRIPT_TASK_ID })), Vec::new())
+        }
+        Command::GetTask { .. } => {
+            state.get_task_calls.fetch_add(1, Ordering::SeqCst);
+            match state.get_tasks.lock().expect("get-task lock").pop_front() {
+                Some(task) => (ok(json!({ "task": task })), Vec::new()),
+                None => (
+                    refused(
+                        "script_exhausted",
+                        "no scripted GetTask answer left for this call",
+                    ),
+                    Vec::new(),
+                ),
+            }
+        }
+        Command::StartRun { .. } => (ok(json!({ "started": true })), Vec::new()),
+        _ => (
+            refused("script_exhausted", "script_simple_answer called off-script"),
+            Vec::new(),
+        ),
+    }
+}
+
 fn script_mcp_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<Step>) {
     match command {
         Command::RegisterMCPServers {
@@ -577,27 +690,33 @@ fn script_mcp_answer(state: &ScriptState, command: &Command) -> (CommandResult, 
 fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<Step>) {
     let mut post: Vec<Step> = Vec::new();
     let result = match command {
-        Command::Ping => ok(json!({
-            "pong": true,
-            "protocol_version": PROTOCOL_VERSION,
-        })),
+        Command::Ping
+        | Command::CreateTask { .. }
+        | Command::GetTask { .. }
+        | Command::StartRun { .. } => {
+            let (result, simple_post) = script_simple_answer(state, command);
+            debug_assert!(simple_post.is_empty(), "simple arms queue no post steps");
+            result
+        }
         Command::GetSession { session_id } => get_session_answer(state, session_id),
         Command::CreateSession { .. } => ok(json!({ "session_id": SCRIPT_SESSION_ID })),
-        Command::CreateTask { .. } => {
-            state.create_task_calls.fetch_add(1, Ordering::SeqCst);
-            ok(json!({ "task_id": SCRIPT_TASK_ID }))
-        }
-        Command::GetTask { .. } => {
-            state.get_task_calls.fetch_add(1, Ordering::SeqCst);
-            match state.get_tasks.lock().expect("get-task lock").pop_front() {
-                Some(task) => ok(json!({ "task": task })),
-                None => refused(
-                    "script_exhausted",
-                    "no scripted GetTask answer left for this call",
-                ),
+        Command::ListMCPServers { .. } => {
+            state.list_mcp_calls.fetch_add(1, Ordering::SeqCst);
+            if *state.mcp_list_refuse.lock().expect("mcp refuse lock") {
+                return (
+                    refused("internal", "scripted ListMCPServers failure"),
+                    Vec::new(),
+                );
             }
+            let servers: Vec<serde_json::Value> = state
+                .mcp_list
+                .lock()
+                .expect("mcp list lock")
+                .iter()
+                .map(|id| serde_json::json!({"server_id": id, "status": "live"}))
+                .collect();
+            ok(json!({ "servers": servers }))
         }
-        Command::StartRun { .. } => ok(json!({ "started": true })),
         Command::RegisterMCPServers { .. }
         | Command::ApproveMCPServers { .. }
         | Command::DenyMCPServers { .. } => {
@@ -642,30 +761,9 @@ fn script_answer(state: &ScriptState, command: &Command) -> (CommandResult, Vec<
             result
         }
         Command::Subscribe { after_seq, .. } => {
-            state.cursors.lock().expect("cursor lock").push(*after_seq);
-            let subscription = state.subscribes.lock().expect("subscribe lock").pop_front();
-            match subscription {
-                Some(subscription) => {
-                    post = subscription.post;
-                    let events: Vec<Value> =
-                        subscription.replay.iter().map(replay_row_json).collect();
-                    ok(json!({
-                        "subscribed": true,
-                        "task_id": SCRIPT_TASK_ID,
-                        "after_seq": after_seq,
-                        "last_seq": events
-                            .iter()
-                            .filter_map(|row| row.get("seq").and_then(Value::as_i64))
-                            .max()
-                            .unwrap_or(*after_seq),
-                        "events": events,
-                    }))
-                }
-                None => refused(
-                    "script_exhausted",
-                    "no scripted Subscribe left for this call",
-                ),
-            }
+            let (result, sub_post) = script_subscribe(state, *after_seq);
+            post = sub_post;
+            result
         }
         _ => refused(
             "unexpected_command",

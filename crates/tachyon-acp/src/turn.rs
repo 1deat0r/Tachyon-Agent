@@ -461,15 +461,19 @@ pub(crate) struct SessionLoadParams {
     /// Absolute cwd the client asks to load with — verified against the
     /// session's pinned workspace root before any replay (ADR-0005:40).
     pub(crate) cwd: String,
+    /// Raw `mcpServers` entries (shape-checked only): non-empty lists
+    /// assert set-equality against the pinned set before any replay
+    /// (TASK 01 load slice); empty asserts nothing.
+    pub(crate) servers: Vec<Value>,
 }
 
 /// Validates `session/load` params per ACP `schema-v1.23.0`
 /// (`LoadSessionRequest`): `sessionId` must parse as a session id,
-/// `cwd` is required and must be absolute, and `mcpServers` follows
-/// the `session/new` contract (absent/empty accepted — the
-/// pinned-set reconnect ships with the MCP-at-setup slice; non-empty
-/// refused typed). Runs BEFORE the liveness gate, so a bad request
-/// never reaches the gateway (ADR-0005:40 — load creates nothing).
+/// `cwd` is required and must be absolute, and `mcpServers` entries
+/// are shape-checked (absent/empty accepted with no assertion;
+/// non-empty asserts set-equality against the pinned set before any
+/// replay). Runs BEFORE the liveness gate, so a bad request never
+/// reaches the gateway (ADR-0005:40 — load creates nothing).
 pub(crate) fn parse_load(params: Option<&Value>) -> Result<SessionLoadParams, HandlerError> {
     let invalid_shape = || {
         HandlerError::invalid(
@@ -500,24 +504,49 @@ pub(crate) fn parse_load(params: Option<&Value>) -> Result<SessionLoadParams, Ha
             "cwd_not_absolute",
         ));
     }
-    if let Some(servers) = object.get("mcpServers") {
-        let list = servers.as_array().ok_or_else(|| {
-            HandlerError::invalid(
-                "Invalid params: mcpServers must be an array",
-                "invalid_params",
-            )
-        })?;
-        if !list.is_empty() {
-            return Err(HandlerError::invalid(
-                "MCP servers at session load are not supported yet; mcpServers must be empty",
-                "mcp_servers_unsupported",
-            ));
-        }
-    }
+    let servers = match object.get("mcpServers") {
+        None => Vec::new(),
+        Some(servers) => servers
+            .as_array()
+            .ok_or_else(|| {
+                HandlerError::invalid(
+                    "Invalid params: mcpServers must be an array",
+                    "invalid_params",
+                )
+            })?
+            .iter()
+            .map(|entry| {
+                entry.as_object().ok_or_else(|| {
+                    HandlerError::invalid(
+                        "Invalid params: mcpServers entries must be objects",
+                        "invalid_params",
+                    )
+                })?;
+                Ok(entry.clone())
+            })
+            .collect::<Result<Vec<Value>, HandlerError>>()?,
+    };
     Ok(SessionLoadParams {
         session_id,
         cwd: cwd.to_owned(),
+        servers,
     })
+}
+
+/// Asserts an asserted MCP server set against the pinned set (TASK 01
+/// load slice): `server_id` set equality in both directions — a subset,
+/// superset, or drifted id fails closed. Pure: the caller fetches the
+/// pinned ids read-only via `ListMCPServers`.
+pub(crate) fn check_mcp_set(asserted: &[String], pinned: &[String]) -> Result<(), HandlerError> {
+    let asserted: std::collections::HashSet<&str> = asserted.iter().map(String::as_str).collect();
+    let pinned: std::collections::HashSet<&str> = pinned.iter().map(String::as_str).collect();
+    if asserted == pinned {
+        return Ok(());
+    }
+    Err(HandlerError::invalid(
+        "session MCP set does not match the session's pinned servers",
+        "mcp_set_mismatch",
+    ))
 }
 
 /// The pinned-workspace check for `session/load` (ADR-0005:40:
@@ -644,6 +673,9 @@ pub(crate) async fn run_load<C: Connector>(
             )
         })?;
     check_load_workspace(&params.cwd, root)?;
+    if !params.servers.is_empty() {
+        assert_mcp_set(&mut conn, session_id, &params.servers).await?;
+    }
     let turns = payload
         .get("turns")
         .and_then(Value::as_array)
@@ -654,6 +686,60 @@ pub(crate) async fn run_load<C: Connector>(
             )
         })?;
     Ok(load_replay_frames(&session_id.to_string(), turns))
+}
+
+/// Asserts the load-asserted MCP set against the pinned set (TASK 01
+/// load slice): read-only `ListMCPServers`, server_id-set equality in
+/// both directions. The load path stays read-only — this pins nothing,
+/// approves nothing, and emits no frames.
+async fn assert_mcp_set(
+    conn: &mut GatewayConn,
+    session_id: SessionId,
+    asserted: &[Value],
+) -> Result<(), HandlerError> {
+    let mut names = Vec::with_capacity(asserted.len());
+    for entry in asserted {
+        names.push(
+            entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    HandlerError::invalid(
+                        "session/load MCP entries require a name",
+                        "invalid_mcp_descriptor",
+                    )
+                })?
+                .to_owned(),
+        );
+    }
+    let payload = conn
+        .call(Command::ListMCPServers { session_id })
+        .await
+        .map_err(call_error)?;
+    let pinned: Vec<String> = payload
+        .get("servers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "ListMCPServers answered without a servers array",
+            )
+        })?
+        .iter()
+        .map(|server| {
+            server
+                .get("server_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    HandlerError::turn_failed(
+                        "gateway_payload_invalid",
+                        "ListMCPServers row without a server_id",
+                    )
+                })
+        })
+        .collect::<Result<Vec<String>, HandlerError>>()?;
+    check_mcp_set(&names, &pinned)
 }
 
 /// Validates `session/prompt` params per ACP `schema-v1.23.0`
@@ -2792,12 +2878,13 @@ mod tests {
         APPROVAL_REQUEST_GRACE, ClientAnswer, DENY_REASON_REJECTED, DENY_SETTLE_GRACE,
         HandlerError, OutboundRequests, PermissionAnswer, PermissionBridge, PermissionPhase,
         ReadExpiry, SessionState, TurnBudgetState, agent_chunk, answer_action, approval_ask,
-        approval_parked, check_load_workspace, classify_permission_answer, final_prompt_result,
-        is_allow_once, is_approval_parked, is_reject_once, is_settlement_signal,
-        is_terminal_status, load_replay_frames, map_mcp_server, map_mcp_servers, parse_cancel,
-        parse_load, parse_prompt, parse_session_new, permission_request_params, read_bound,
-        read_gateway_frame, recorded_turn, refusal_prompt_result, settlement_verdict, stop_reason,
-        tool_call_announcement, tool_call_status_update, turn_deadline,
+        approval_parked, check_load_workspace, check_mcp_set, classify_permission_answer,
+        final_prompt_result, is_allow_once, is_approval_parked, is_reject_once,
+        is_settlement_signal, is_terminal_status, load_replay_frames, map_mcp_server,
+        map_mcp_servers, parse_cancel, parse_load, parse_prompt, parse_session_new,
+        permission_request_params, read_bound, read_gateway_frame, recorded_turn,
+        refusal_prompt_result, settlement_verdict, stop_reason, tool_call_announcement,
+        tool_call_status_update, turn_deadline,
     };
     use std::str::FromStr as _;
 
@@ -3204,19 +3291,52 @@ mod tests {
         let no_id = parse_load(Some(&json!({"cwd": "/tmp"}))).expect_err("sessionId is required");
         assert_eq!(no_id.data, json!("invalid_params"));
 
-        let mcp = parse_load(Some(&json!({
+        // Shaped entries are carried for the pinned-set assertion
+        // (TASK 01 load slice); unshaped entries still stop pre-gateway.
+        let carried = parse_load(Some(&json!({
             "sessionId": "01990f9e-1111-7000-8000-000000000000",
             "cwd": "/tmp",
-            "mcpServers": [{"transport": {"type": "stdio"}, "command": "mcp-server"}],
+            "mcpServers": [{"transport": {"type": "stdio"}, "command": "/usr/bin/srv", "name": "s1"}],
         })))
-        .expect_err("non-empty mcpServers is refused");
-        assert_eq!(mcp.data, json!("mcp_servers_unsupported"));
+        .expect("shaped entries carried");
+        assert_eq!(carried.servers.len(), 1);
+        let unshaped = parse_load(Some(&json!({
+            "sessionId": "01990f9e-1111-7000-8000-000000000000",
+            "cwd": "/tmp",
+            "mcpServers": ["srv"],
+        })))
+        .expect_err("non-object entries refused pre-gateway");
+        assert_eq!(unshaped.data, json!("invalid_params"));
 
         for params in [json!({}), json!([]), json!("nope")] {
             let error = parse_load(Some(&params)).expect_err("bad shape rejected");
             assert_eq!(error.code, INVALID_PARAMS, "{params}");
         }
         assert!(parse_load(None).is_err(), "absent params are invalid");
+    }
+
+    #[test]
+    fn check_mcp_set_matches_equal_sets_only() {
+        let ok = |asserted: &[&str], pinned: &[&str]| {
+            check_mcp_set(
+                &asserted.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                &pinned.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            )
+        };
+        ok(&[], &[]).expect("empty sets match");
+        ok(&["s1"], &["s1"]).expect("equal singletons match");
+        ok(&["s1", "s2"], &["s2", "s1"]).expect("order is irrelevant");
+        for (asserted, pinned, what) in [
+            (vec!["s1", "s2"], vec!["s1"], "subset asserted"),
+            (vec!["s1"], vec!["s1", "s2"], "superset asserted"),
+            (vec!["s1"], vec!["s2"], "drifted id"),
+            (vec![], vec!["s1"], "empty asserted against pins"),
+            (vec!["s1"], vec![], "pins asserted against empty"),
+        ] {
+            let error = ok(&asserted, &pinned).expect_err(&format!("{what} fails"));
+            assert_eq!(error.data, json!("mcp_set_mismatch"), "{what}");
+            assert_eq!(error.code, INVALID_PARAMS, "{what}");
+        }
     }
 
     /// S1 (ticket 01): load validates the PINNED workspace
