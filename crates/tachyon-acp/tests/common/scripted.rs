@@ -172,6 +172,9 @@ struct ScriptState {
     /// Total `CreateTask` calls observed — the prompt-gate pin: a
     /// refused prompt must never reach task creation.
     create_task_calls: AtomicUsize,
+    /// Objectives `CreateTask` carried, in call order (TASK resourcelink
+    /// S3: proves resolved blocks reach the created task).
+    create_task_objectives: Mutex<Vec<String>>,
     /// Pinned server ids `ListMCPServers` answers with (TASK 01 load
     /// slice; set via `start_with_mcp_list`, default empty).
     mcp_list: Mutex<Vec<String>>,
@@ -216,6 +219,7 @@ impl ScriptState {
             cursors: Mutex::new(Vec::new()),
             get_task_calls: AtomicUsize::new(0),
             create_task_calls: AtomicUsize::new(0),
+            create_task_objectives: Mutex::new(Vec::new()),
             mcp_list: Mutex::new(Vec::new()),
             mcp_list_refuse: Mutex::new(false),
             list_mcp_calls: AtomicUsize::new(0),
@@ -361,6 +365,16 @@ impl ScriptedGateway {
     #[must_use]
     pub fn create_task_calls(&self) -> usize {
         self.state.create_task_calls.load(Ordering::SeqCst)
+    }
+
+    /// Objectives `CreateTask` carried, in call order.
+    #[must_use]
+    pub fn create_task_objectives(&self) -> Vec<String> {
+        self.state
+            .create_task_objectives
+            .lock()
+            .expect("objectives lock")
+            .clone()
     }
 
     /// Total `ListMCPServers` calls observed.
@@ -598,8 +612,13 @@ fn script_simple_answer(state: &ScriptState, command: &Command) -> (CommandResul
             })),
             Vec::new(),
         ),
-        Command::CreateTask { .. } => {
+        Command::CreateTask { objective, .. } => {
             state.create_task_calls.fetch_add(1, Ordering::SeqCst);
+            state
+                .create_task_objectives
+                .lock()
+                .expect("objectives lock")
+                .push(objective.clone());
             (ok(json!({ "task_id": SCRIPT_TASK_ID })), Vec::new())
         }
         Command::GetTask { .. } => {
