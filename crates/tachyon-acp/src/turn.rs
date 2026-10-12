@@ -568,6 +568,150 @@ pub(crate) fn check_load_workspace(cwd: &str, workspace_root: &str) -> Result<()
     ))
 }
 
+/// Validated `session/attach` params (ADR-0019, spec `.scratch/acp-attach/spec.md`):
+/// `sessionId` identity-maps the gateway session, `taskId` optionally pins
+/// the exact turn (default: the latest non-terminal turn from `GetSession`),
+/// `from_seq` optionally sets the replay cursor (default 0: replay-then-tail).
+/// Shape validation runs BEFORE the liveness gate, so a malformed attach
+/// never touches the gateway. Takes no turn slot and mints no idempotency
+/// key — attach is a read-only subscribe-reader.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // Ticket 02 wires the `session/attach` arm; until then only tests construct this.
+pub(crate) struct AttachParams {
+    /// Session owning the live turn.
+    pub(crate) session_id: SessionId,
+    /// Explicit turn target, if the client pins one.
+    pub(crate) task_id: Option<TaskId>,
+    /// Cursor to replay from (gateway cursor pushdown reuses it verbatim).
+    pub(crate) from_seq: u64,
+}
+
+/// Validates `session/attach` params: `sessionId` must parse as a session
+/// id; `taskId`, when present (non-null), must parse as a task id;
+/// `from_seq`, when present (non-null), must be a non-negative integer
+/// JSON number (default 0). Every shape failure is a typed `-32602`
+/// refusal with a taxonomy `data` marker — never a guess.
+#[allow(dead_code)] // Ticket 02 wires the `session/attach` arm; until then only tests call this.
+pub(crate) fn parse_attach(params: Option<&Value>) -> Result<AttachParams, HandlerError> {
+    let invalid_shape = || {
+        HandlerError::invalid(
+            "Invalid params: session/attach requires sessionId",
+            "invalid_params",
+        )
+    };
+    let object = params
+        .and_then(Value::as_object)
+        .ok_or_else(invalid_shape)?;
+    let raw_session = object
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_shape)?;
+    let session_id: SessionId = raw_session.parse().map_err(|_| {
+        HandlerError::invalid(
+            "Invalid params: sessionId is not a valid session id",
+            "invalid_session_id",
+        )
+    })?;
+    let task_id = match object.get("taskId") {
+        None | Some(Value::Null) => None,
+        Some(raw) => {
+            let raw = raw.as_str().ok_or_else(|| {
+                HandlerError::invalid(
+                    "Invalid params: taskId must be a string task id",
+                    "invalid_task_id",
+                )
+            })?;
+            Some(raw.parse().map_err(|_| {
+                HandlerError::invalid(
+                    "Invalid params: taskId is not a valid task id",
+                    "invalid_task_id",
+                )
+            })?)
+        }
+    };
+    let from_seq = match object.get("from_seq") {
+        None | Some(Value::Null) => 0,
+        Some(raw) => raw.as_u64().ok_or_else(|| {
+            HandlerError::invalid(
+                "Invalid params: from_seq must be a non-negative integer",
+                "invalid_from_seq",
+            )
+        })?,
+    };
+    Ok(AttachParams {
+        session_id,
+        task_id,
+        from_seq,
+    })
+}
+
+/// Resolves the attach target from one `GetSession` turn history (ADR-0019
+/// §2): an explicit `taskId` pins the exact turn (an id outside the history
+/// ⇒ typed `unknown_task`); otherwise the latest non-terminal turn (the
+/// `recorded_turn` convention — replay order is `turn_seq ASC`, so only the
+/// last entry can be live) is the target. A terminal target — explicit or
+/// latest — is refused typed `attach_target_terminal`: history is
+/// `session/load`'s job, attach is live-tail only. A corrupt row (missing
+/// status, unparseable id) is typed `gateway_payload_invalid`, never a
+/// guessed target. Pure: the caller issues the single `GetSession` and the
+/// subscription reuses the returned cursor baseline.
+#[allow(dead_code)] // Ticket 02 wires the `session/attach` arm; until then only tests call this.
+pub(crate) fn resolve_attach_target(
+    turns: &[Value],
+    explicit: Option<TaskId>,
+) -> Result<TaskId, HandlerError> {
+    if let Some(wanted) = explicit {
+        let row = turns
+            .iter()
+            .find(|turn| {
+                turn.get("task_id")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| raw.parse::<TaskId>().ok())
+                    .is_some_and(|id| id == wanted)
+            })
+            .ok_or_else(|| {
+                HandlerError::invalid(
+                    "session/attach target task is not part of this session",
+                    "unknown_task",
+                )
+            })?;
+        let status = row.get("status").and_then(Value::as_str).ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "attach target turn carries no status",
+            )
+        })?;
+        if is_terminal_status(status) {
+            return Err(HandlerError::invalid(
+                "session/attach target is terminal; use session/load for replay",
+                "attach_target_terminal",
+            ));
+        }
+        return Ok(wanted);
+    }
+    let Some(last) = turns.last() else {
+        return Err(HandlerError::invalid(
+            "session/attach found no turns to attach to",
+            "unknown_task",
+        ));
+    };
+    let status = last.get("status").and_then(Value::as_str).ok_or_else(|| {
+        HandlerError::turn_failed("gateway_payload_invalid", "latest turn carries no status")
+    })?;
+    if is_terminal_status(status) {
+        return Err(HandlerError::invalid(
+            "session/attach target is terminal; use session/load for replay",
+            "attach_target_terminal",
+        ));
+    }
+    recorded_turn(std::slice::from_ref(last))?.ok_or_else(|| {
+        HandlerError::turn_failed(
+            "gateway_payload_invalid",
+            "latest turn is live but carries no task id",
+        )
+    })
+}
+
 /// The replay frames for one `session/load`: every recorded
 /// conversation entry in `turn_seq` order, mapped to the ACP
 /// `session/update` notifications the protocol requires BEFORE the
@@ -3117,10 +3261,10 @@ mod tests {
         approval_parked, check_load_workspace, check_mcp_set, classify_permission_answer,
         final_prompt_result, is_allow_once, is_approval_parked, is_reject_once,
         is_settlement_signal, is_terminal_status, load_replay_frames, map_mcp_server,
-        map_mcp_servers, parse_cancel, parse_load, parse_prompt, parse_session_new,
+        map_mcp_servers, parse_attach, parse_cancel, parse_load, parse_prompt, parse_session_new,
         permission_request_params, read_bound, read_gateway_frame, recorded_turn,
-        refusal_prompt_result, resolve_resource_link, settlement_verdict, stop_reason,
-        tool_call_announcement, tool_call_status_update, turn_deadline,
+        refusal_prompt_result, resolve_attach_target, resolve_resource_link, settlement_verdict,
+        stop_reason, tool_call_announcement, tool_call_status_update, turn_deadline,
     };
     use std::str::FromStr as _;
 
@@ -4787,6 +4931,120 @@ mod tests {
         assert_eq!(error.data, json!("gateway_payload_invalid"));
         let no_status = json!([{"turn_seq": 1, "task_id": "01990f9e-7000-7000-8000-000000000002"}]);
         let error = recorded_turn(no_status.as_array().unwrap()).unwrap_err();
+        assert_eq!(error.data, json!("gateway_payload_invalid"));
+    }
+
+    /// Attach TASK 01: `parse_attach` shape validation — sessionId required
+    /// and parsed, `taskId` optional but parsed when present, `from_seq` optional
+    /// defaulting to 0 and refusing non-integer cursors. Every failure is a
+    /// typed `-32602` with a taxonomy marker (never a guess, never a gateway
+    /// call — validation runs before the gate).
+    #[test]
+    fn parse_attach_validates_shape_before_the_gate() {
+        let session = "01990f9e-1111-7000-8000-000000000000";
+        let task = "01990f9e-7000-7000-8000-000000000002";
+        let params = parse_attach(Some(&json!({"sessionId": session}))).unwrap();
+        assert_eq!(params.session_id.to_string(), session);
+        assert_eq!(params.task_id, None);
+        assert_eq!(params.from_seq, 0, "from_seq defaults to replay-then-tail");
+        let params = parse_attach(Some(
+            &json!({"sessionId": session, "taskId": task, "from_seq": 41}),
+        ))
+        .unwrap();
+        assert_eq!(params.task_id, Some(TaskId::from_str(task).unwrap()));
+        assert_eq!(params.from_seq, 41);
+        // Explicit nulls behave as absent (ACP optional-field convention).
+        let params = parse_attach(Some(
+            &json!({"sessionId": session, "taskId": null, "from_seq": null}),
+        ))
+        .unwrap();
+        assert_eq!(params.task_id, None);
+        assert_eq!(params.from_seq, 0);
+        for (params, data) in [
+            (json!({}), "invalid_params"),
+            (json!({"sessionId": 7}), "invalid_params"),
+            (json!({"sessionId": "not-a-session"}), "invalid_session_id"),
+            (
+                json!({"sessionId": session, "taskId": 7}),
+                "invalid_task_id",
+            ),
+            (
+                json!({"sessionId": session, "taskId": "nope"}),
+                "invalid_task_id",
+            ),
+            (
+                json!({"sessionId": session, "from_seq": -1}),
+                "invalid_from_seq",
+            ),
+            (
+                json!({"sessionId": session, "from_seq": 1.5}),
+                "invalid_from_seq",
+            ),
+            (
+                json!({"sessionId": session, "from_seq": "41"}),
+                "invalid_from_seq",
+            ),
+        ] {
+            let error = parse_attach(Some(&params)).unwrap_err();
+            assert_eq!(error.code, INVALID_PARAMS, "shape first: {params}");
+            assert_eq!(error.data, json!(data), "taxonomy marker: {params}");
+        }
+        let error = parse_attach(None).unwrap_err();
+        assert_eq!(error.data, json!("invalid_params"));
+    }
+
+    /// Attach TASK 01: `resolve_attach_target` — explicit pins win when live,
+    /// terminal targets refuse typed (replay is `session/load`'s job), ids
+    /// outside the history are `unknown_task`, and the default is the latest
+    /// non-terminal turn (`recorded_turn` convention). Corrupt rows fail
+    /// closed as `gateway_payload_invalid`, never a guessed target.
+    #[test]
+    fn resolve_attach_target_pins_live_and_refuses_terminal() {
+        let live = "01990f9e-7000-7000-8000-000000000002";
+        let done = "01990f9e-7000-7000-8000-000000000001";
+        let history = json!([
+            {"turn_seq": 1, "task_id": done, "status": "Completed"},
+            {"turn_seq": 2, "task_id": live, "status": "Executing"}
+        ]);
+        let turns = history.as_array().unwrap();
+        // Default: the latest non-terminal turn.
+        assert_eq!(
+            resolve_attach_target(turns, None).unwrap(),
+            TaskId::from_str(live).unwrap(),
+        );
+        // Explicit live pin resolves to itself.
+        assert_eq!(
+            resolve_attach_target(turns, Some(TaskId::from_str(live).unwrap())).unwrap(),
+            TaskId::from_str(live).unwrap(),
+        );
+        // Explicit terminal pin refuses typed (use session/load).
+        let error =
+            resolve_attach_target(turns, Some(TaskId::from_str(done).unwrap())).unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert_eq!(error.data, json!("attach_target_terminal"));
+        // Id outside the history is unknown, not terminal.
+        let error = resolve_attach_target(
+            turns,
+            Some(TaskId::from_str("01990f9e-7000-7000-8000-000000000009").unwrap()),
+        )
+        .unwrap_err();
+        assert_eq!(error.data, json!("unknown_task"));
+        // Latest-terminal history refuses the default too (nothing live).
+        let settled = json!([
+            {"turn_seq": 1, "task_id": live, "status": "Executing"},
+            {"turn_seq": 2, "task_id": done, "status": "Cancelled"}
+        ]);
+        let error = resolve_attach_target(settled.as_array().unwrap(), None).unwrap_err();
+        assert_eq!(error.data, json!("attach_target_terminal"));
+        // Empty history has no target at all.
+        let error = resolve_attach_target(&[], None).unwrap_err();
+        assert_eq!(error.data, json!("unknown_task"));
+        // Corrupt rows fail closed, never guessed.
+        let no_status = json!([
+            {"turn_seq": 1, "task_id": live, "status": "Executing"},
+            {"turn_seq": 2, "task_id": done}
+        ]);
+        let error = resolve_attach_target(no_status.as_array().unwrap(), None).unwrap_err();
         assert_eq!(error.data, json!("gateway_payload_invalid"));
     }
 

@@ -49,3 +49,21 @@ adapter disconnect — has no wire method. Design frozen at
 - `docs/adr/0005-acp-v1-gateway-distribution.md` :41.
 - `.scratch/acp-attach/spec.md` (frozen design).
 - `.scratch/board-attach/initial.md` (SOUND, no changes).
+
+## Consequences
+
+- The adapter's wire surface gains one explicitly-optional read-only method
+  (`session/attach`); the access set gains live-subscription reads only —
+  no writes, no approvals, no task creation, no verdict authority.
+- The recorded-turn gate and single-driver invariant are untouched by
+  construction (attach takes no turn slot); concurrent attaches are safe
+  broadcast readers.
+- A future multiplexing or cross-restart-cursor extension supersedes this
+  decision by amending it, not by reinterpreting the read-only authority.
+
+## Migration/rollback plan
+
+No persisted state depends on this decision (attach holds no slot, mints no
+keys, journals nothing). Revert to method-not-found by removing the arm;
+the taxonomy markers (`attach_target_terminal`, `unknown_task`,
+`resync_required`) then go unused.

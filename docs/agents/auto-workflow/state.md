@@ -8,10 +8,10 @@ phase: 5
 fixed_point: 8a6309a631743e803606ccd6fbc5b95ba4baf8d8
 baseline: 8a6309a631743e803606ccd6fbc5b95ba4baf8d8 + clean
 spec: .scratch/acp-attach/spec.md
-tasks: 01=ready 02=pending 03=pending
+tasks: 01=done 02=in-progress 03=pending
 edges: 01->02 02->03 (direction: blocker->blocked)
 edges: 01->02 02->03
-attempts: none-not-yet
+attempts: 01=1
 phase_entries: 4=1
 exec_count: 81
 polls: 0
@@ -743,3 +743,6 @@ objective; stored-response JSON built inside tx for byte-stable replay; spec 'ta
 2026-10-12T02:21:44Z EXEC 76 phase-5
 2026-10-12T03:55:00Z EVENT Phase 2 grill (7 Q&A) + Phase 3 spec frozen (.scratch/acp-attach/spec.md, DESIGN ONLY); Phase 4 no implementable units; Phase 5 N/A; Phase 6 design-level -> Phase 7 design review
 2026-10-12T03:55:00Z EXEC 80 phase-7
+2026-10-12T03:58:00Z EVENT Phase 6 GREEN for ticket 01: cargo verify exit 0 (orchestrator full gate; lib 71 pass incl 2 new attach units; clippy -D warnings clean; docs_freshness ADR-sections fix same-round)
+2026-10-12T03:58:00Z EVENT ticket 01 -> done; frontier flip: 02 pending->ready (blocker 01 done); ticket 02 attempt 1 started
+2026-10-12T03:58:00Z EXEC 83 phase-5
