@@ -21,6 +21,8 @@
 //! order (cancel reply first, the resolved prompt verdict after it).
 //! `session/load` answers through the writer channel too: its replay
 //! notifications must precede its `{}` result in FIFO order.
+//! `session/attach` (ADR-0019) tails a live task the same way —
+//! read-only, no turn slot — ending with the `{status}` result.
 //! Remaining `session/*` arms (`session/resume`, `session/close`, …)
 //! answer the standard JSON-RPC method-not-found error.
 
@@ -42,9 +44,9 @@ use crate::codec::{
     TURN_FAILED,
 };
 use crate::turn::{
-    HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard, call_error,
-    is_allow_once, is_reject_once, map_mcp_servers, parse_cancel, parse_load, parse_prompt,
-    parse_session_new, run_cancel, run_load, run_prompt,
+    AttachParams, HandlerError, PromptParams, SessionNewParams, SessionState, TurnGuard,
+    call_error, is_allow_once, is_reject_once, map_mcp_servers, parse_attach, parse_cancel,
+    parse_load, parse_prompt, parse_session_new, run_attach, run_cancel, run_load, run_prompt,
 };
 
 /// ACP wire protocol version Tachyon speaks (ADR-0005:21 — negotiated
@@ -547,6 +549,22 @@ where
                 }
             }
             "session/load" => return self.session_load(id, method, params).await,
+            "session/attach" => {
+                let params = match parse_attach(params.as_ref()) {
+                    Ok(params) => params,
+                    Err(error) => return Some(error_outbound(id, error)),
+                };
+                if let Some(error) = self.gate(id.clone(), &method).await {
+                    return Some(error);
+                }
+                // No turn slot: a read-only tail (ADR-0019) — concurrent
+                // attaches to one task are allowed, and the recorded-turn
+                // gate is untouched. Spawned like a prompt turn so the
+                // loop keeps serving (and the EOF drain reaps it), but
+                // with no guard and no idempotency key.
+                self.spawn_attach(id, params, turns);
+                None
+            }
             // Unimplemented `session/*` methods (`session/resume`,
             // `session/close`, … — `session/load` has a real arm since
             // its slice) keep the standard method-not-found slot.
@@ -766,6 +784,24 @@ where
             }
             Err(error) => Some(error_outbound(id, error)),
         }
+    }
+
+    /// Spawns one `session/attach` tail: the subscription runs detached
+    /// (so the loop keeps serving) with no turn guard — the stream ends at
+    /// the task's terminal status (or a typed stream error), and its final
+    /// frame is the `{status}` result (or the error) through the single
+    /// writer channel, after every streamed notification in FIFO order.
+    fn spawn_attach(&self, id: RpcId, params: AttachParams, turns: &mut JoinSet<()>) {
+        let connector = self.connector.clone();
+        let tx = self.tx.clone();
+        turns.spawn(async move {
+            let outcome = run_attach(&connector, params, &tx).await;
+            let outbound = match outcome {
+                Ok(result) => Outbound::success(id, result),
+                Err(error) => error_outbound(id, error),
+            };
+            let _ignored = tx.send(outbound);
+        });
     }
 
     /// Spawns one `session/prompt` turn: the pipeline runs detached

@@ -576,7 +576,6 @@ pub(crate) fn check_load_workspace(cwd: &str, workspace_root: &str) -> Result<()
 /// never touches the gateway. Takes no turn slot and mints no idempotency
 /// key — attach is a read-only subscribe-reader.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Ticket 02 wires the `session/attach` arm; until then only tests construct this.
 pub(crate) struct AttachParams {
     /// Session owning the live turn.
     pub(crate) session_id: SessionId,
@@ -591,7 +590,6 @@ pub(crate) struct AttachParams {
 /// `from_seq`, when present (non-null), must be a non-negative integer
 /// JSON number (default 0). Every shape failure is a typed `-32602`
 /// refusal with a taxonomy `data` marker — never a guess.
-#[allow(dead_code)] // Ticket 02 wires the `session/attach` arm; until then only tests call this.
 pub(crate) fn parse_attach(params: Option<&Value>) -> Result<AttachParams, HandlerError> {
     let invalid_shape = || {
         HandlerError::invalid(
@@ -631,12 +629,24 @@ pub(crate) fn parse_attach(params: Option<&Value>) -> Result<AttachParams, Handl
     };
     let from_seq = match object.get("from_seq") {
         None | Some(Value::Null) => 0,
-        Some(raw) => raw.as_u64().ok_or_else(|| {
-            HandlerError::invalid(
-                "Invalid params: from_seq must be a non-negative integer",
-                "invalid_from_seq",
-            )
-        })?,
+        Some(raw) => {
+            let cursor = raw.as_u64().ok_or_else(|| {
+                HandlerError::invalid(
+                    "Invalid params: from_seq must be a non-negative integer",
+                    "invalid_from_seq",
+                )
+            })?;
+            // The gateway cursor is an `i64`; a larger cursor has no
+            // subscription to resume from, so it is a shape refusal —
+            // never a saturating guess at the call site.
+            if cursor > i64::MAX as u64 {
+                return Err(HandlerError::invalid(
+                    "Invalid params: from_seq exceeds the gateway cursor range",
+                    "invalid_from_seq",
+                ));
+            }
+            cursor
+        }
     };
     Ok(AttachParams {
         session_id,
@@ -655,7 +665,6 @@ pub(crate) fn parse_attach(params: Option<&Value>) -> Result<AttachParams, Handl
 /// status, unparseable id) is typed `gateway_payload_invalid`, never a
 /// guessed target. Pure: the caller issues the single `GetSession` and the
 /// subscription reuses the returned cursor baseline.
-#[allow(dead_code)] // Ticket 02 wires the `session/attach` arm; until then only tests call this.
 pub(crate) fn resolve_attach_target(
     turns: &[Value],
     explicit: Option<TaskId>,
@@ -710,6 +719,288 @@ pub(crate) fn resolve_attach_target(
             "latest turn is live but carries no task id",
         )
     })
+}
+
+/// The read-only parked-state surface for one journalled `approval_request`
+/// (ADR-0019 §4): the `tool_call` announcement ONLY — never a
+/// `session/request_permission` frame, never an armed reply slot, never an
+/// `Approve`/`Deny`. Returns the approval id (for the caller's announce-once
+/// set) with the frame, or `None` when the journal carries no approval id —
+/// refusing to invent an approval, like the turn pipeline's orphan rule.
+fn attach_parked_announcement(session_id: &str, payload: &Value) -> Option<(String, Outbound)> {
+    let (approval_id, title) = approval_ask(payload)?;
+    Some((
+        approval_id.clone(),
+        tool_call_announcement(session_id, &approval_id, &title),
+    ))
+}
+
+/// The final notification closing an attach stream: the terminal status
+/// REPORTED as an observed `task_status` update — never a verdict (no
+/// `stopReason` ownership; the driving turn / Supervisor owns the verdict,
+/// ADR-0019 §3). The method result carries the same `{status}` object right
+/// after this frame on the writer channel.
+fn attach_final_notification(session_id: &str, status: &str) -> Outbound {
+    Outbound::notification(
+        "session/update",
+        json!({
+            "sessionId": session_id,
+            "update": { "sessionUpdate": "task_status", "status": status },
+        }),
+    )
+}
+
+/// Observes one attach-stream journal event: `agent_message` rows forward as
+/// chunks (the turn/load mapping), `approval_request` rows announce the park
+/// (announcement ONLY — [`attach_parked_announcement`], deduplicated through
+/// `announced`), `approval` rows are observed without effect, and every other
+/// kind is seen but never chunked. Returns true for settlement signals: the
+/// caller then owes a `GetTask` read (only `GetTask` decides the status —
+/// the adapter never parses it from the journal).
+fn observe_attach_event(
+    kind: &str,
+    payload: &Value,
+    session_id: &str,
+    emit: &UnboundedSender<Outbound>,
+    announced: &mut HashSet<String>,
+) -> bool {
+    if let Some(update) = agent_chunk(kind, payload) {
+        let params = json!({ "sessionId": session_id, "update": update });
+        if emit
+            .send(Outbound::notification("session/update", params))
+            .is_err()
+        {
+            tracing::warn!("client went away; dropping attach chunk");
+        }
+    }
+    if kind == "approval_request" {
+        if let Some((approval_id, frame)) = attach_parked_announcement(session_id, payload) {
+            if announced.insert(approval_id.clone()) {
+                if emit.send(frame).is_err() {
+                    tracing::warn!("client went away; dropping attach park announcement");
+                }
+            } else {
+                tracing::debug!(%approval_id, "park already announced; ignoring the replayed row");
+            }
+        } else {
+            tracing::warn!(
+                "approval_request journal carries no approval id; refusing to invent an approval"
+            );
+        }
+    }
+    if kind == "approval" {
+        observe_approval_journal(payload);
+    }
+    is_settlement_signal(kind)
+}
+
+/// Consumes one subscribe-acknowledgement replay for an attach stream: rows
+/// arrive store-shaped (`payload` as a JSON string) and forward through the
+/// same observation as live frames. Returns true when the replay carried a
+/// settlement signal (the caller then owes a `GetTask` read, so an attach
+/// racing settlement cannot stall on a signal the replay did not re-deliver
+/// live).
+fn process_attach_replay(
+    payload: &Value,
+    session_id: &str,
+    emit: &UnboundedSender<Outbound>,
+    announced: &mut HashSet<String>,
+) -> bool {
+    let Some(rows) = payload.get("events").and_then(Value::as_array) else {
+        return false;
+    };
+    let mut signal = false;
+    for row in rows {
+        let Some(kind) = row.get("kind").and_then(Value::as_str) else {
+            continue;
+        };
+        let value = match row.get("payload") {
+            Some(Value::String(text)) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
+            Some(other) => other.clone(),
+            None => Value::Null,
+        };
+        signal |= observe_attach_event(kind, &value, session_id, emit, announced);
+    }
+    signal
+}
+
+/// Reads one attach subscription to its terminal status: forwards journalled
+/// `agent_message` rows as `session/update` chunks, announces approval parks
+/// read-only, serves settlement signals with a `GetTask` read through the
+/// single request slot, re-subscribes ONCE at the gateway cursor on
+/// `ResyncRequired` (then fails typed `resync_required` — never a silent
+/// gap), and ends with the final status notification. Takes no turn slot,
+/// arms no request slot, issues no `Approve`/`Deny`/`CreateTask` — the
+/// gateway task is unaffected by everything here except being observed.
+/// Returns the terminal status for the method result.
+async fn stream_attach(
+    conn: &mut GatewayConn,
+    subscribe_id: EventId,
+    task_id: TaskId,
+    session_id: &str,
+    emit: &UnboundedSender<Outbound>,
+) -> Result<String, HandlerError> {
+    let mut awaiting: Option<EventId> = Some(subscribe_id);
+    let mut awaiting_subscribe = true;
+    // A settlement check is owed: a signal arrived while a request was in
+    // flight, or a re-subscribe orphaned one.
+    let mut pending = false;
+    let mut announced: HashSet<String> = HashSet::new();
+    // Re-subscribes performed so far (bounded by MAX_RESUBSCRIBES, the same
+    // budget turns use).
+    let mut resyncs: u32 = 0;
+    loop {
+        let frame: ServerFrame =
+            read_gateway_frame(conn.read_frame(), None::<&watch::Sender<TurnBudgetState>>).await?;
+        match frame {
+            ServerFrame::Response(response) if Some(response.request_id) == awaiting => {
+                awaiting = None;
+                tachyon_protocol::check_version(response.protocol_version).map_err(|error| {
+                    HandlerError::unavailable(&GatewayUnavailable::new(format!(
+                        "gateway protocol version: {error}"
+                    )))
+                })?;
+                let payload = match response.result {
+                    tachyon_protocol::CommandResult::Ok { payload } => payload,
+                    tachyon_protocol::CommandResult::Err { code, message } => {
+                        return Err(HandlerError::refused(code, message));
+                    }
+                };
+                if awaiting_subscribe {
+                    awaiting_subscribe = false;
+                    pending |= process_attach_replay(&payload, session_id, emit, &mut announced);
+                    if pending {
+                        pending = false;
+                        awaiting = Some(send_frame(conn, Command::GetTask { task_id }).await?);
+                    }
+                } else if let Some(status) = payload
+                    .get("task")
+                    .and_then(|task| task.get("status"))
+                    .and_then(Value::as_str)
+                {
+                    if is_terminal_status(status) {
+                        if emit
+                            .send(attach_final_notification(session_id, status))
+                            .is_err()
+                        {
+                            tracing::warn!("client went away; dropping attach final status");
+                        }
+                        return Ok(status.to_owned());
+                    }
+                    // A non-terminal bounce (a signal that arrived
+                    // mid-round-trip serves next loop): keep streaming.
+                    if pending {
+                        pending = false;
+                        awaiting = Some(send_frame(conn, Command::GetTask { task_id }).await?);
+                    }
+                } else {
+                    return Err(HandlerError::turn_failed(
+                        "gateway_payload_invalid",
+                        "GetTask answered without a task status",
+                    ));
+                }
+            }
+            ServerFrame::Response(_) => {
+                tracing::debug!("ignoring a response for another request id mid-attach");
+            }
+            ServerFrame::Event(envelope) => match envelope.event {
+                GatewayEvent::Journal { kind, payload } => {
+                    if observe_attach_event(&kind, &payload, session_id, emit, &mut announced) {
+                        pending = true;
+                    }
+                    if pending && awaiting.is_none() {
+                        pending = false;
+                        awaiting = Some(send_frame(conn, Command::GetTask { task_id }).await?);
+                    }
+                }
+                GatewayEvent::ResyncRequired { after_seq, .. } => {
+                    resyncs += 1;
+                    if resyncs > MAX_RESUBSCRIBES {
+                        // Persistent failure: typed, never a silent gap.
+                        return Err(HandlerError::turn_failed(
+                            "resync_required",
+                            format!(
+                                "attach subscription overflowed again after {MAX_RESUBSCRIBES} \
+                                 re-subscribe; failing typed rather than silently \
+                                 truncating the stream"
+                            ),
+                        ));
+                    }
+                    if awaiting.is_some() && !awaiting_subscribe {
+                        // A GetTask read orphaned by the re-subscribe:
+                        // re-check right after the replay.
+                        pending = true;
+                    }
+                    awaiting =
+                        Some(send_frame(conn, Command::Subscribe { task_id, after_seq }).await?);
+                    awaiting_subscribe = true;
+                    tracing::info!(
+                        %task_id,
+                        after_seq,
+                        resyncs,
+                        "attach subscription overflowed; re-subscribing at the gateway cursor"
+                    );
+                }
+                other => {
+                    tracing::debug!(event = ?other, "ignoring a non-journal gateway event mid-attach");
+                }
+            },
+        }
+    }
+}
+
+/// One `session/attach` end to end (ADR-0019): `GetSession` resolves the
+/// target (explicit pin or latest live turn — terminal targets refuse typed
+/// BEFORE any subscription), then the read-only subscription tails the task
+/// to its terminal status. Creates nothing, restarts nothing, holds no
+/// idempotency key and no turn slot. Unbounded by any adapter deadline — the
+/// tailed task's own lifetime bounds the stream (its driving turn carries
+/// the timeout, and EOF teardown mirrors prompt turns). `emit` receives the
+/// `session/update` frames; the returned value is the `{status}` result.
+/// Unknown sessions fail with the gateway's typed `unknown_session` via
+/// [`call_error`].
+pub(crate) async fn run_attach<C: Connector>(
+    connector: &C,
+    params: AttachParams,
+    emit: &UnboundedSender<Outbound>,
+) -> Result<Value, HandlerError> {
+    let session_id = params.session_id;
+    let mut conn = connector
+        .connect()
+        .await
+        .map_err(|error| HandlerError::unavailable(&error))?;
+    let payload = conn
+        .call(Command::GetSession { session_id })
+        .await
+        .map_err(call_error)?;
+    let turns = payload
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            HandlerError::turn_failed(
+                "gateway_payload_invalid",
+                "GetSession answered without a turns array",
+            )
+        })?;
+    let task_id = resolve_attach_target(turns, params.task_id)?;
+    // Exact: `parse_attach` refuses cursors above `i64::MAX`, so this
+    // cast cannot wrap — `cast_signed` states the intent explicitly.
+    let subscribe_id = conn
+        .send(Command::Subscribe {
+            task_id,
+            after_seq: params.from_seq.cast_signed(),
+        })
+        .await
+        .map_err(|error| HandlerError::unavailable(&error))?;
+    let status = stream_attach(
+        &mut conn,
+        subscribe_id,
+        task_id,
+        &session_id.to_string(),
+        emit,
+    )
+    .await?;
+    Ok(json!({ "status": status }))
 }
 
 /// The replay frames for one `session/load`: every recorded

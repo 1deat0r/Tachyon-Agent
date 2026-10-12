@@ -17,3 +17,4 @@
 | 2026-10-12T03:53:00Z | 4 | ADR decision: short ADR 0019 vs 0005 amendment | short ADR: :41 already governs authority; wire method + taxonomy + negative authority need one citable record; written as docs/adr/0019-acp-session-attach-live-tail.md (proposed) | source: agent-default | type: answer |
 | 2026-10-12T03:53:00Z | 4 | tickets cut (3 linear) | 01 arm+target ready; 02 subscription+termination blocked by 01; 03 capability+review blocked by 02 | source: agent-default | type: answer |
 | 2026-10-12T03:58:00Z | 6 | ticket 01 GREEN | parse_attach + resolve_attach_target + 2 unit tests; cargo verify exit 0; ADR 0019 Consequences/Rollback sections added for docs_freshness | source: agent-default | type: answer |
+| 2026-10-12T04:02:00Z | 6 | ticket 02 GREEN | run_attach + stream_attach + server arm; 4 session_attach_live tests; cargo verify exit 0 | source: agent-default | type: answer |
